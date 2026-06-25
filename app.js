@@ -9,6 +9,7 @@ const state = {
   config: {},
   dependencies: null,
   activeSettingsTab: "api",
+  renderStartedAt: null,
   lastAnalysis: null,
   previewImageUrl: "",
   logLines: [
@@ -35,6 +36,21 @@ const providerTasks = [
   ["Caption maker", "Subtitle cleanup"],
   ["Hook maker", "Opening text + TTS script"],
   ["Title maker", "Title, hashtag, description"]
+];
+
+const enhancementControls = [
+  ["smartCropToggle", "Smart crop"],
+  ["dynamicZoomToggle", "Dynamic zoom"],
+  ["pipelineFaceTrack", "Face tracking"],
+  ["pipelineCaption", "Auto caption"],
+  ["pipelineHook", "Hook intro"],
+  ["ttsHookToggle", "Hook TTS"],
+  ["audioEnhanceToggle", "Audio enhancement"],
+  ["colorEnhanceToggle", "Color enhancement"],
+  ["creditTextToggle", "Credit text"],
+  ["logoOverlayToggle", "Logo overlay"],
+  ["pipelineWatermark", "Watermark"],
+  ["thumbnailPreviewToggle", "Thumbnail preview"]
 ];
 
 const $ = (selector) => document.querySelector(selector);
@@ -125,12 +141,20 @@ function collectPayload() {
     upscaleMethod: $("#upscaleMethod")?.value,
     gpuAcceleration: $("#gpuToggle")?.checked,
     activeEncoder: $("#activeEncoder")?.textContent,
-    addCaptions: $("#subtitleBurnToggle")?.checked ?? $("#autoCaption").checked,
+    smartCrop: $("#smartCropToggle")?.checked ?? true,
+    dynamicZoom: $("#dynamicZoomToggle")?.checked ?? false,
+    addCaptions: $("#pipelineCaption")?.checked ?? $("#subtitleBurnToggle")?.checked ?? $("#autoCaption").checked,
     autoCut: $("#autoCut").checked,
-    addHook: $("#hookOpeningToggle")?.checked ?? $("#autoHook").checked,
+    addHook: $("#pipelineHook")?.checked ?? $("#hookOpeningToggle")?.checked ?? $("#autoHook").checked,
+    addTtsHook: $("#ttsHookToggle")?.checked ?? false,
     hookDuration: $("#hookDuration")?.value,
-    faceTrack: $("#faceTrack").checked,
-    addWatermark: $("#watermarkInOutput")?.checked ?? $("#watermarkToggle").checked,
+    faceTrack: $("#pipelineFaceTrack")?.checked ?? $("#faceTrack").checked,
+    audioEnhance: $("#audioEnhanceToggle")?.checked ?? false,
+    colorEnhance: $("#colorEnhanceToggle")?.checked ?? false,
+    creditText: $("#creditTextToggle")?.checked ?? false,
+    logoOverlay: $("#logoOverlayToggle")?.checked ?? false,
+    exportThumbnailPreview: $("#thumbnailPreviewToggle")?.checked ?? true,
+    addWatermark: $("#pipelineWatermark")?.checked ?? $("#watermarkInOutput")?.checked ?? $("#watermarkToggle").checked,
     watermarkText: $("#watermarkText")?.value,
     watermarkOpacity: $("#watermarkOpacity")?.value,
     watermarkPosition: $("#watermarkPosition")?.value,
@@ -228,6 +252,68 @@ function cookieAgeText(value) {
   return `${days} hari`;
 }
 
+function formatDuration(seconds) {
+  const value = Math.max(0, Math.round(Number(seconds || 0)));
+  const minutes = Math.floor(value / 60);
+  const rest = value % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+}
+
+function activeEnhancements() {
+  return enhancementControls.map(([id, label]) => ({
+    id,
+    label,
+    enabled: Boolean($(`#${id}`)?.checked)
+  }));
+}
+
+function estimateRenderSeconds() {
+  const clips = Math.max(1, selectedMoments().length || Number($("#clipCount")?.value || 1));
+  const avgDuration = selectedMoments().length
+    ? selectedMoments().reduce((total, item) => total + Number(item.durationSeconds || 35), 0) / selectedMoments().length
+    : 40;
+  let multiplier = 1.2;
+  if ($("#pipelineFaceTrack")?.checked) multiplier += 0.65;
+  if ($("#dynamicZoomToggle")?.checked) multiplier += 0.2;
+  if ($("#pipelineCaption")?.checked) multiplier += 0.35;
+  if ($("#audioEnhanceToggle")?.checked) multiplier += 0.15;
+  if ($("#colorEnhanceToggle")?.checked) multiplier += 0.15;
+  if ($("#pipelineHook")?.checked) multiplier += 0.1;
+  return Math.ceil(clips * avgDuration * multiplier);
+}
+
+function renderPipelinePreview() {
+  const summary = $("#pipelineSummary");
+  if (!summary) return;
+  const items = activeEnhancements();
+  const used = items.filter((item) => item.enabled);
+  const skipped = items.filter((item) => !item.enabled);
+  const output = [
+    $("#formatProfile")?.value || "9:16 YouTube Shorts",
+    $("#resolutionProfile")?.value || "1080p",
+    $("#gpuToggle")?.checked ? "GPU auto" : "CPU"
+  ].join(" · ");
+  summary.innerHTML = `
+    <div><span>Used</span><strong>${used.length ? used.map((item) => item.label).join(", ") : "-"}</strong></div>
+    <div><span>Skipped</span><strong>${skipped.length ? skipped.map((item) => item.label).join(", ") : "-"}</strong></div>
+    <div><span>Output</span><strong>${output}</strong></div>
+  `;
+  setText("#pipelineEstimate", `Estimasi: ${formatDuration(estimateRenderSeconds())}`);
+}
+
+function updateRenderStats(event = {}) {
+  if (!state.renderStartedAt) state.renderStartedAt = Date.now();
+  const elapsed = (Date.now() - state.renderStartedAt) / 1000;
+  const percent = Number(event.progress || state.progress || 0);
+  const eta = percent > 2 ? elapsed * (100 - percent) / percent : null;
+  setText("#renderClipStat", event.clipIndex && event.totalClips ? `${event.clipIndex}/${event.totalClips}` : "-");
+  setText("#renderStageStat", event.stage || event.message || "Processing");
+  setText("#renderElapsedStat", formatDuration(elapsed));
+  setText("#renderEtaStat", eta === null ? "-" : formatDuration(eta));
+  setText("#renderFpsStat", event.fps ? String(event.fps) : "-");
+  setText("#renderSpeedStat", event.speed ? String(event.speed) : "-");
+}
+
 function normalizeCookiesInfo(config = {}) {
   const path = config.cookies_path || config.cookiesPath || config.cookies?.path || "";
   if (!path) return null;
@@ -286,6 +372,9 @@ function renderRuntimeList(deps = state.dependencies) {
     ["FFmpeg", deps?.ffmpeg?.ok ? "Ready" : "Belum dicek", deps?.ffmpeg?.ok],
     ["FFprobe", deps?.ffprobe?.ok ? "Ready" : "Belum dicek", deps?.ffprobe?.ok],
     ["OpenAI SDK", deps?.openai?.ok ? "Ready" : "Opsional", deps?.openai?.ok],
+    ["OpenCV face tracking", deps?.opencv?.ok ? deps.opencv.version : "Fallback crop", deps?.opencv?.ok],
+    ["MediaPipe", deps?.mediapipe?.ok ? deps.mediapipe.version : "Opsional", deps?.mediapipe?.ok],
+    ["GPU encoder", deps?.encoders?.available?.length ? deps.encoders.available.join(", ") : "CPU fallback", deps?.encoders?.available?.some((item) => item !== "libx264")],
     ["Local AI Upscaler", deps?.upscaler?.ok ? "Ready" : "Opsional", deps?.upscaler?.ok]
   ];
   list.innerHTML = items
@@ -474,6 +563,7 @@ async function findMoments() {
   drawPreview();
   $("#jobBadge").textContent = "Ready";
   renderMoments();
+  renderPipelinePreview();
   setView("moments");
   toast("Moment nyata siap dipilih");
 }
@@ -488,6 +578,9 @@ async function startProcessing() {
   if (window.cliper) {
     clearInterval(state.processingTimer);
     state.progress = 0;
+    state.renderStartedAt = Date.now();
+    updateRenderStats({ progress: 0, stage: "Starting", clipIndex: 1, totalClips: clips.length });
+    renderPipelinePreview();
     renderSteps();
     $("#jobBadge").textContent = "Rendering";
     pushLog(`[render] mulai render nyata ${clips.length} clip`);
@@ -538,6 +631,18 @@ function buildConfig() {
     subtitleBurnToggle: fieldValue("subtitleBurnToggle", true),
     hookOpeningToggle: fieldValue("hookOpeningToggle", true),
     hookDuration: fieldValue("hookDuration", "3 seconds"),
+    smartCropToggle: fieldValue("smartCropToggle", true),
+    dynamicZoomToggle: fieldValue("dynamicZoomToggle", true),
+    pipelineFaceTrack: fieldValue("pipelineFaceTrack", true),
+    pipelineCaption: fieldValue("pipelineCaption", true),
+    pipelineHook: fieldValue("pipelineHook", true),
+    ttsHookToggle: fieldValue("ttsHookToggle", false),
+    audioEnhanceToggle: fieldValue("audioEnhanceToggle", true),
+    colorEnhanceToggle: fieldValue("colorEnhanceToggle", true),
+    creditTextToggle: fieldValue("creditTextToggle", false),
+    logoOverlayToggle: fieldValue("logoOverlayToggle", false),
+    pipelineWatermark: fieldValue("pipelineWatermark", false),
+    thumbnailPreviewToggle: fieldValue("thumbnailPreviewToggle", true),
     watermarkEnabled: fieldValue("watermarkEnabled", false),
     watermarkInOutput: fieldValue("watermarkInOutput", false),
     watermarkText: fieldValue("watermarkText"),
@@ -571,6 +676,18 @@ function applyConfig(config = {}) {
   setValue("#subtitleBurnToggle", config.subtitleBurnToggle ?? true);
   setValue("#hookOpeningToggle", config.hookOpeningToggle ?? true);
   setValue("#hookDuration", config.hookDuration || "3 seconds");
+  setValue("#smartCropToggle", config.smartCropToggle ?? true);
+  setValue("#dynamicZoomToggle", config.dynamicZoomToggle ?? true);
+  setValue("#pipelineFaceTrack", config.pipelineFaceTrack ?? true);
+  setValue("#pipelineCaption", config.pipelineCaption ?? true);
+  setValue("#pipelineHook", config.pipelineHook ?? true);
+  setValue("#ttsHookToggle", config.ttsHookToggle ?? false);
+  setValue("#audioEnhanceToggle", config.audioEnhanceToggle ?? true);
+  setValue("#colorEnhanceToggle", config.colorEnhanceToggle ?? true);
+  setValue("#creditTextToggle", config.creditTextToggle ?? false);
+  setValue("#logoOverlayToggle", config.logoOverlayToggle ?? false);
+  setValue("#pipelineWatermark", config.pipelineWatermark ?? false);
+  setValue("#thumbnailPreviewToggle", config.thumbnailPreviewToggle ?? true);
   setValue("#watermarkEnabled", config.watermarkEnabled ?? false);
   setValue("#watermarkInOutput", config.watermarkInOutput ?? false);
   setValue("#watermarkText", config.watermarkText || "");
@@ -732,8 +849,32 @@ function bindEvents() {
   });
 
   $("#clipCount").addEventListener("input", updateCounters);
+  $("#clipCount").addEventListener("input", renderPipelinePreview);
   $("#durationTarget").addEventListener("change", updateCounters);
+  $("#durationTarget").addEventListener("change", renderPipelinePreview);
   $("#captionStyle").addEventListener("change", updateCounters);
+  enhancementControls.forEach(([id]) => {
+    const node = $(`#${id}`);
+    if (node) node.addEventListener("change", renderPipelinePreview);
+  });
+  [
+    ["autoCaption", "pipelineCaption"],
+    ["autoHook", "pipelineHook"],
+    ["faceTrack", "pipelineFaceTrack"],
+    ["watermarkToggle", "pipelineWatermark"],
+    ["subtitleBurnToggle", "pipelineCaption"],
+    ["hookOpeningToggle", "pipelineHook"],
+    ["watermarkInOutput", "pipelineWatermark"]
+  ].forEach(([sourceId, targetId]) => {
+    const source = $(`#${sourceId}`);
+    const target = $(`#${targetId}`);
+    if (source && target) {
+      source.addEventListener("change", () => {
+        target.checked = source.checked;
+        renderPipelinePreview();
+      });
+    }
+  });
 
   $("#chooseCookieFile").addEventListener("click", async () => {
     setSettingsTab("cookies");
@@ -878,6 +1019,7 @@ function bindEvents() {
         state.progress = Number(event.progress || state.progress || 0);
         $("#progressBar").style.width = `${state.progress}%`;
         pushLog(`[${String(Math.round(state.progress)).padStart(3, "0")}%] ${event.message || event.stage}`);
+        updateRenderStats(event);
         renderSteps();
       } else if (event.type === "log") {
         pushLog(event.message);
@@ -898,6 +1040,7 @@ async function init() {
   renderProviders();
   renderCookiesManager();
   renderRuntimeList();
+  renderPipelinePreview();
   updateCounters();
   drawPreview();
 }

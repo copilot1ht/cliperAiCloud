@@ -186,6 +186,30 @@
               <button class="primary-action compact-action" id="processSelected">Render pilihan</button>
             </div>
           </div>
+          <section class="panel pre-export-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Pre export pipeline</p>
+                <h2>Enhancement yang dipakai saat render</h2>
+              </div>
+              <span class="status-pill" id="pipelineEstimate">Estimasi: -</span>
+            </div>
+            <div class="enhancement-grid">
+              <label><input id="smartCropToggle" type="checkbox" checked /> Smart crop</label>
+              <label><input id="dynamicZoomToggle" type="checkbox" checked /> Dynamic zoom</label>
+              <label><input id="pipelineFaceTrack" type="checkbox" checked /> Face tracking</label>
+              <label><input id="pipelineCaption" type="checkbox" checked /> Auto caption</label>
+              <label><input id="pipelineHook" type="checkbox" checked /> Hook intro</label>
+              <label><input id="ttsHookToggle" type="checkbox" /> Hook TTS</label>
+              <label><input id="audioEnhanceToggle" type="checkbox" checked /> Audio enhancement</label>
+              <label><input id="colorEnhanceToggle" type="checkbox" checked /> Color enhancement</label>
+              <label><input id="creditTextToggle" type="checkbox" /> Credit text</label>
+              <label><input id="logoOverlayToggle" type="checkbox" /> Logo overlay</label>
+              <label><input id="pipelineWatermark" type="checkbox" /> Watermark</label>
+              <label><input id="thumbnailPreviewToggle" type="checkbox" checked /> Thumbnail preview</label>
+            </div>
+            <div class="pipeline-summary" id="pipelineSummary"></div>
+          </section>
           <div class="moment-grid" id="momentGrid"></div>
         </section>
 
@@ -200,6 +224,14 @@
               <button class="danger-action" id="cancelJob">Cancel</button>
               </div>
               <div class="meter"><span id="progressBar"></span></div>
+              <div class="render-stats-grid">
+                <article><span>Clip</span><strong id="renderClipStat">-</strong></article>
+                <article><span>Stage</span><strong id="renderStageStat">Idle</strong></article>
+                <article><span>Elapsed</span><strong id="renderElapsedStat">00:00</strong></article>
+                <article><span>ETA</span><strong id="renderEtaStat">-</strong></article>
+                <article><span>FPS</span><strong id="renderFpsStat">-</strong></article>
+                <article><span>Speed</span><strong id="renderSpeedStat">-</strong></article>
+              </div>
               <ol class="step-list" id="stepList"></ol>
             </section>
             <section class="panel logs-panel">

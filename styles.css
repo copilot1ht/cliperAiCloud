@@ -635,6 +635,72 @@ svg {
   gap: 8px;
 }
 
+.pre-export-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.enhancement-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.enhancement-grid label {
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  font-size: 13px;
+  font-weight: 700;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 10px;
+}
+
+.pipeline-summary,
+.render-stats-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.pipeline-summary div,
+.render-stats-grid article {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-height: 64px;
+  padding: 10px 12px;
+}
+
+.pipeline-summary span,
+.pipeline-summary strong,
+.render-stats-grid span,
+.render-stats-grid strong {
+  display: block;
+}
+
+.pipeline-summary span,
+.render-stats-grid span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.pipeline-summary strong,
+.render-stats-grid strong {
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+.render-stats-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
 .render-layout,
 .settings-layout {
   display: grid;
@@ -1019,7 +1085,10 @@ svg {
   }
 
   .moment-grid,
-  .metrics-band {
+  .metrics-band,
+  .enhancement-grid,
+  .pipeline-summary,
+  .render-stats-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -1072,7 +1141,10 @@ svg {
   .switch-grid,
   .moment-grid,
   .metrics-band,
-  .cookie-info-grid {
+  .cookie-info-grid,
+  .enhancement-grid,
+  .pipeline-summary,
+  .render-stats-grid {
     grid-template-columns: 1fr;
   }
 

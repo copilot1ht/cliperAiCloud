@@ -37,6 +37,9 @@ def check_dependencies():
         "ffmpeg": {"ok": command_exists("ffmpeg"), "path": shutil.which("ffmpeg")},
         "ffprobe": {"ok": command_exists("ffprobe"), "path": shutil.which("ffprobe")},
         "openai": {"ok": False, "version": None},
+        "opencv": {"ok": False, "version": None},
+        "mediapipe": {"ok": False, "version": None},
+        "encoders": {"ok": False, "available": []},
     }
     try:
         import yt_dlp
@@ -50,7 +53,38 @@ def check_dependencies():
         deps["openai"] = {"ok": True, "version": getattr(openai, "__version__", "installed")}
     except Exception as exc:
         deps["openai"]["error"] = str(exc)
+    try:
+        import cv2
+
+        deps["opencv"] = {"ok": True, "version": getattr(cv2, "__version__", "installed")}
+    except Exception as exc:
+        deps["opencv"]["error"] = str(exc)
+    try:
+        import mediapipe as mp
+
+        deps["mediapipe"] = {"ok": True, "version": getattr(mp, "__version__", "installed")}
+    except Exception as exc:
+        deps["mediapipe"]["error"] = str(exc)
+    if deps["ffmpeg"]["ok"]:
+        deps["encoders"] = {"ok": True, "available": available_h264_encoders()}
     return deps
+
+
+def available_h264_encoders():
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=12,
+        )
+        text = result.stdout.lower()
+    except Exception:
+        return []
+    return [encoder for encoder in ["h264_amf", "h264_nvenc", "h264_qsv", "libx264"] if encoder in text]
 
 
 def classify_download_error(exc):
@@ -534,12 +568,208 @@ def fps_args(payload):
     return []
 
 
+def bool_payload(payload, key, default=False):
+    value = payload.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in {"1", "true", "yes", "on", "checked"}
+    return bool(value)
+
+
+def ffmpeg_filter_path(path):
+    value = str(path).replace("\\", "/").replace(":", "\\:")
+    return value.replace("'", "\\'")
+
+
+def escape_drawtext(value):
+    return clean_text(value).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+
+def hook_seconds(payload):
+    numbers = [int(item) for item in re.findall(r"\d+", str(payload.get("hookDuration") or "3"))]
+    return max(1, min(6, numbers[0] if numbers else 3))
+
+
+def select_encoder(payload):
+    if bool_payload(payload, "gpuAcceleration", True):
+        available = available_h264_encoders()
+        for encoder in ["h264_amf", "h264_nvenc", "h264_qsv"]:
+            if encoder in available:
+                return encoder, "balanced"
+    return "libx264", "veryfast"
+
+
+def detect_face_focus(video_path, start, duration):
+    try:
+        import cv2
+    except Exception:
+        return None
+
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        return None
+    cascade_path = getattr(cv2.data, "haarcascades", "") + "haarcascade_frontalface_default.xml"
+    cascade = cv2.CascadeClassifier(cascade_path)
+    if cascade.empty():
+        capture.release()
+        return None
+
+    centers = []
+    sample_count = 12
+    for index in range(sample_count):
+        position = (float(start) + (float(duration) * (index + 0.5) / sample_count)) * 1000
+        capture.set(cv2.CAP_PROP_POS_MSEC, position)
+        ok, frame = capture.read()
+        if not ok or frame is None:
+            continue
+        height, width = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = cascade.detectMultiScale(gray, scaleFactor=1.12, minNeighbors=5, minSize=(50, 50))
+        if len(faces) == 0:
+            continue
+        x, y, w, h = max(faces, key=lambda item: item[2] * item[3])
+        centers.append((x + w / 2) / max(width, 1))
+    capture.release()
+    if not centers:
+        return None
+    smoothed = centers[0]
+    for center in centers[1:]:
+        smoothed = smoothed * 0.72 + center * 0.28
+    return max(0.18, min(0.82, smoothed))
+
+
+def build_caption_file(moment, path, payload):
+    text = clean_text(moment.get("transcript") or moment.get("title") or "Caption otomatis")
+    chunks = re.split(r"(?<=[.!?])\s+", text)
+    chunks = [chunk.strip() for chunk in chunks if chunk.strip()] or [text]
+    duration = max(4, float(moment.get("duration") or 20))
+    lines = []
+    index = 1
+    if bool_payload(payload, "addHook", False):
+        hook = make_hook_text(moment)
+        end = min(duration, hook_seconds(payload))
+        lines.append(f"{index}\n{srt_time(0)} --> {srt_time(end)}\n{hook}\n")
+        index += 1
+    start_offset = min(duration - 0.5, hook_seconds(payload) if bool_payload(payload, "addHook", False) else 0)
+    usable = max(1, duration - start_offset)
+    slice_len = usable / len(chunks)
+    for chunk_index, chunk in enumerate(chunks):
+        start = start_offset + chunk_index * slice_len
+        end = min(duration, start_offset + (chunk_index + 1) * slice_len)
+        lines.append(f"{index}\n{srt_time(start)} --> {srt_time(end)}\n{chunk}\n")
+        index += 1
+    Path(path).write_text("\n".join(lines), encoding="utf-8")
+
+
+def make_hook_text(moment):
+    title = clean_text(moment.get("title") or moment.get("titleSuggestion") or "")
+    if title:
+        return title[:64]
+    return "Bagian ini penting untuk kamu lihat"
+
+
+def build_video_filter(payload, srt_path=None, focus_x=None, moment=None):
+    dims = output_dimensions(payload.get("formatProfile"), payload.get("resolutionProfile"))
+    filters = []
+    if dims is not None and bool_payload(payload, "smartCrop", True):
+        width, height = dims
+        scaler = "lanczos" if "lanczos" in str(payload.get("upscaleMethod") or "").lower() else "bicubic"
+        x_expr = "(iw-ow)/2"
+        if focus_x is not None:
+            x_expr = f"min(max((iw-ow)*{focus_x:.3f},0),iw-ow)"
+        filters.append(f"scale={width}:{height}:force_original_aspect_ratio=increase:flags={scaler}")
+        filters.append(f"crop={width}:{height}:{x_expr}:(ih-oh)/2")
+        if bool_payload(payload, "dynamicZoom", False):
+            filters.append(
+                f"crop=w=iw/(1+0.045*sin(2*PI*t/5.5)):h=ih/(1+0.045*sin(2*PI*t/5.5)):x=(iw-ow)/2:y=(ih-oh)/2"
+            )
+            filters.append(f"scale={width}:{height}:flags={scaler}")
+    elif dims is not None:
+        width, height = dims
+        filters.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=bicubic")
+        filters.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2")
+
+    if bool_payload(payload, "colorEnhance", False):
+        filters.append("eq=contrast=1.04:brightness=0.01:saturation=1.06")
+        filters.append("unsharp=5:5:0.35")
+
+    if srt_path and (bool_payload(payload, "addCaptions", False) or bool_payload(payload, "addHook", False)):
+        style = "Fontsize=15,PrimaryColour=&H00FFFFFF&,OutlineColour=&H00000000&,BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=110"
+        filters.append(f"subtitles=filename='{ffmpeg_filter_path(srt_path)}':force_style='{style}'")
+
+    if bool_payload(payload, "addWatermark", False) and payload.get("watermarkText"):
+        text = escape_drawtext(payload.get("watermarkText"))
+        opacity = max(0.1, min(1.0, float(payload.get("watermarkOpacity") or 68) / 100))
+        filters.append(f"drawtext=text='{text}':x=w-tw-36:y=36:fontsize=26:fontcolor=white@{opacity:.2f}:box=1:boxcolor=black@0.28:boxborderw=12")
+
+    if bool_payload(payload, "creditText", False):
+        credit = escape_drawtext("Source: YouTube")
+        filters.append(f"drawtext=text='{credit}':x=32:y=h-th-34:fontsize=18:fontcolor=white@0.72:box=1:boxcolor=black@0.20:boxborderw=8")
+
+    filters.append("setsar=1")
+    return ",".join(filters)
+
+
+def audio_filter(payload):
+    if bool_payload(payload, "audioEnhance", False):
+        return "loudnorm=I=-16:TP=-1.5:LRA=11,acompressor=threshold=-18dB:ratio=2.2:attack=8:release=90"
+    return None
+
+
+def parse_ffmpeg_time(value):
+    try:
+        hours, minutes, seconds = value.split(":")
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    except Exception:
+        return 0.0
+
+
 def run_command(cmd, stage):
     emit("log", message=" ".join(cmd))
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
     for line in process.stdout:
         line = line.strip()
         if line:
+            emit("log", stage=stage, message=line[-500:])
+    code = process.wait()
+    if code != 0:
+        raise RuntimeError(f"Command gagal ({code}): {' '.join(cmd[:3])}")
+
+
+def run_ffmpeg_progress(cmd, stage, clip_index, total_clips, duration, progress_start, progress_end):
+    emit("log", message=" ".join(cmd))
+    started = time.time()
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+    last_emit = 0
+    for line in process.stdout:
+        line = line.strip()
+        if not line:
+            continue
+        if "time=" in line:
+            current_match = re.search(r"time=(\d+:\d+:\d+(?:\.\d+)?)", line)
+            fps_match = re.search(r"fps=\s*([0-9.]+)", line)
+            speed_match = re.search(r"speed=\s*([0-9.]+x)", line)
+            current = parse_ffmpeg_time(current_match.group(1)) if current_match else 0
+            ratio = max(0, min(1, current / max(float(duration), 1)))
+            now = time.time()
+            if now - last_emit > 0.8 or ratio >= 0.99:
+                elapsed = now - started
+                eta = (elapsed / ratio - elapsed) if ratio > 0.03 else None
+                emit(
+                    "progress",
+                    stage=stage,
+                    progress=round(progress_start + (progress_end - progress_start) * ratio, 2),
+                    message=f"Clip {clip_index}/{total_clips} {stage}",
+                    clipIndex=clip_index,
+                    totalClips=total_clips,
+                    elapsed=round(elapsed, 1),
+                    eta=round(eta, 1) if eta is not None else None,
+                    fps=fps_match.group(1) if fps_match else None,
+                    speed=speed_match.group(1) if speed_match else None,
+                )
+                last_emit = now
+        elif "error" in line.lower():
             emit("log", stage=stage, message=line[-500:])
     code = process.wait()
     if code != 0:
@@ -609,16 +839,46 @@ def render(payload):
         raise RuntimeError("File video sumber tidak ditemukan setelah download.")
 
     outputs = []
+    encoder, encoder_preset = select_encoder(payload)
+    emit("log", message=f"Active encoder: {encoder}")
     for index, moment in enumerate(moments, start=1):
         start = float(moment.get("start") or 0)
         duration = max(5, float(moment.get("duration") or (float(moment.get("end") or start + 30) - start)))
         clip_name = f"{index:02d}-{safe_filename(moment.get('title') or moment.get('titleSuggestion'))}"
         clip_path = session_dir / f"{clip_name}.mp4"
         srt_path = internal_dir / f"{clip_name}.srt"
-        write_srt(moment, srt_path)
-        emit("progress", stage="render", progress=round(15 + (index - 1) / len(moments) * 78), message=f"Render clip {index}/{len(moments)}")
+        build_caption_file(moment, srt_path, payload)
+        clip_start_progress = 15 + (index - 1) / len(moments) * 78
+        clip_end_progress = 15 + index / len(moments) * 78
+        emit(
+            "progress",
+            stage="prepare",
+            progress=round(clip_start_progress, 2),
+            message=f"Prepare clip {index}/{len(moments)}",
+            clipIndex=index,
+            totalClips=len(moments),
+        )
 
-        vf = build_video_filter(payload)
+        focus_x = None
+        if bool_payload(payload, "faceTrack", False):
+            emit(
+                "progress",
+                stage="face tracking",
+                progress=round(clip_start_progress + 1, 2),
+                message=f"Face tracking clip {index}/{len(moments)}",
+                clipIndex=index,
+                totalClips=len(moments),
+            )
+            focus_x = detect_face_focus(source, start, duration)
+            if focus_x is None:
+                emit("log", stage="face tracking", message="Face tracking fallback: wajah tidak terdeteksi/OpenCV belum tersedia, memakai smart center crop.")
+            else:
+                emit("log", stage="face tracking", message=f"Face focus computed: x={focus_x:.3f}")
+        else:
+            emit("log", stage="face tracking", message=f"[{index}/{len(moments)}] Face tracking skipped (disabled)")
+
+        vf = build_video_filter(payload, srt_path=srt_path, focus_x=focus_x, moment=moment)
+        af = audio_filter(payload)
         crf = str(payload.get("crfProfile") or "23")
         cmd = [
             "ffmpeg",
@@ -631,22 +891,35 @@ def render(payload):
             str(source),
             "-vf",
             vf,
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            crf,
-            *fps_args(payload),
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            str(clip_path),
         ]
-        run_command(cmd, "render")
+        if af:
+            cmd.extend(["-af", af])
+        cmd.extend(["-c:v", encoder])
+        if encoder == "libx264":
+            cmd.extend(["-preset", encoder_preset, "-crf", crf])
+        else:
+            cmd.extend(["-quality", "balanced", "-b:v", "8M"])
+        cmd.extend([*fps_args(payload), "-c:a", "aac", "-b:a", "160k", str(clip_path)])
+        try:
+            run_ffmpeg_progress(cmd, "encode", index, len(moments), duration, clip_start_progress + 4, clip_end_progress)
+        except RuntimeError as exc:
+            if encoder != "libx264":
+                emit("log", stage="encode", message=f"GPU encoder gagal: {exc}. Retry otomatis memakai CPU libx264.")
+                encoder = "libx264"
+                retry_cmd = list(cmd)
+                video_codec_index = retry_cmd.index("-c:v") + 1
+                retry_cmd[video_codec_index] = "libx264"
+                if "-quality" in retry_cmd:
+                    quality_index = retry_cmd.index("-quality")
+                    del retry_cmd[quality_index : quality_index + 4]
+                insert_at = retry_cmd.index("-c:a")
+                retry_cmd[insert_at:insert_at] = ["-preset", "veryfast", "-crf", crf]
+                run_ffmpeg_progress(retry_cmd, "encode cpu fallback", index, len(moments), duration, clip_start_progress + 4, clip_end_progress)
+            else:
+                raise
         metadata_path = internal_dir / f"{clip_name}.json"
         metadata_path.write_text(json.dumps(moment, ensure_ascii=False, indent=2), encoding="utf-8")
+        size_bytes = clip_path.stat().st_size if clip_path.exists() else 0
         outputs.append(
             {
                 "video": str(clip_path),
@@ -654,6 +927,17 @@ def render(payload):
                 "time": moment.get("time"),
                 "duration": duration,
                 "resolution": payload.get("resolutionProfile") or "1080p",
+                "sizeBytes": size_bytes,
+                "enhancements": {
+                    "smartCrop": bool_payload(payload, "smartCrop", True),
+                    "dynamicZoom": bool_payload(payload, "dynamicZoom", False),
+                    "faceTrack": bool_payload(payload, "faceTrack", False),
+                    "captions": bool_payload(payload, "addCaptions", False),
+                    "hook": bool_payload(payload, "addHook", False),
+                    "audioEnhance": bool_payload(payload, "audioEnhance", False),
+                    "colorEnhance": bool_payload(payload, "colorEnhance", False),
+                    "watermark": bool_payload(payload, "addWatermark", False),
+                },
             }
         )
 
@@ -661,6 +945,13 @@ def render(payload):
         "source": url,
         "title": info.get("title"),
         "used_cookies": used_cookies,
+        "encoder": encoder,
+        "settings": {
+            "format": payload.get("formatProfile"),
+            "resolution": payload.get("resolutionProfile"),
+            "fps": payload.get("fpsProfile"),
+            "crf": payload.get("crfProfile"),
+        },
         "created_at": datetime.now().isoformat(),
         "outputs": outputs,
     }
