@@ -2,10 +2,11 @@
   "name": "cliper-youtube-ai-studio",
   "version": "1.0.0",
   "description": "Cliper YouTube AI Studio desktop prototype",
+  "author": "Cliper AI Studio",
   "main": "electron/main.js",
   "private": true,
   "scripts": {
-    "start": "electron .",
+    "start": "set ELECTRON_RUN_AS_NODE=& electron .",
     "build": "electron-builder --win portable"
   },
   "build": {

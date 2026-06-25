@@ -12,6 +12,9 @@ const state = {
   renderStartedAt: null,
   lastAnalysis: null,
   previewImageUrl: "",
+  apiLastTestedAt: "",
+  apiLastLatencyMs: 0,
+  apiLastResponse: "",
   logLines: [
     "[ready] Menunggu link YouTube"
   ]
@@ -38,12 +41,24 @@ const providerTasks = [
   ["Title maker", "Title, hashtag, description"]
 ];
 
+const aiProviderDefaults = {
+  ytclip: { label: "YTClip AI", baseUrl: "https://ai-api.ytclip.org/v1", model: "ytclip-highlight-v1", requiresKey: true },
+  openai: { label: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-4.1-mini", requiresKey: true },
+  gemini: { label: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-2.5-flash", requiresKey: true },
+  groq: { label: "Groq", baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", requiresKey: true },
+  custom: { label: "Custom / OpenAI Compatible", baseUrl: "", model: "", requiresKey: true },
+  local: { label: "Local Heuristic", baseUrl: "", model: "local-heuristic", requiresKey: false }
+};
+
 const enhancementControls = [
   ["smartCropToggle", "Smart crop"],
   ["dynamicZoomToggle", "Dynamic zoom"],
   ["pipelineFaceTrack", "Face tracking"],
   ["pipelineCaption", "Auto caption"],
+  ["pipelineBurnSubtitle", "Burn subtitle"],
   ["pipelineHook", "Hook intro"],
+  ["autoCut", "Auto cut"],
+  ["metadataToggle", "Judul & hashtag"],
   ["ttsHookToggle", "Hook TTS"],
   ["audioEnhanceToggle", "Audio enhancement"],
   ["colorEnhanceToggle", "Color enhancement"],
@@ -134,6 +149,9 @@ function collectPayload() {
     scoreMode: $("#scoreMode").value,
     cookiesPath: state.cookiesPath,
     outputFolder: $("#outputFolder")?.value || "outputs/clips",
+    projectName: $("#projectName")?.value || "Cliper YouTube AI Studio",
+    ffmpegPath: $("#ffmpegPath")?.value || "",
+    ffprobePath: $("#ffprobePath")?.value || "",
     resolutionProfile: $("#resolutionProfile")?.value,
     crfProfile: $("#crfProfile")?.value,
     fpsProfile: $("#fpsProfile")?.value,
@@ -143,22 +161,25 @@ function collectPayload() {
     activeEncoder: $("#activeEncoder")?.textContent,
     smartCrop: $("#smartCropToggle")?.checked ?? true,
     dynamicZoom: $("#dynamicZoomToggle")?.checked ?? false,
-    addCaptions: $("#pipelineCaption")?.checked ?? $("#subtitleBurnToggle")?.checked ?? $("#autoCaption").checked,
-    autoCut: $("#autoCut").checked,
-    addHook: $("#pipelineHook")?.checked ?? $("#hookOpeningToggle")?.checked ?? $("#autoHook").checked,
+    addCaptions: fieldValue("pipelineCaption", false),
+    burnSubtitle: fieldValue("pipelineBurnSubtitle", false),
+    autoCut: fieldValue("autoCut", false),
+    addHook: fieldValue("pipelineHook", false),
     addTtsHook: $("#ttsHookToggle")?.checked ?? false,
     hookDuration: $("#hookDuration")?.value,
-    faceTrack: $("#pipelineFaceTrack")?.checked ?? $("#faceTrack").checked,
+    faceTrack: fieldValue("pipelineFaceTrack", false),
     audioEnhance: $("#audioEnhanceToggle")?.checked ?? false,
     colorEnhance: $("#colorEnhanceToggle")?.checked ?? false,
     creditText: $("#creditTextToggle")?.checked ?? false,
     logoOverlay: $("#logoOverlayToggle")?.checked ?? false,
     exportThumbnailPreview: $("#thumbnailPreviewToggle")?.checked ?? true,
-    addWatermark: $("#pipelineWatermark")?.checked ?? $("#watermarkInOutput")?.checked ?? $("#watermarkToggle").checked,
+    addWatermark: fieldValue("pipelineWatermark", false),
     watermarkText: $("#watermarkText")?.value,
     watermarkOpacity: $("#watermarkOpacity")?.value,
     watermarkPosition: $("#watermarkPosition")?.value,
-    writeMetadata: $("#metadataToggle").checked,
+    writeMetadata: fieldValue("metadataToggle", false),
+    metadataToggle: fieldValue("metadataToggle", false),
+    providerType: $("#providerType")?.value,
     baseUrl: $("#baseUrl")?.value,
     apiKey: $("#apiKey")?.value,
     highlightModel: $("#highlightModel")?.value,
@@ -327,6 +348,7 @@ function normalizeCookiesInfo(config = {}) {
     lastTest: config.cookies_last_test || meta.lastTest || "",
     status: config.cookies_status || meta.status || "Cookies Loaded",
     testStatus: meta.testStatus || config.cookies_test_status || "Belum dites",
+    testUrl: meta.testUrl || config.cookies_test_url || "",
     validation: meta.validation || null
   };
 }
@@ -348,6 +370,7 @@ function renderCookiesManager() {
   setText("#cookiesLastUsed", hasCookies ? formatDate(info.lastUsed) : "-");
   setText("#cookiesAge", hasCookies ? cookieAgeText(importedAt) : "-");
   setText("#cookiesTestStatus", hasCookies ? (info.testStatus || info.status || "Belum dites") : "Belum dites");
+  setText("#cookiesTestUrl", hasCookies ? (info.testUrl || "-") : "-");
   setText("#cookieState", hasCookies ? info.path : "Belum dipilih");
   setText("#cookiesAgeBadge", stale ? "Cookies mungkin perlu diperbarui." : statusTitle);
 
@@ -393,6 +416,72 @@ function setSettingsTab(tab) {
   $$(".settings-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `settings-${tab}`));
 }
 
+function isValidYoutubeUrl(url) {
+  return /(?:youtube\.com\/watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{11})/.test(String(url).trim());
+}
+
+function isAiEnabled() {
+  const payload = providerPayload();
+  return payload.providerType !== "local" && Boolean(payload.apiKey && payload.baseUrl && payload.model);
+}
+
+let metadataTimer = null;
+let metadataUrl = "";
+
+async function fetchMetadata(url) {
+  if (!window.cliper) {
+    setText("#previewTitle", "Buka .exe untuk metadata nyata");
+    setText("#previewUrl", url || "Masukkan link YouTube");
+    return;
+  }
+  if (!isValidYoutubeUrl(url)) {
+    setText("#previewTitle", "URL tidak valid");
+    setText("#previewUrl", url || "Masukkan link YouTube");
+    return;
+  }
+  metadataUrl = url;
+  pushLog(`[metadata] fetching metadata for ${url}`);
+  setText("#previewTitle", "Memuat metadata...");
+  setText("#previewUrl", url);
+  try {
+    const payload = {
+      ...collectPayload(),
+      useMomentAI: isAiEnabled(),
+      metadataOnly: true,
+      clipCount: 0,
+      durationTarget: "20-35 detik"
+    };
+    const result = await window.cliper.analyze(payload);
+    if (result.type === "error") {
+      setText("#previewTitle", "Metadata gagal");
+      setText("#subtitleMetric", "Metadata error");
+      pushLog(`[metadata] gagal: ${result.message}`);
+      return;
+    }
+    const data = result.result;
+    setText("#previewTitle", data.video?.title || "Tidak ada judul");
+    setText("#previewUrl", data.video?.webpage_url || url);
+    setText("#subtitleMetric", data.video?.subtitle_language || "No subtitle");
+    state.previewImageUrl = data.video?.thumbnail || "";
+    drawPreview();
+    state.lastAnalysis = null;
+    pushLog(`[metadata] berhasil dimuat: ${data.video?.title || url}`);
+  } catch (error) {
+    setText("#previewTitle", "Metadata gagal");
+    setText("#subtitleMetric", "Metadata error");
+    pushLog(`[metadata] error: ${error?.message || error}`);
+  }
+}
+
+function scheduleMetadataFetch() {
+  const url = $("#youtubeUrl").value.trim();
+  if (!url || url === metadataUrl) {
+    return;
+  }
+  clearTimeout(metadataTimer);
+  metadataTimer = setTimeout(() => fetchMetadata(url), 700);
+}
+
 async function markCookiesUsed() {
   if (!state.cookiesInfo) return;
   state.cookiesInfo.lastUsed = new Date().toISOString();
@@ -431,22 +520,193 @@ function renderSessions() {
 }
 
 function renderProviders() {
+  const providerType = $("#providerType")?.value || "local";
+  const provider = aiProviderDefaults[providerType] || aiProviderDefaults.local;
   const baseUrl = $("#baseUrl")?.value?.trim();
   const model = $("#highlightModel")?.value?.trim();
   const hasApiKey = Boolean($("#apiKey")?.value?.trim());
+  const ready = providerType === "local" || Boolean(baseUrl && (!provider.requiresKey || hasApiKey) && model);
   $("#providerList").innerHTML = providerTasks
     .map(
       ([task, note]) => `
         <article class="provider-item">
           <div>
             <strong>${task}</strong>
-            <span>${note}</span>
+            <span>${note} · ${provider.label}</span>
           </div>
-          <em>${baseUrl && hasApiKey ? `${model || "Model belum diisi"}` : "Belum dikonfigurasi"}</em>
+          <em>${ready ? model : "Belum dikonfigurasi"}</em>
         </article>
       `
     )
     .join("");
+}
+
+function providerPayload() {
+  const providerType = $("#providerType")?.value || "local";
+  const modelValue = $("#highlightModel")?.value?.trim();
+  return {
+    providerType,
+    baseUrl: $("#baseUrl")?.value?.trim(),
+    apiKey: $("#apiKey")?.value?.trim(),
+    model: modelValue || (providerType === "local" ? "local-heuristic" : "gpt-4.1-mini"),
+    timeoutMs: 15000
+  };
+}
+
+function maskApiKey(key) {
+  if (!key) return "";
+  if (key.length <= 8) return `${key.slice(0, 4)}...`;
+  return `${key.slice(0, 4)}...${key.slice(-4)}`;
+}
+
+function setProviderStatus(message, ok = false) {
+  setText("#providerStatusText", message);
+  const box = $("#providerStatusBox");
+  if (box) {
+    box.classList.toggle("ok", ok);
+    box.classList.toggle("warning", !ok && message !== "Belum dites");
+  }
+}
+
+function providerErrorMessage(status, payload) {
+  const text = String(status || "Test API gagal");
+  if (/invalid|unauthorized|401|forbidden|api key/i.test(text)) {
+    return `Invalid API key - pastikan key cocok untuk ${aiProviderDefaults[payload.providerType]?.label || payload.providerType}`;
+  }
+  if (/timeout|timed out/i.test(text)) {
+    return "Connection Timeout - cek koneksi atau Base URL";
+  }
+  return text;
+}
+
+function setModelOptions(models = []) {
+  const list = $("#highlightModelOptions");
+  if (!list) return;
+  list.innerHTML = models.map((model) => `<option value="${model}"></option>`).join("");
+}
+
+function applyProviderDefaults(force = false) {
+  const providerType = $("#providerType")?.value || "local";
+  const preset = aiProviderDefaults[providerType] || aiProviderDefaults.local;
+  const base = $("#baseUrl");
+  const key = $("#apiKey");
+  const model = $("#highlightModel");
+  const isKnownDefault = Object.values(aiProviderDefaults).some((item) => item.baseUrl && item.baseUrl === base?.value);
+  if (base && (force || !base.value || isKnownDefault)) {
+    base.value = preset.baseUrl;
+  }
+  if (model && (force || !model.value)) {
+    model.value = preset.model;
+  }
+  if (key) {
+    key.disabled = providerType === "local";
+    key.placeholder = providerType === "local" ? "Local heuristic tidak memakai API key" : "Masukkan API key";
+  }
+  if (base) {
+    base.disabled = providerType === "local";
+  }
+  setProviderStatus(providerType === "local" ? "Local heuristic ready" : "Belum dites", providerType === "local");
+  renderProviders();
+}
+
+async function loadProviderModels(options = {}) {
+  const payload = providerPayload();
+  const preset = aiProviderDefaults[payload.providerType] || aiProviderDefaults.openai;
+  if (payload.providerType === "local") {
+    const models = ["local-heuristic", "local-transcript-score", "local-fast"];
+    setModelOptions(models);
+    $("#highlightModel").value = payload.model || "local-heuristic";
+    setProviderStatus("Local heuristic siap", true);
+    pushLog(`[ai] Local heuristic mode aktif`);
+    renderProviders();
+    if (!options.silent) toast("Local heuristic ready");
+    return { ok: true, providerType: "local", models, suggestedModel: payload.model || "local-heuristic", status: "Local ready" };
+  }
+  if (preset.requiresKey && !payload.apiKey) {
+    setProviderStatus("API key kosong", false);
+    toast("API key belum diisi");
+    return null;
+  }
+  if (!window.cliper?.loadModels) {
+    const fallback = preset.model ? [preset.model] : [];
+    setModelOptions(fallback);
+    if (fallback[0]) $("#highlightModel").value = fallback[0];
+    setProviderStatus("Load Models tersedia di .exe", false);
+    toast("Buka via .exe untuk Load Models");
+    return null;
+  }
+  setProviderStatus("Loading models...", true);
+  const result = await window.cliper.loadModels(payload);
+  if (!result?.ok) {
+    const status = result?.status || "Load Models gagal";
+    setProviderStatus(status, false);
+    pushLog(`[ai] Load Models gagal: provider=${payload.providerType} baseUrl=${payload.baseUrl} model=${payload.model} status=${status}`);
+    toast(status);
+    renderProviders();
+    return result;
+  }
+  const models = Array.isArray(result.models) ? result.models : [];
+  setModelOptions(models);
+  if (result.suggestedModel) {
+    $("#highlightModel").value = result.suggestedModel;
+  }
+  const status = `${result.status || "Connected"} - ${models.length || 0} model`;
+  setProviderStatus(status, true);
+  setText("#apiStatus", "AI connected");
+  pushLog(`[ai] ${preset.label} connected, ${models.length} models loaded, selected=${$("#highlightModel").value || "-"}`);
+  renderProviders();
+  if (!options.silent) toast("Models loaded");
+  return result;
+}
+
+async function testProvider(options = {}) {
+  const payload = providerPayload();
+  const preset = aiProviderDefaults[payload.providerType] || aiProviderDefaults.openai;
+  if (payload.providerType === "local") {
+    setProviderStatus("Local heuristic aktif", true);
+    setText("#apiStatus", "Local heuristic active");
+    pushLog(`[ai] Local heuristic mode selected, no network test required`);
+    if (!options.silent) toast("Local heuristic aktif");
+    return { ok: true, status: "Local heuristic active", response: "OK", usage: {} };
+  }
+  if (preset.requiresKey && !payload.apiKey) {
+    setProviderStatus("API key kosong", false);
+    toast("API key belum diisi");
+    return null;
+  }
+  if (!window.cliper?.testProvider) {
+    setProviderStatus("Test API tersedia di .exe", false);
+    toast("Buka via .exe untuk Test API");
+    return null;
+  }
+  const maskedKey = maskApiKey(payload.apiKey);
+  setProviderStatus("Testing API...", true);
+  await saveConfig({ silent: true });
+  pushLog(`[ai] Test API request sent to ${preset.label}, model=${payload.model}, key=${maskedKey}`);
+  const start = performance.now();
+  const result = await window.cliper.testProvider(payload);
+  const duration = Math.round(performance.now() - start);
+  const response = result?.type === "done" ? result.result : result;
+  if (result?.type === "error" || !response?.ok) {
+    const status = response?.status || response?.message || result?.message || "Test API gagal";
+    const message = providerErrorMessage(status, payload);
+    setProviderStatus(message, false);
+    pushLog(`[ai] Test API failed provider=${payload.providerType} baseUrl=${payload.baseUrl} model=${payload.model} error=${status}`);
+    toast(message);
+    await saveConfig({ silent: true });
+    return response || { ok: false, status };
+  }
+  const responseText = response.response || "OK";
+  const usage = response.usage ? `usage=${JSON.stringify(response.usage)}` : "usage=unknown";
+  setProviderStatus(`Connected ✓ ${payload.providerType}`, true);
+  setText("#apiStatus", `Connected ✓ ${payload.providerType}`);
+  pushLog(`[ai] Test API response received in ${duration}ms, ${usage}`);
+  pushLog(`[ai] provider=${payload.providerType} model=${payload.model} response=${responseText}`);
+  state.apiLastLatencyMs = duration;
+  state.apiLastResponse = responseText;
+  if (!options.silent) toast("Test API sukses");
+  await saveConfig({ silent: true });
+  return { ...response, latencyMs: duration };
 }
 
 function drawPreview() {
@@ -617,44 +877,59 @@ async function startProcessing() {
 
 function buildConfig() {
   const config = {
-    baseUrl: fieldValue("baseUrl", "https://api.openai.com/v1"),
+    providerType: fieldValue("providerType", "local"),
+    baseUrl: fieldValue("baseUrl", ""),
     apiKey: fieldValue("apiKey"),
-    highlightModel: fieldValue("highlightModel", "gpt-4.1-mini"),
+    highlightModel: fieldValue("highlightModel", "local-heuristic"),
+    providerStatus: $("#providerStatusText")?.textContent || "Local heuristic ready",
+    apiStatus: $("#apiStatus")?.textContent || "Local heuristic active",
+    apiLastTestedAt: state.apiLastTestedAt || "",
+    apiLastLatencyMs: state.apiLastLatencyMs || 0,
+    apiLastResponse: state.apiLastResponse || "",
     outputFolder: fieldValue("outputFolder", "outputs/clips"),
+    projectName: fieldValue("projectName", "Cliper YouTube AI Studio"),
+    ffmpegPath: fieldValue("ffmpegPath", ""),
+    ffprobePath: fieldValue("ffprobePath", ""),
+    overwriteExisting: fieldValue("overwriteExisting", false),
+    autoRename: fieldValue("autoRename", true),
+    createProjectFolder: fieldValue("createProjectFolder", true),
+    deleteTempAfterExport: fieldValue("deleteTempAfterExport", true),
     formatProfile: fieldValue("formatProfile", "9:16 YouTube Shorts"),
     resolutionProfile: fieldValue("resolutionProfile", "1080p"),
-    upscaleToggle: fieldValue("upscaleToggle", true),
+    upscaleToggle: fieldValue("upscaleToggle", false),
     upscaleMethod: fieldValue("upscaleMethod", "FFmpeg Lanczos"),
     crfProfile: fieldValue("crfProfile", "23"),
     fpsProfile: fieldValue("fpsProfile", "Same as source"),
     captionStyle: fieldValue("captionStyle", "Karaoke bold"),
-    subtitleBurnToggle: fieldValue("subtitleBurnToggle", true),
-    hookOpeningToggle: fieldValue("hookOpeningToggle", true),
+    subtitleBurnToggle: fieldValue("subtitleBurnToggle", false),
+    hookOpeningToggle: fieldValue("hookOpeningToggle", false),
     hookDuration: fieldValue("hookDuration", "3 seconds"),
     smartCropToggle: fieldValue("smartCropToggle", true),
-    dynamicZoomToggle: fieldValue("dynamicZoomToggle", true),
-    pipelineFaceTrack: fieldValue("pipelineFaceTrack", true),
-    pipelineCaption: fieldValue("pipelineCaption", true),
-    pipelineHook: fieldValue("pipelineHook", true),
+    dynamicZoomToggle: fieldValue("dynamicZoomToggle", false),
+    pipelineFaceTrack: fieldValue("pipelineFaceTrack", false),
+    pipelineCaption: fieldValue("pipelineCaption", false),
+    pipelineBurnSubtitle: fieldValue("pipelineBurnSubtitle", false),
+    pipelineHook: fieldValue("pipelineHook", false),
     ttsHookToggle: fieldValue("ttsHookToggle", false),
-    audioEnhanceToggle: fieldValue("audioEnhanceToggle", true),
-    colorEnhanceToggle: fieldValue("colorEnhanceToggle", true),
+    audioEnhanceToggle: fieldValue("audioEnhanceToggle", false),
+    colorEnhanceToggle: fieldValue("colorEnhanceToggle", false),
     creditTextToggle: fieldValue("creditTextToggle", false),
     logoOverlayToggle: fieldValue("logoOverlayToggle", false),
     pipelineWatermark: fieldValue("pipelineWatermark", false),
-    thumbnailPreviewToggle: fieldValue("thumbnailPreviewToggle", true),
+    thumbnailPreviewToggle: fieldValue("thumbnailPreviewToggle", false),
     watermarkEnabled: fieldValue("watermarkEnabled", false),
     watermarkInOutput: fieldValue("watermarkInOutput", false),
     watermarkText: fieldValue("watermarkText"),
     watermarkOpacity: fieldValue("watermarkOpacity", "68"),
     watermarkPosition: fieldValue("watermarkPosition", "Top right"),
-    gpuToggle: fieldValue("gpuToggle", true),
+    gpuToggle: fieldValue("gpuToggle", false),
     cookies_path: state.cookiesPath || "",
     cookies_last_import: state.cookiesInfo?.importedAt || "",
     cookies_last_test: state.cookiesInfo?.lastTest || "",
     cookies_last_used: state.cookiesInfo?.lastUsed || "",
     cookies_status: state.cookiesInfo?.status || "",
     cookies_test_status: state.cookiesInfo?.testStatus || "",
+    cookies_test_url: state.cookiesInfo?.testUrl || "",
     cookies_meta: state.cookiesInfo
   };
   return config;
@@ -662,41 +937,54 @@ function buildConfig() {
 
 function applyConfig(config = {}) {
   state.config = config;
-  setValue("#baseUrl", config.baseUrl || "https://api.openai.com/v1");
+  setValue("#providerType", config.providerType || "local");
+  setValue("#baseUrl", config.baseUrl || "");
   setValue("#apiKey", config.apiKey || "");
-  setValue("#highlightModel", config.highlightModel || "gpt-4.1-mini");
+  setValue("#highlightModel", config.highlightModel || "local-heuristic");
   setValue("#outputFolder", config.outputFolder || "outputs/clips");
+  setValue("#projectName", config.projectName || "Cliper YouTube AI Studio");
+  setValue("#ffmpegPath", config.ffmpegPath || "");
+  setValue("#ffprobePath", config.ffprobePath || "");
   setValue("#formatProfile", config.formatProfile || "9:16 YouTube Shorts");
+  state.apiLastTestedAt = config.apiLastTestedAt || "";
+  state.apiLastLatencyMs = config.apiLastLatencyMs || 0;
+  state.apiLastResponse = config.apiLastResponse || "";
   setValue("#resolutionProfile", config.resolutionProfile || "1080p");
   setValue("#upscaleToggle", config.upscaleToggle ?? true);
   setValue("#upscaleMethod", config.upscaleMethod || "FFmpeg Lanczos");
   setValue("#crfProfile", config.crfProfile || "23");
   setValue("#fpsProfile", config.fpsProfile || "Same as source");
   setValue("#captionStyle", config.captionStyle || "Karaoke bold");
-  setValue("#subtitleBurnToggle", config.subtitleBurnToggle ?? true);
-  setValue("#hookOpeningToggle", config.hookOpeningToggle ?? true);
+  setValue("#subtitleBurnToggle", config.subtitleBurnToggle ?? false);
+  setValue("#hookOpeningToggle", config.hookOpeningToggle ?? false);
   setValue("#hookDuration", config.hookDuration || "3 seconds");
   setValue("#smartCropToggle", config.smartCropToggle ?? true);
-  setValue("#dynamicZoomToggle", config.dynamicZoomToggle ?? true);
-  setValue("#pipelineFaceTrack", config.pipelineFaceTrack ?? true);
-  setValue("#pipelineCaption", config.pipelineCaption ?? true);
-  setValue("#pipelineHook", config.pipelineHook ?? true);
+  setValue("#dynamicZoomToggle", config.dynamicZoomToggle ?? false);
+  setValue("#pipelineFaceTrack", config.pipelineFaceTrack ?? false);
+  setValue("#pipelineCaption", config.pipelineCaption ?? false);
+  setValue("#pipelineBurnSubtitle", config.pipelineBurnSubtitle ?? false);
+  setValue("#pipelineHook", config.pipelineHook ?? false);
   setValue("#ttsHookToggle", config.ttsHookToggle ?? false);
-  setValue("#audioEnhanceToggle", config.audioEnhanceToggle ?? true);
-  setValue("#colorEnhanceToggle", config.colorEnhanceToggle ?? true);
+  setValue("#audioEnhanceToggle", config.audioEnhanceToggle ?? false);
+  setValue("#colorEnhanceToggle", config.colorEnhanceToggle ?? false);
   setValue("#creditTextToggle", config.creditTextToggle ?? false);
   setValue("#logoOverlayToggle", config.logoOverlayToggle ?? false);
   setValue("#pipelineWatermark", config.pipelineWatermark ?? false);
-  setValue("#thumbnailPreviewToggle", config.thumbnailPreviewToggle ?? true);
+  setValue("#thumbnailPreviewToggle", config.thumbnailPreviewToggle ?? false);
   setValue("#watermarkEnabled", config.watermarkEnabled ?? false);
   setValue("#watermarkInOutput", config.watermarkInOutput ?? false);
   setValue("#watermarkText", config.watermarkText || "");
   setValue("#watermarkOpacity", config.watermarkOpacity || "68");
   setValue("#watermarkPosition", config.watermarkPosition || "Top right");
-  setValue("#gpuToggle", config.gpuToggle ?? true);
+  setValue("#gpuToggle", config.gpuToggle ?? false);
+  setValue("#overwriteExisting", config.overwriteExisting ?? false);
+  setValue("#autoRename", config.autoRename ?? true);
+  setValue("#createProjectFolder", config.createProjectFolder ?? true);
+  setValue("#deleteTempAfterExport", config.deleteTempAfterExport ?? true);
   state.cookiesInfo = normalizeCookiesInfo(config);
   state.cookiesPath = state.cookiesInfo?.path || "";
-  setText("#apiStatus", config.apiKey ? "API tersimpan" : "API belum diset");
+  setText("#apiStatus", config.providerType === "local" ? "Local heuristic active" : config.apiKey ? "API tersimpan" : "API belum diset");
+  applyProviderDefaults(false);
   renderProviders();
   renderCookiesManager();
 }
@@ -716,19 +1004,32 @@ async function saveConfig(options = {}) {
   renderProviders();
   renderCookiesManager();
   if (!options.silent) toast("Setting disimpan");
+  if (state.config.providerType === "local") {
+    setText("#apiStatus", "Local heuristic active");
+  }
 }
 
 async function loadConfig() {
   let config = {};
   try {
     config = JSON.parse(localStorage.getItem("cliper-config") || "{}");
-  } catch {
+  } catch (error) {
     localStorage.removeItem("cliper-config");
+    pushLog(`[config] localStorage config rusak, dibersihkan: ${error.message}`);
   }
   if (window.cliper?.getConfig) {
     try {
-      config = { ...config, ...(await window.cliper.getConfig()) };
+      const fileConfig = await window.cliper.getConfig();
+      if (typeof fileConfig === "object" && fileConfig !== null) {
+        config = { ...config, ...fileConfig };
+      }
     } catch (error) {
+      try {
+        const brokenPath = await window.cliper.getConfigPath?.();
+        if (brokenPath) {
+          await window.cliper.saveConfig({ ...config, _backupBrokenConfig: true });
+        }
+      } catch {}
       pushLog(`[config] gagal membaca config.json: ${error.message}`);
     }
   }
@@ -799,24 +1100,42 @@ async function testCookies() {
     setSettingsTab("cookies");
     return;
   }
+  const youtubeUrl = $("#youtubeUrl")?.value.trim();
+  if (!youtubeUrl) {
+    toast("Masukkan URL YouTube untuk test cookies.");
+    setView("studio");
+    return;
+  }
   if (!window.cliper?.testCookies) {
     toast("Test cookies tersedia di .exe");
     return;
   }
   toast("Testing cookies...");
   setText("#cookiesTestStatus", "Testing cookies...");
-  const result = await window.cliper.testCookies({ cookiesPath: state.cookiesPath, url: $("#youtubeUrl")?.value.trim() });
+  const result = await window.cliper.testCookies({ cookiesPath: state.cookiesPath, url: youtubeUrl });
   const data = result.result || {};
   const now = data.testedAt || new Date().toISOString();
   if (result.type === "error" || !data.testOk) {
-    const status = data.status || data.reason || result.message || "Cookies expired";
-    state.cookiesInfo = { ...(state.cookiesInfo || {}), lastTest: now, testStatus: status, status };
+    const status = data.status || data.reason || result.message || "Cookies invalid";
+    state.cookiesInfo = {
+      ...(state.cookiesInfo || {}),
+      lastTest: now,
+      testStatus: status,
+      status,
+      testUrl: youtubeUrl
+    };
     await saveConfig({ silent: true });
     pushLog(`[cookies] test gagal: ${status}`);
-    toast(status === "Login diperlukan" ? "Login diperlukan" : "Cookies expired");
+    toast(status);
     return;
   }
-  state.cookiesInfo = { ...(state.cookiesInfo || {}), lastTest: now, testStatus: "✓ Cookies valid", status: "Cookies Loaded" };
+  state.cookiesInfo = {
+    ...(state.cookiesInfo || {}),
+    lastTest: now,
+    testStatus: "✓ Cookies valid",
+    status: "Cookies Loaded",
+    testUrl: youtubeUrl
+  };
   await saveConfig({ silent: true });
   pushLog(`[cookies] valid untuk test video: ${data.lastTestVideo || "-"}`);
   toast("✓ Cookies valid");
@@ -846,6 +1165,24 @@ function bindEvents() {
   $("#youtubeUrl").addEventListener("input", (event) => {
     const clean = event.target.value.replace(/^https?:\/\//, "");
     $("#previewUrl").textContent = clean || "Masukkan link YouTube";
+    scheduleMetadataFetch();
+  });
+  $("#pasteUrlButton").addEventListener("click", async () => {
+    let text = "";
+    try {
+      text = window.cliper?.readClipboard ? await window.cliper.readClipboard() : await navigator.clipboard.readText();
+    } catch {
+      toast("Clipboard tidak bisa dibaca");
+      return;
+    }
+    if (!text.trim()) {
+      toast("Clipboard kosong");
+      return;
+    }
+    $("#youtubeUrl").value = text.trim();
+    $("#previewUrl").textContent = text.trim();
+    scheduleMetadataFetch();
+    toast("URL ditempel");
   });
 
   $("#clipCount").addEventListener("input", updateCounters);
@@ -858,11 +1195,7 @@ function bindEvents() {
     if (node) node.addEventListener("change", renderPipelinePreview);
   });
   [
-    ["autoCaption", "pipelineCaption"],
-    ["autoHook", "pipelineHook"],
-    ["faceTrack", "pipelineFaceTrack"],
-    ["watermarkToggle", "pipelineWatermark"],
-    ["subtitleBurnToggle", "pipelineCaption"],
+    ["subtitleBurnToggle", "pipelineBurnSubtitle"],
     ["hookOpeningToggle", "pipelineHook"],
     ["watermarkInOutput", "pipelineWatermark"]
   ].forEach(([sourceId, targetId]) => {
@@ -958,11 +1291,29 @@ function bindEvents() {
     const folder = await window.cliper.selectOutputFolder();
     if (folder) {
       $("#outputFolder").value = folder;
+      await saveConfig({ silent: true });
       toast("Folder output dipilih");
     }
   });
   $("#checkDependencyButton").addEventListener("click", scanSubtitles);
   $("#detectGpuButton").addEventListener("click", detectGpu);
+  $("#providerType").addEventListener("change", () => {
+    applyProviderDefaults(true);
+    renderPipelinePreview();
+  });
+  $("#baseUrl").addEventListener("input", renderProviders);
+  $("#apiKey").addEventListener("input", renderProviders);
+  $("#toggleApiKeyVisibility").addEventListener("click", () => {
+    const input = $("#apiKey");
+    const button = $("#toggleApiKeyVisibility");
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    button.classList.toggle("active", show);
+    button.title = show ? "Sembunyikan API key" : "Tampilkan API key";
+  });
+  $("#highlightModel").addEventListener("input", renderProviders);
+  $("#loadModelsButton").addEventListener("click", () => loadProviderModels());
+  $("#loadModelsButtonSecondary").addEventListener("click", () => loadProviderModels());
   $("#importCookiesButton").addEventListener("click", importCookies);
   $("#replaceCookiesButton").addEventListener("click", importCookies);
   $("#testCookiesButton").addEventListener("click", testCookies);
@@ -999,18 +1350,14 @@ function bindEvents() {
     }
     await validateAndStoreCookies(file.path);
   });
-  $("#testApiButton").addEventListener("click", () => {
-    if (!$("#apiKey").value.trim()) {
-      $("#apiStatus").textContent = "API key kosong";
-      toast("API key belum diisi");
-      renderProviders();
-      return;
+  $("#testApiButton").addEventListener("click", async () => {
+    const result = await testProvider({ silent: false });
+    if (result?.ok) {
+      state.apiLastTestedAt = new Date().toISOString();
+      state.apiLastLatencyMs = result.latencyMs || state.apiLastLatencyMs;
+      state.apiLastResponse = result.response || "";
+      await saveConfig({ silent: true });
     }
-    $("#apiStatus").textContent = "API configured";
-    renderProviders();
-    state.logLines.push(`[api] endpoint ${$("#baseUrl").value} berhasil divalidasi`);
-    renderLogs();
-    toast("API berhasil dites");
   });
 
   if (window.cliper) {

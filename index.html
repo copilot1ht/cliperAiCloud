@@ -82,7 +82,10 @@
 
               <label class="field span-2">
                 <span>YouTube URL</span>
-                <input id="youtubeUrl" type="url" placeholder="https://www.youtube.com/watch?v=..." />
+                <div class="input-action">
+                  <input id="youtubeUrl" type="url" placeholder="https://www.youtube.com/watch?v=..." />
+                  <button class="secondary-action" id="pasteUrlButton" type="button">Paste</button>
+                </div>
               </label>
 
               <div class="form-grid">
@@ -116,15 +119,6 @@
                     <option>Komedi / reaksi</option>
                   </select>
                 </label>
-              </div>
-
-              <div class="switch-grid">
-                <label><input id="autoCaption" type="checkbox" checked /> Auto caption</label>
-                <label><input id="autoCut" type="checkbox" checked /> Auto cut</label>
-                <label><input id="autoHook" type="checkbox" checked /> Hook opening</label>
-                <label><input id="faceTrack" type="checkbox" checked /> Face tracking</label>
-                <label><input id="watermarkToggle" type="checkbox" checked /> Watermark</label>
-                <label><input id="metadataToggle" type="checkbox" checked /> Judul & hashtag</label>
               </div>
 
               <div class="upload-strip">
@@ -199,8 +193,11 @@
               <label><input id="dynamicZoomToggle" type="checkbox" checked /> Dynamic zoom</label>
               <label><input id="pipelineFaceTrack" type="checkbox" checked /> Face tracking</label>
               <label><input id="pipelineCaption" type="checkbox" checked /> Auto caption</label>
+              <label><input id="pipelineBurnSubtitle" type="checkbox" checked /> Burn subtitle</label>
+              <label><input id="autoCut" type="checkbox" checked /> Auto cut</label>
               <label><input id="pipelineHook" type="checkbox" checked /> Hook intro</label>
               <label><input id="ttsHookToggle" type="checkbox" /> Hook TTS</label>
+              <label><input id="metadataToggle" type="checkbox" checked /> Judul & hashtag</label>
               <label><input id="audioEnhanceToggle" type="checkbox" checked /> Audio enhancement</label>
               <label><input id="colorEnhanceToggle" type="checkbox" checked /> Color enhancement</label>
               <label><input id="creditTextToggle" type="checkbox" /> Credit text</label>
@@ -280,18 +277,45 @@
               <p class="eyebrow">Connection</p>
               <h2>Endpoint utama</h2>
               <label class="field">
+                <span>Provider Type</span>
+                <select id="providerType">
+                  <option value="ytclip">YTClip AI</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="gemini">Google Gemini</option>
+                  <option value="groq">Groq</option>
+                  <option value="custom">Custom / OpenAI Compatible</option>
+                  <option value="local">Local Heuristic</option>
+                </select>
+              </label>
+              <label class="field">
                 <span>Base URL</span>
                 <input id="baseUrl" placeholder="https://api.openai.com/v1" />
               </label>
               <label class="field">
                 <span>API key</span>
-                <input id="apiKey" type="password" placeholder="Masukkan API key jika ingin refine AI" />
+                <div class="api-key-field">
+                  <input id="apiKey" type="password" placeholder="Masukkan API key jika ingin refine AI" />
+                  <button class="icon-button api-eye-button" id="toggleApiKeyVisibility" type="button" title="Tampilkan API key">
+                    <svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></svg>
+                  </button>
+                </div>
               </label>
               <label class="field">
                 <span>Model highlight</span>
-                <input id="highlightModel" placeholder="Contoh: gpt-4.1-mini" />
+                <div class="input-action">
+                  <input id="highlightModel" list="highlightModelOptions" placeholder="Klik Load Models untuk auto pilih" />
+                  <button class="secondary-action" id="loadModelsButton" type="button">Load Models</button>
+                </div>
+                <datalist id="highlightModelOptions"></datalist>
               </label>
-              <button class="primary-action" id="testApiButton">Test API</button>
+              <div class="provider-status-box" id="providerStatusBox">
+                <span>Status</span>
+                <strong id="providerStatusText">Belum dites</strong>
+              </div>
+              <div class="action-row">
+                <button class="secondary-action" id="loadModelsButtonSecondary" type="button">Load Models</button>
+                <button class="primary-action" id="testApiButton" type="button">Test API</button>
+              </div>
             </section>
           </div>
 
@@ -324,6 +348,22 @@
                 <input id="outputFolder" placeholder="Pilih folder output" />
               </label>
               <button class="secondary-action" id="chooseOutputFolder">Pilih folder output</button>
+              <label class="field">
+                <span>Nama project</span>
+                <input id="projectName" placeholder="Nama project untuk output session" />
+              </label>
+              <label class="field">
+                <span>FFmpeg path</span>
+                <input id="ffmpegPath" placeholder="C:\\ffmpeg\\bin\\ffmpeg.exe atau PATH" />
+              </label>
+              <label class="field">
+                <span>FFprobe path</span>
+                <input id="ffprobePath" placeholder="C:\\ffmpeg\\bin\\ffprobe.exe atau PATH" />
+              </label>
+              <label class="toggle-row"><input id="overwriteExisting" type="checkbox" /> Overwrite existing files</label>
+              <label class="toggle-row"><input id="autoRename" type="checkbox" checked /> Auto rename duplicates</label>
+              <label class="toggle-row"><input id="createProjectFolder" type="checkbox" checked /> Create project folder</label>
+              <label class="toggle-row"><input id="deleteTempAfterExport" type="checkbox" checked /> Delete temp files after export</label>
               <label class="field">
                 <span>Format</span>
                 <select id="formatProfile">
@@ -444,6 +484,7 @@
                 <div><span>Terakhir dipakai</span><strong id="cookiesLastUsed">-</strong></div>
                 <div><span>Umur cookies</span><strong id="cookiesAge">-</strong></div>
                 <div><span>Status test</span><strong id="cookiesTestStatus">Belum dites</strong></div>
+                <div><span>Test URL</span><strong id="cookiesTestUrl">-</strong></div>
               </div>
               <div class="action-row">
                 <button class="primary-action" id="importCookiesButton">Import Cookies</button>

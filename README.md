@@ -8,6 +8,7 @@ Jalankan:
 
 
 cd "C:\Users\USER\Desktop\Cliper Ai Studio\dist"
+$env:ELECTRON_RUN_AS_NODE=""
 & ".\Cliper YouTube AI Studio.exe"
 
 ```text

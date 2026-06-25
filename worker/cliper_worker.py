@@ -1,4 +1,5 @@
 import argparse
+import importlib
 import json
 import math
 import os
@@ -8,17 +9,56 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+from render_engine import RenderEngine, FilenameSanitizer, default_output_folder, RenderError
+
+stdout_reconfigure = getattr(sys.stdout, "reconfigure", None)
+if callable(stdout_reconfigure):
+    stdout_reconfigure(encoding="utf-8", errors="replace")
+stderr_reconfigure = getattr(sys.stderr, "reconfigure", None)
+if callable(stderr_reconfigure):
+    stderr_reconfigure(encoding="utf-8", errors="replace")
+
+
+def safe_text(value):
+    if value is None:
+        return ""
+    try:
+        return str(value).encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def safe_event(obj):
+    if isinstance(obj, dict):
+        return {safe_text(key): safe_event(value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [safe_event(item) for item in obj]
+    if isinstance(obj, tuple):
+        return [safe_event(item) for item in obj]
+    if obj is None or isinstance(obj, (bool, int, float)):
+        return obj
+    return safe_text(obj)
 
 
 def emit(event_type, **payload):
-    print(json.dumps({"type": event_type, **payload}, ensure_ascii=False), flush=True)
+    safe_payload = safe_event({"type": event_type, **payload})
+    line = json.dumps(safe_payload, ensure_ascii=False) + "\n"
+    try:
+        sys.stdout.buffer.write(line.encode("utf-8", errors="replace"))
+        sys.stdout.buffer.flush()
+    except Exception:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def load_payload(path):
-    with open(path, "r", encoding="utf-8") as handle:
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
         return json.load(handle)
 
 
@@ -42,26 +82,22 @@ def check_dependencies():
         "encoders": {"ok": False, "available": []},
     }
     try:
-        import yt_dlp
-
-        deps["yt_dlp"] = {"ok": True, "version": yt_dlp.version.__version__}
+        yt_dlp = importlib.import_module("yt_dlp")
+        deps["yt_dlp"] = {"ok": True, "version": getattr(yt_dlp, "__version__", None)}
     except Exception as exc:
         deps["yt_dlp"]["error"] = str(exc)
     try:
-        import openai
-
+        openai = importlib.import_module("openai")
         deps["openai"] = {"ok": True, "version": getattr(openai, "__version__", "installed")}
     except Exception as exc:
         deps["openai"]["error"] = str(exc)
     try:
-        import cv2
-
+        cv2 = importlib.import_module("cv2")
         deps["opencv"] = {"ok": True, "version": getattr(cv2, "__version__", "installed")}
     except Exception as exc:
         deps["opencv"]["error"] = str(exc)
     try:
-        import mediapipe as mp
-
+        mp = importlib.import_module("mediapipe")
         deps["mediapipe"] = {"ok": True, "version": getattr(mp, "__version__", "installed")}
     except Exception as exc:
         deps["mediapipe"]["error"] = str(exc)
@@ -97,6 +133,8 @@ def classify_download_error(exc):
         return "Video private/member only"
     if any(item in text for item in ["region", "country", "not available in your country"]):
         return "Region locked"
+    if any(item in text for item in ["403", "forbidden", "access denied"]):
+        return "Login diperlukan"
     if "cookie" in text and any(item in text for item in ["expired", "invalid", "malformed"]):
         return "Cookies expired"
     return "yt-dlp error"
@@ -163,12 +201,17 @@ def test_cookies(payload):
         return validation
     yt_dlp = require_yt_dlp()
     test_url = payload.get("url") or "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-    ydl_opts = {
+    ydl_opts: Any = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
         "noplaylist": True,
         "cookiefile": payload.get("cookiesPath"),
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.youtube.com/",
+        },
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -222,6 +265,230 @@ def require_yt_dlp():
         return yt_dlp
     except Exception as exc:
         raise RuntimeError("yt-dlp belum tersedia. Install dengan: python -m pip install yt-dlp") from exc
+
+
+def ai_provider_name(provider_type):
+    names = {
+        "openai": "OpenAI",
+        "groq": "Groq",
+        "ytclip": "YTClip AI",
+        "gemini": "Google Gemini",
+        "custom": "Custom AI",
+        "local": "Local Heuristic",
+    }
+    return names.get(provider_type, provider_type or "AI Provider")
+
+
+def is_ai_enabled(payload):
+    if not payload:
+        return False
+    provider_type = str(payload.get("providerType") or "local").lower()
+    if provider_type == "local":
+        return False
+    return bool(payload.get("apiKey") and payload.get("baseUrl") and payload.get("highlightModel"))
+
+
+def fetch_json(url, data=None, headers=None, timeout=30):
+    headers = headers or {}
+    method = "GET" if data is None else "POST"
+    body = None
+    if data is not None:
+        body = json.dumps(data).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        text = response.read().decode("utf-8", errors="replace")
+        try:
+            return json.loads(text)
+        except Exception:
+            return {"raw": text}
+
+
+def call_openai_compatible(payload, prompt):
+    base_url = str(payload.get("baseUrl") or "").rstrip("/")
+    if not base_url:
+        raise RuntimeError("Base URL AI kosong.")
+    endpoint = base_url
+    if not endpoint.endswith("/chat/completions"):
+        endpoint = f"{endpoint}/chat/completions"
+    model = str(payload.get("highlightModel") or "").strip()
+    if not model:
+        raise RuntimeError("Model AI kosong.")
+    api_key = str(payload.get("apiKey") or "").strip()
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    data = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant for YouTube Shorts content generation."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.25,
+        "max_tokens": 120,
+        "n": 1,
+    }
+    result = fetch_json(endpoint, data=data, headers=headers)
+    if not isinstance(result, dict):
+        raise RuntimeError("Invalid response dari AI provider.")
+    if result.get("error"):
+        raise RuntimeError(result.get("error", {}).get("message") or result.get("error") or "AI request gagal")
+    choices = result.get("choices") or []
+    if not choices:
+        raise RuntimeError("AI provider tidak mengembalikan jawaban.")
+    first = choices[0]
+    text = ""
+    if isinstance(first, dict):
+        text = first.get("message", {}).get("content") or first.get("text") or ""
+    else:
+        text = str(first)
+    usage = result.get("usage") or {}
+    return {"response": str(text).strip(), "usage": usage, "raw": result}
+
+
+def call_gemini(payload, prompt):
+    base_url = str(payload.get("baseUrl") or "").rstrip("/")
+    if not base_url:
+        raise RuntimeError("Base URL AI kosong.")
+    model = str(payload.get("highlightModel") or "").strip()
+    if not model:
+        raise RuntimeError("Model AI kosong.")
+    api_key = str(payload.get("apiKey") or "").strip()
+    endpoint = f"{base_url}/models/{urllib.parse.quote(model)}:generateText"
+    if api_key and not api_key.startswith("Bearer "):
+        endpoint = f"{endpoint}?key={urllib.parse.quote(api_key)}"
+    headers = {"Content-Type": "application/json"}
+    if api_key.startswith("Bearer "):
+        headers["Authorization"] = api_key
+    data = {
+        "temperature": 0.25,
+        "maxOutputTokens": 120,
+        "candidateCount": 1,
+        "input": {"text": prompt},
+    }
+    result = fetch_json(endpoint, data=data, headers=headers)
+    if not isinstance(result, dict):
+        raise RuntimeError("Invalid response dari Gemini.")
+    if result.get("error"):
+        raise RuntimeError(result.get("error", {}).get("message") or result.get("error") or "AI request gagal")
+    response_text = ""
+    if isinstance(result.get("candidates"), list) and result["candidates"]:
+        candidate = result["candidates"][0]
+        response_text = candidate.get("content", {}).get("text") or candidate.get("content") or ""
+    if not response_text and result.get("output"):
+        response_text = result["output"].get("generatedText") or result["output"].get("content", {}).get("text", "")
+    if not response_text:
+        raise RuntimeError("Gemini tidak mengembalikan konten.")
+    return {"response": str(response_text).strip(), "usage": {}, "raw": result}
+
+
+def provider_request(payload, prompt):
+    provider_type = str(payload.get("providerType") or "openai").lower()
+    provider_name = ai_provider_name(provider_type)
+    emit("log", message=f"AI request sent to {provider_name}")
+    if provider_type == "gemini":
+        return call_gemini(payload, prompt)
+    return call_openai_compatible(payload, prompt)
+
+
+def parse_simple_listed_titles(text):
+    lines = [line.strip() for line in str(text).splitlines() if line.strip()]
+    parsed = []
+    for line in lines:
+        match = re.match(r"^\s*\d+\)?[\.:\-]?\s*(.+)$", line)
+        if match:
+            parsed.append(match.group(1).strip())
+        else:
+            parsed.append(line)
+    return parsed
+
+
+def ai_generate_title(text, payload):
+    try:
+        prompt = (
+            f"Buat judul video singkat yang menarik untuk segmen berikut, gunakan gaya {payload.get('scoreMode') or 'viral'}:\n"
+            f"{text}\n"
+            "Jawab hanya dengan satu judul singkat."
+        )
+        result = provider_request(payload, prompt)
+        return result
+    except Exception as exc:
+        emit("log", message=f"AI title generator gagal: {exc}")
+        return {"ok": False, "error": str(exc)}
+
+
+def ai_generate_hook(moment, payload):
+    try:
+        prompt = (
+            f"Buat hook pembuka singkat untuk YouTube Shorts berdasarkan segmen berikut:\n"
+            f"{moment.get('transcript') or moment.get('title') or ''}\n"
+            "Jawab hanya dengan satu kalimat hook yang memancing penasaran."
+        )
+        return provider_request(payload, prompt)
+    except Exception as exc:
+        emit("log", message=f"AI hook generator gagal: {exc}")
+        return {"ok": False, "error": str(exc)}
+
+
+def ai_clean_caption(text, payload):
+    try:
+        prompt = (
+            f"Bersihkan teks berikut agar cocok sebagai subtitle YouTube Shorts tanpa mengubah arti:\n"
+            f"{text}\n"
+            "Jawab dengan teks singkat yang sudah dirapikan."
+        )
+        return provider_request(payload, prompt)
+    except Exception as exc:
+        emit("log", message=f"AI caption cleanup gagal: {exc}")
+        return {"ok": False, "error": str(exc)}
+
+
+def test_provider_request(payload):
+    try:
+        prompt = "Reply only: OK"
+        result = provider_request(payload, prompt)
+        response = result.get("response") or "OK"
+        return {
+            "ok": True,
+            "status": "Connected ✓",
+            "provider": ai_provider_name(str(payload.get("providerType") or "openai")),
+            "model": payload.get("highlightModel"),
+            "response": response.strip(),
+            "usage": result.get("usage") or {},
+        }
+    except Exception as exc:
+        return {"ok": False, "status": str(exc), "error": str(exc)}
+
+
+def parse_ai_refined_titles(raw_text):
+    titles = parse_simple_listed_titles(raw_text)
+    return [title for title in titles if title]
+
+
+def revise_moments_with_ai(moments, payload):
+    if not moments or payload.get("providerType") == "local" or not is_ai_enabled(payload):
+        return moments
+    if not (
+        bool_payload(payload, "addHook", False)
+        or bool_payload(payload, "addCaptions", False)
+        or bool_payload(payload, "metadataToggle", False)
+        or bool_payload(payload, "writeMetadata", False)
+    ):
+        return moments
+
+    text_payload = "\n".join([f"Segment {idx+1}: {item.get('transcript') or item.get('title') or ''}" for idx, item in enumerate(moments[:3])])
+    prompt = (
+        f"Berikan judul hook yang lebih menarik untuk setiap segmen berikut sesuai gaya {payload.get('scoreMode') or 'viral'}:\n{text_payload}\n"
+        "Kembalikan dalam format 1) judul, 2) judul, 3) judul."
+    )
+    try:
+        result = provider_request(payload, prompt)
+        titles = parse_ai_refined_titles(result.get("response") or "")
+        if titles:
+            for index, title in enumerate(titles[: len(moments[:3])]):
+                moments[index]["titleSuggestion"] = title
+            emit("log", message=f"AI highlight refinement berhasil, provider={ai_provider_name(payload.get('providerType'))}")
+    except Exception as exc:
+        emit("log", message=f"AI highlight refinement gagal: {exc}. Fallback local heuristic aktif.")
+    return moments
 
 
 def parse_duration_target(value):
@@ -453,7 +720,11 @@ def find_moments(info, transcript, payload):
     return moments[:target_count]
 
 
-def make_title(text, index):
+def make_title(text, index, payload=None):
+    if payload and bool_payload(payload, "metadataToggle", False) and is_ai_enabled(payload) and index < 2:
+        ai_result = ai_generate_title(text, payload)
+        if ai_result.get("response"):
+            return ai_result["response"][:72]
     words = clean_text(text).split()
     if len(words) >= 5:
         title = " ".join(words[:10])
@@ -478,7 +749,7 @@ def analyze(payload):
     if not url:
         raise RuntimeError("YouTube URL kosong.")
     emit("progress", stage="metadata", progress=5, message="Mengambil metadata YouTube")
-    ydl_opts = {
+    ydl_opts: Any = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
@@ -486,6 +757,33 @@ def analyze(payload):
     }
     cookie_path = payload.get("cookiesPath")
     info, used_cookies = extract_info_with_cookie_retry(yt_dlp, ydl_opts, url, cookie_path, download=False)
+
+    if bool_payload(payload, "metadataOnly", False):
+        subtitle_languages = sorted(
+            set((info.get("subtitles") or {}).keys()).union(set((info.get("automatic_captions") or {}).keys()))
+        )
+        preferred_subtitle = next(
+            (language for language in ["id", "id-ID", "en", "en-orig", "en-US"] if language in subtitle_languages),
+            subtitle_languages[0] if subtitle_languages else None,
+        )
+        result = {
+            "video": {
+                "title": info.get("title"),
+                "channel": info.get("channel") or info.get("uploader"),
+                "duration": info.get("duration"),
+                "thumbnail": info.get("thumbnail"),
+                "webpage_url": info.get("webpage_url") or url,
+                "subtitle_language": preferred_subtitle,
+                "subtitle_languages": subtitle_languages,
+                "transcript_segments": 0,
+                "used_cookies": used_cookies,
+            },
+            "moments": [],
+            "dependencies": check_dependencies(),
+        }
+        emit("progress", stage="done", progress=100, message="Metadata selesai")
+        emit("done", result=result)
+        return
 
     emit("progress", stage="subtitle", progress=28, message="Mengambil subtitle/transkrip")
     try:
@@ -515,9 +813,17 @@ def analyze(payload):
 
 
 def safe_filename(value):
-    value = re.sub(r"[^\w\s.-]", "", value or "clip").strip()
+    value = str(value or "").strip()
+    value = re.sub(r"[\U00010000-\U0010FFFF]", "", value)
+    value = re.sub(r"[\\/:*?\"<>|\x00-\x1f]", "", value)
     value = re.sub(r"\s+", "-", value)
-    return value[:80] or "clip"
+    value = re.sub(r"[.]{2,}", ".", value)
+    value = value.strip(" ._-")
+    if len(value) > 80:
+        value = value[:80].rstrip()
+    if not value:
+        return "clip_001"
+    return value
 
 
 def output_dimensions(format_profile, resolution_profile):
@@ -550,15 +856,6 @@ def output_dimensions(format_profile, resolution_profile):
     return portrait.get(res, portrait["1080p"])
 
 
-def build_video_filter(payload):
-    dims = output_dimensions(payload.get("formatProfile"), payload.get("resolutionProfile"))
-    if dims is None:
-        return "setsar=1"
-    width, height = dims
-    scaler = "lanczos" if payload.get("enableUpscale", True) else "bicubic"
-    return f"scale={width}:{height}:force_original_aspect_ratio=increase:flags={scaler},crop={width}:{height},setsar=1"
-
-
 def fps_args(payload):
     value = str(payload.get("fpsProfile") or "").lower()
     if "30" in value:
@@ -586,6 +883,15 @@ def escape_drawtext(value):
     return clean_text(value).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
 
+def make_hook_text(moment, payload=None):
+    default = clean_text(moment.get("title") or moment.get("titleSuggestion") or "Bagian ini penting untuk kamu lihat")
+    if payload and bool_payload(payload, "addHook", False) and is_ai_enabled(payload):
+        ai_result = ai_generate_hook(moment, payload)
+        if ai_result.get("response"):
+            return ai_result["response"]
+    return default
+
+
 def hook_seconds(payload):
     numbers = [int(item) for item in re.findall(r"\d+", str(payload.get("hookDuration") or "3"))]
     return max(1, min(6, numbers[0] if numbers else 3))
@@ -600,6 +906,33 @@ def select_encoder(payload):
     return "libx264", "veryfast"
 
 
+def build_caption_file(moment, path, payload):
+    text = clean_text(moment.get("transcript") or moment.get("title") or "Caption otomatis")
+    if bool_payload(payload, "addCaptions", False) and is_ai_enabled(payload):
+        ai_result = ai_clean_caption(text, payload)
+        if ai_result.get("response"):
+            text = ai_result["response"]
+    chunks = re.split(r"(?<=[.!?])\s+", text)
+    chunks = [chunk.strip() for chunk in chunks if chunk.strip()] or [text]
+    duration = max(4, float(moment.get("duration") or 20))
+    lines = []
+    index = 1
+    if bool_payload(payload, "addHook", False):
+        hook = make_hook_text(moment, payload)
+        end = min(duration, hook_seconds(payload))
+        lines.append(f"{index}\n{srt_time(0)} --> {srt_time(end)}\n{hook}\n")
+        index += 1
+    start_offset = min(duration - 0.5, hook_seconds(payload) if bool_payload(payload, "addHook", False) else 0)
+    usable = max(1, duration - start_offset)
+    slice_len = usable / len(chunks)
+    for chunk_index, chunk in enumerate(chunks):
+        start = start_offset + chunk_index * slice_len
+        end = min(duration, start_offset + (chunk_index + 1) * slice_len)
+        lines.append(f"{index}\n{srt_time(start)} --> {srt_time(end)}\n{chunk}\n")
+        index += 1
+    Path(path).write_text("\n".join(lines), encoding="utf-8")
+
+
 def detect_face_focus(video_path, start, duration):
     try:
         import cv2
@@ -609,7 +942,9 @@ def detect_face_focus(video_path, start, duration):
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
         return None
-    cascade_path = getattr(cv2.data, "haarcascades", "") + "haarcascade_frontalface_default.xml"
+    cv2_data = getattr(cv2, "data", None)
+    haarcascades_dir = getattr(cv2_data, "haarcascades", "") if cv2_data is not None else ""
+    cascade_path = os.path.join(haarcascades_dir, "haarcascade_frontalface_default.xml")
     cascade = cv2.CascadeClassifier(cascade_path)
     if cascade.empty():
         capture.release()
@@ -639,36 +974,6 @@ def detect_face_focus(video_path, start, duration):
     return max(0.18, min(0.82, smoothed))
 
 
-def build_caption_file(moment, path, payload):
-    text = clean_text(moment.get("transcript") or moment.get("title") or "Caption otomatis")
-    chunks = re.split(r"(?<=[.!?])\s+", text)
-    chunks = [chunk.strip() for chunk in chunks if chunk.strip()] or [text]
-    duration = max(4, float(moment.get("duration") or 20))
-    lines = []
-    index = 1
-    if bool_payload(payload, "addHook", False):
-        hook = make_hook_text(moment)
-        end = min(duration, hook_seconds(payload))
-        lines.append(f"{index}\n{srt_time(0)} --> {srt_time(end)}\n{hook}\n")
-        index += 1
-    start_offset = min(duration - 0.5, hook_seconds(payload) if bool_payload(payload, "addHook", False) else 0)
-    usable = max(1, duration - start_offset)
-    slice_len = usable / len(chunks)
-    for chunk_index, chunk in enumerate(chunks):
-        start = start_offset + chunk_index * slice_len
-        end = min(duration, start_offset + (chunk_index + 1) * slice_len)
-        lines.append(f"{index}\n{srt_time(start)} --> {srt_time(end)}\n{chunk}\n")
-        index += 1
-    Path(path).write_text("\n".join(lines), encoding="utf-8")
-
-
-def make_hook_text(moment):
-    title = clean_text(moment.get("title") or moment.get("titleSuggestion") or "")
-    if title:
-        return title[:64]
-    return "Bagian ini penting untuk kamu lihat"
-
-
 def build_video_filter(payload, srt_path=None, focus_x=None, moment=None):
     dims = output_dimensions(payload.get("formatProfile"), payload.get("resolutionProfile"))
     filters = []
@@ -694,7 +999,8 @@ def build_video_filter(payload, srt_path=None, focus_x=None, moment=None):
         filters.append("eq=contrast=1.04:brightness=0.01:saturation=1.06")
         filters.append("unsharp=5:5:0.35")
 
-    if srt_path and (bool_payload(payload, "addCaptions", False) or bool_payload(payload, "addHook", False)):
+    should_burn_captions = bool_payload(payload, "addCaptions", False) and bool_payload(payload, "burnSubtitle", True)
+    if srt_path and (should_burn_captions or bool_payload(payload, "addHook", False)):
         style = "Fontsize=15,PrimaryColour=&H00FFFFFF&,OutlineColour=&H00000000&,BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=110"
         filters.append(f"subtitles=filename='{ffmpeg_filter_path(srt_path)}':force_style='{style}'")
 
@@ -728,7 +1034,10 @@ def parse_ffmpeg_time(value):
 def run_command(cmd, stage):
     emit("log", message=" ".join(cmd))
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
-    for line in process.stdout:
+    stdout = process.stdout
+    if stdout is None:
+        raise RuntimeError("Tidak bisa membaca output proses.")
+    for line in stdout:
         line = line.strip()
         if line:
             emit("log", stage=stage, message=line[-500:])
@@ -737,12 +1046,29 @@ def run_command(cmd, stage):
         raise RuntimeError(f"Command gagal ({code}): {' '.join(cmd[:3])}")
 
 
+def safe_output_folder(folder_path):
+    try:
+        folder = Path(str(folder_path)).expanduser().resolve()
+    except Exception:
+        raise RenderError("RENDER004", "Output folder tidak valid.")
+    folder.mkdir(parents=True, exist_ok=True)
+    if not os.access(folder, os.W_OK):
+        raise RenderError("RENDER004", "Output folder tidak bisa ditulis.")
+    stats = shutil.disk_usage(folder)
+    if stats.free < 300 * 1024 * 1024:
+        raise RenderError("RENDER005", "Ruang disk tidak mencukupi untuk render.")
+    return folder
+
+
 def run_ffmpeg_progress(cmd, stage, clip_index, total_clips, duration, progress_start, progress_end):
     emit("log", message=" ".join(cmd))
     started = time.time()
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+    stdout = process.stdout
+    if stdout is None:
+        raise RuntimeError("Tidak bisa membaca output ffmpeg.")
     last_emit = 0
-    for line in process.stdout:
+    for line in stdout:
         line = line.strip()
         if not line:
             continue
@@ -814,8 +1140,17 @@ def render(payload):
     if not moments:
         raise RuntimeError("Tidak ada moment yang dipilih.")
 
-    output_root = Path(payload.get("outputFolder") or Path.cwd() / "cliper_outputs")
-    session_name = datetime.now().strftime("session-%Y%m%d-%H%M%S")
+    ffmpeg_path = payload.get("ffmpegPath") or payload.get("ffmpeg_path")
+    engine = RenderEngine(ffmpeg_path=ffmpeg_path, logger=emit)
+    try:
+        env = engine.detect_environment()
+    except RenderError as exc:
+        raise RuntimeError(f"{exc.code}: {exc}") from exc
+
+    output_root = safe_output_folder(payload.get("outputFolder") or default_output_folder())
+    project_title = payload.get("projectName") or "YT Short Clipper V2"
+    safe_project = FilenameSanitizer.safe_name(project_title)
+    session_name = f"{safe_project} {datetime.now().strftime('%Y-%m-%d_%H%M%S')}"
     session_dir = output_root / session_name
     internal_dir = session_dir / ".cliper-internal"
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -823,13 +1158,18 @@ def render(payload):
     source_template = str(internal_dir / "source.%(ext)s")
 
     emit("progress", stage="download", progress=8, message="Download video sumber")
-    ydl_opts = {
+    ydl_opts: Any = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
         "format": "bv*[height<=1080]+ba/b[height<=1080]/best",
         "merge_output_format": "mp4",
         "outtmpl": source_template,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.youtube.com/",
+        },
     }
     cookie_path = payload.get("cookiesPath")
     info, used_cookies = extract_info_with_cookie_retry(yt_dlp, ydl_opts, url, cookie_path, download=True)
@@ -839,15 +1179,28 @@ def render(payload):
         raise RuntimeError("File video sumber tidak ditemukan setelah download.")
 
     outputs = []
-    encoder, encoder_preset = select_encoder(payload)
+    encoder = engine.recommend_encoder(bool_payload(payload, "gpuAcceleration", True))
+    if not engine.detector.has_encoder(encoder):
+        emit("log", stage="encoder", message=f"Encoder {encoder} tidak tersedia, fallback ke libx264.")
+        encoder = "libx264"
     emit("log", message=f"Active encoder: {encoder}")
+
+    subtitles_available = engine.detector.supports_filter("subtitles") or engine.detector.supports_filter("ass")
+    warnings = []
+    if bool_payload(payload, "addCaptions", False) and bool_payload(payload, "burnSubtitle", True) and not subtitles_available:
+        warnings.append("Subtitle filter tidak tersedia. Rendering tanpa burned subtitle.")
+        emit("log", stage="subtitle", message="Subtitle filter tidak tersedia. Burn subtitle dimatikan.")
+
     for index, moment in enumerate(moments, start=1):
         start = float(moment.get("start") or 0)
         duration = max(5, float(moment.get("duration") or (float(moment.get("end") or start + 30) - start)))
-        clip_name = f"{index:02d}-{safe_filename(moment.get('title') or moment.get('titleSuggestion'))}"
-        clip_path = session_dir / f"{clip_name}.mp4"
-        srt_path = internal_dir / f"{clip_name}.srt"
+        clip_label = moment.get("title") or moment.get("titleSuggestion") or f"clip-{index}"
+        clip_safe = FilenameSanitizer.safe_name(f"{index:02d}-{clip_label}")
+        clip_name = FilenameSanitizer.unique_name(session_dir, clip_safe, ".mp4")
+        clip_path = session_dir / clip_name
+        srt_path = internal_dir / f"{FilenameSanitizer.safe_name(clip_label)}.srt"
         build_caption_file(moment, srt_path, payload)
+
         clip_start_progress = 15 + (index - 1) / len(moments) * 78
         clip_end_progress = 15 + index / len(moments) * 78
         emit(
@@ -877,47 +1230,30 @@ def render(payload):
         else:
             emit("log", stage="face tracking", message=f"[{index}/{len(moments)}] Face tracking skipped (disabled)")
 
-        vf = build_video_filter(payload, srt_path=srt_path, focus_x=focus_x, moment=moment)
+        should_use_srt = subtitles_available and (
+            bool_payload(payload, "addHook", False)
+            or (bool_payload(payload, "addCaptions", False) and bool_payload(payload, "burnSubtitle", True))
+        )
+        vf = build_video_filter(payload, srt_path=srt_path if should_use_srt else None, focus_x=focus_x, moment=moment)
         af = audio_filter(payload)
         crf = str(payload.get("crfProfile") or "23")
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-ss",
-            str(start),
-            "-t",
-            str(duration),
-            "-i",
-            str(source),
-            "-vf",
-            vf,
-        ]
-        if af:
-            cmd.extend(["-af", af])
-        cmd.extend(["-c:v", encoder])
-        if encoder == "libx264":
-            cmd.extend(["-preset", encoder_preset, "-crf", crf])
-        else:
-            cmd.extend(["-quality", "balanced", "-b:v", "8M"])
-        cmd.extend([*fps_args(payload), "-c:a", "aac", "-b:a", "160k", str(clip_path)])
+
+        builder = engine.builder(source, start, duration, clip_path, encoder, fps_args(payload), filters=[vf] if vf else [], audio_filters=[af] if af else [])
+        cmd = builder.build()
+
         try:
-            run_ffmpeg_progress(cmd, "encode", index, len(moments), duration, clip_start_progress + 4, clip_end_progress)
-        except RuntimeError as exc:
+            engine.run_process(cmd, "encode", index, len(moments), duration, clip_start_progress + 4, clip_end_progress)
+        except RenderError as exc:
             if encoder != "libx264":
                 emit("log", stage="encode", message=f"GPU encoder gagal: {exc}. Retry otomatis memakai CPU libx264.")
                 encoder = "libx264"
-                retry_cmd = list(cmd)
-                video_codec_index = retry_cmd.index("-c:v") + 1
-                retry_cmd[video_codec_index] = "libx264"
-                if "-quality" in retry_cmd:
-                    quality_index = retry_cmd.index("-quality")
-                    del retry_cmd[quality_index : quality_index + 4]
-                insert_at = retry_cmd.index("-c:a")
-                retry_cmd[insert_at:insert_at] = ["-preset", "veryfast", "-crf", crf]
-                run_ffmpeg_progress(retry_cmd, "encode cpu fallback", index, len(moments), duration, clip_start_progress + 4, clip_end_progress)
+                builder = engine.builder(source, start, duration, clip_path, encoder, fps_args(payload), filters=[vf] if vf else [], audio_filters=[af] if af else [])
+                cmd = builder.build()
+                engine.run_process(cmd, "encode cpu fallback", index, len(moments), duration, clip_start_progress + 4, clip_end_progress)
             else:
                 raise
-        metadata_path = internal_dir / f"{clip_name}.json"
+
+        metadata_path = internal_dir / f"{clip_safe}.json"
         metadata_path.write_text(json.dumps(moment, ensure_ascii=False, indent=2), encoding="utf-8")
         size_bytes = clip_path.stat().st_size if clip_path.exists() else 0
         outputs.append(
@@ -932,7 +1268,7 @@ def render(payload):
                     "smartCrop": bool_payload(payload, "smartCrop", True),
                     "dynamicZoom": bool_payload(payload, "dynamicZoom", False),
                     "faceTrack": bool_payload(payload, "faceTrack", False),
-                    "captions": bool_payload(payload, "addCaptions", False),
+                    "captions": bool_payload(payload, "addCaptions", False) and bool_payload(payload, "burnSubtitle", True) and subtitles_available,
                     "hook": bool_payload(payload, "addHook", False),
                     "audioEnhance": bool_payload(payload, "audioEnhance", False),
                     "colorEnhance": bool_payload(payload, "colorEnhance", False),
@@ -954,15 +1290,17 @@ def render(payload):
         },
         "created_at": datetime.now().isoformat(),
         "outputs": outputs,
+        "warnings": warnings,
     }
     (internal_dir / "session.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    engine.write_log(session_dir, manifest, metadata={"ffmpeg": env}, warnings=warnings)
     emit("progress", stage="done", progress=100, message="Render selesai")
     emit("done", result={"sessionDir": str(session_dir), "outputs": outputs, "manifest": manifest})
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", required=True, choices=["check", "validate-cookies", "test-cookies", "analyze", "render"])
+    parser.add_argument("--mode", required=True, choices=["check", "validate-cookies", "test-cookies", "test-provider", "analyze", "render"])
     parser.add_argument("--payload", required=True)
     args = parser.parse_args()
     payload = load_payload(args.payload)
@@ -973,6 +1311,8 @@ def main():
             emit("done", result=validate_cookie_file(payload.get("cookiesPath")))
         elif args.mode == "test-cookies":
             emit("done", result=test_cookies(payload))
+        elif args.mode == "test-provider":
+            emit("done", result=test_provider_request(payload))
         elif args.mode == "analyze":
             analyze(payload)
         elif args.mode == "render":

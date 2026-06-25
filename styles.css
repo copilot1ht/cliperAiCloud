@@ -295,6 +295,71 @@ svg {
   outline: 3px solid rgba(15, 143, 140, 0.13);
 }
 
+.input-action {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.input-action .secondary-action {
+  min-height: 42px;
+  white-space: nowrap;
+}
+
+.api-key-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 8px;
+}
+
+.api-key-field input {
+  min-width: 0;
+}
+
+.api-eye-button {
+  height: 42px;
+  width: 42px;
+}
+
+.api-eye-button.active {
+  border-color: var(--teal);
+  color: var(--teal-dark);
+}
+
+.provider-status-box {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  min-height: 58px;
+  padding: 10px 12px;
+}
+
+.provider-status-box span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.provider-status-box strong {
+  overflow-wrap: anywhere;
+}
+
+.provider-status-box.ok {
+  background: #eaf6ef;
+  border-color: #bddcca;
+}
+
+.provider-status-box.ok strong {
+  color: var(--green);
+}
+
+.provider-status-box.warning {
+  background: #fff4dc;
+  border-color: #efd18c;
+}
+
 .form-grid {
   display: grid;
   gap: 12px;
@@ -768,15 +833,33 @@ svg {
 
 .logs-panel pre {
   background: #172026;
-  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
   color: #dce7ec;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
   margin: 10px 0 0;
   min-height: 340px;
+  max-height: 520px;
   overflow: auto;
-  padding: 14px;
+  padding: 16px;
   white-space: pre-wrap;
+  word-break: break-word;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02);
+}
+
+.logs-panel pre::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.logs-panel pre::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.18);
+  border-radius: 999px;
+}
+
+.logs-panel pre::-webkit-scrollbar-track {
+  background: rgba(255,255,255,0.04);
 }
 
 .session-list {
@@ -1139,6 +1222,7 @@ svg {
 
   .form-grid,
   .switch-grid,
+  .input-action,
   .moment-grid,
   .metrics-band,
   .cookie-info-grid,
