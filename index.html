@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cliper YouTube AI Studio</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">C</div>
+          <div>
+            <strong>Cliper</strong>
+            <span>YouTube AI Studio</span>
+          </div>
+        </div>
+
+        <nav class="nav-list" aria-label="Menu utama">
+          <button class="nav-item active" data-view="studio" title="Studio">
+            <svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v13a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5v-13Zm3 2h10M7 12h4m-4 4h7" /></svg>
+            <span>Studio</span>
+          </button>
+          <button class="nav-item" data-view="moments" title="Moment AI">
+            <svg viewBox="0 0 24 24"><path d="m12 3 2.35 5.75 6.15.5-4.7 4.05 1.45 6.1L12 16.15 6.75 19.4l1.45-6.1-4.7-4.05 6.15-.5L12 3Z" /></svg>
+            <span>Moment AI</span>
+          </button>
+          <button class="nav-item" data-view="render" title="Render">
+            <svg viewBox="0 0 24 24"><path d="M12 3v4m0 10v4m9-9h-4M7 12H3m15.4-6.4-2.8 2.8M8.4 15.6l-2.8 2.8m12.8 0-2.8-2.8M8.4 8.4 5.6 5.6" /></svg>
+            <span>Render</span>
+          </button>
+          <button class="nav-item" data-view="outputs" title="Output">
+            <svg viewBox="0 0 24 24"><path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6Zm4 5h8m-8 4h5" /></svg>
+            <span>Output</span>
+          </button>
+          <button class="nav-item" data-view="settings" title="Settings">
+            <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm8.5 4a7.7 7.7 0 0 0-.1-1.3l2-1.5-2-3.4-2.4 1a8.8 8.8 0 0 0-2.2-1.3L15.5 3h-4l-.4 2.5a8.8 8.8 0 0 0-2.2 1.3l-2.4-1-2 3.4 2 1.5A7.7 7.7 0 0 0 6.5 12c0 .4 0 .9.1 1.3l-2 1.5 2 3.4 2.4-1a8.8 8.8 0 0 0 2.2 1.3l.4 2.5h4l.4-2.5a8.8 8.8 0 0 0 2.2-1.3l2.4 1 2-3.4-2-1.5c.1-.4.1-.9.1-1.3Z" /></svg>
+            <span>Settings</span>
+          </button>
+        </nav>
+
+        <div class="project-status">
+          <div>
+            <span>Mode</span>
+            <strong id="modeBadge">Local worker</strong>
+          </div>
+          <div>
+            <span>Status</span>
+            <strong id="jobBadge">Ready</strong>
+          </div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Project</p>
+            <h1>Cliper YouTube AI Studio</h1>
+          </div>
+          <div class="status-row">
+            <span class="status-pill" id="apiStatus">API belum diset</span>
+            <span class="status-pill" id="clipCounter">0 clip dipilih</span>
+            <button class="icon-button" id="saveConfig" title="Simpan setting">
+              <svg viewBox="0 0 24 24"><path d="M5 4h12l2 2v14H5V4Zm3 0v6h8V4M8 20v-6h8v6" /></svg>
+            </button>
+          </div>
+        </header>
+
+        <section class="view active" id="view-studio">
+          <div class="studio-layout">
+            <section class="panel setup-panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Input video</p>
+                  <h2>Auto cut setup</h2>
+                </div>
+                <button class="icon-button" id="resetButton" title="Reset form">
+                  <svg viewBox="0 0 24 24"><path d="M4 4v6h6M20 20v-6h-6M6.5 17.5a7.5 7.5 0 0 0 11-10.1L20 10M4 14l2.5 2.6a7.5 7.5 0 0 0 11-10.1" /></svg>
+                </button>
+              </div>
+
+              <label class="field span-2">
+                <span>YouTube URL</span>
+                <input id="youtubeUrl" type="url" placeholder="https://www.youtube.com/watch?v=..." />
+              </label>
+
+              <div class="form-grid">
+                <label class="field">
+                  <span>Jumlah clip</span>
+                  <input id="clipCount" type="number" min="1" max="20" value="6" />
+                </label>
+                <label class="field">
+                  <span>Durasi target</span>
+                  <select id="durationTarget">
+                    <option>20-35 detik</option>
+                    <option>35-50 detik</option>
+                    <option>50-65 detik</option>
+                    <option>Auto terbaik</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Bahasa subtitle</span>
+                  <select id="subtitleLang">
+                    <option>id-ID auto</option>
+                    <option>en-US auto</option>
+                    <option>Transkrip fallback</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>AI scoring</span>
+                  <select id="scoreMode">
+                    <option>Hook + retention</option>
+                    <option>Edukasi paling jelas</option>
+                    <option>Kontroversi ringan</option>
+                    <option>Komedi / reaksi</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="switch-grid">
+                <label><input id="autoCaption" type="checkbox" checked /> Auto caption</label>
+                <label><input id="autoCut" type="checkbox" checked /> Auto cut</label>
+                <label><input id="autoHook" type="checkbox" checked /> Hook opening</label>
+                <label><input id="faceTrack" type="checkbox" checked /> Face tracking</label>
+                <label><input id="watermarkToggle" type="checkbox" checked /> Watermark</label>
+                <label><input id="metadataToggle" type="checkbox" checked /> Judul & hashtag</label>
+              </div>
+
+              <div class="upload-strip">
+                <div>
+                  <strong>cookies.txt</strong>
+                  <span id="cookieState">Belum dipilih</span>
+                </div>
+                <button class="file-button" id="chooseCookieFile" title="Pilih cookies.txt">
+                  <input id="cookieFile" type="file" accept=".txt" />
+                  <svg viewBox="0 0 24 24"><path d="M12 3v12m0-12 4 4m-4-4-4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" /></svg>
+                </button>
+              </div>
+
+              <div class="action-row">
+                <button class="secondary-action" id="scanSubtitles">Scan subtitle</button>
+                <button class="primary-action" id="findMoments">
+                  <svg viewBox="0 0 24 24"><path d="m5 12 5 5L20 7" /></svg>
+                  Cari moment terbaik
+                </button>
+              </div>
+            </section>
+
+            <section class="preview-panel">
+              <div class="video-stage">
+                <canvas id="previewCanvas" width="900" height="506"></canvas>
+                <div class="stage-overlay">
+                  <span>Score <strong id="previewScore">-</strong></span>
+                  <span id="previewDuration">Belum dianalisa</span>
+                </div>
+              </div>
+              <div class="preview-meta">
+                <div>
+                  <strong id="previewTitle">Belum ada video</strong>
+                  <span id="previewUrl">Masukkan link YouTube</span>
+                </div>
+                <button class="icon-button" id="refreshPreview" title="Refresh preview">
+                  <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7L20 8m0-5v5h-5" /></svg>
+                </button>
+              </div>
+            </section>
+          </div>
+
+          <section class="metrics-band">
+            <article><span>Subtitle</span><strong id="subtitleMetric">Belum dianalisa</strong><em>yt-dlp / transcript fallback</em></article>
+            <article><span>Caption</span><strong id="captionMetric">Belum diproses</strong><em>burn-in opsional</em></article>
+            <article><span>Output</span><strong id="outputMetric">MP4 only</strong><em>file final user</em></article>
+            <article><span>Runtime</span><strong id="runtimeMetric">Belum dicek</strong><em>Python, yt-dlp, FFmpeg</em></article>
+          </section>
+        </section>
+
+        <section class="view" id="view-moments">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">AI selection</p>
+              <h2>Moment terbaik</h2>
+            </div>
+            <div class="toolbar">
+              <button class="secondary-action" id="selectAllButton">Pilih semua</button>
+              <button class="primary-action compact-action" id="processSelected">Render pilihan</button>
+            </div>
+          </div>
+          <div class="moment-grid" id="momentGrid"></div>
+        </section>
+
+        <section class="view" id="view-render">
+          <div class="render-layout">
+            <section class="panel">
+              <div class="section-heading flush">
+                <div>
+                  <p class="eyebrow">Worker</p>
+                  <h2>Render queue</h2>
+                </div>
+              <button class="danger-action" id="cancelJob">Cancel</button>
+              </div>
+              <div class="meter"><span id="progressBar"></span></div>
+              <ol class="step-list" id="stepList"></ol>
+            </section>
+            <section class="panel logs-panel">
+              <p class="eyebrow">Log proses</p>
+              <pre id="logOutput"></pre>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-outputs">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Library</p>
+              <h2>Output sessions</h2>
+            </div>
+            <button class="secondary-action" id="newSessionButton">Project baru</button>
+          </div>
+          <div class="session-list" id="sessionList"></div>
+        </section>
+
+        <section class="view" id="view-settings">
+          <div class="settings-layout">
+            <section class="panel">
+              <p class="eyebrow">API provider</p>
+              <h2>AI settings</h2>
+              <div class="provider-list" id="providerList"></div>
+            </section>
+
+            <section class="panel settings-form">
+              <p class="eyebrow">Koneksi</p>
+              <h2>Endpoint utama</h2>
+              <label class="field">
+                <span>Base URL</span>
+                <input id="baseUrl" placeholder="https://api.openai.com/v1" />
+              </label>
+              <label class="field">
+                <span>API key</span>
+                <input id="apiKey" type="password" placeholder="Masukkan API key jika ingin refine AI" />
+              </label>
+              <label class="field">
+                <span>Model highlight</span>
+                <input id="highlightModel" placeholder="Contoh: gpt-4.1-mini" />
+              </label>
+              <button class="primary-action" id="testApiButton">Test API</button>
+            </section>
+
+            <section class="panel settings-form">
+              <p class="eyebrow">Output</p>
+              <h2>Render profile</h2>
+              <label class="field">
+                <span>Folder output</span>
+                <input id="outputFolder" placeholder="Pilih folder output" />
+              </label>
+              <button class="secondary-action" id="chooseOutputFolder">Pilih folder output</button>
+              <label class="field">
+                <span>Resolusi output</span>
+                <select id="resolutionProfile">
+                  <option>1080p</option>
+                  <option>720p</option>
+                  <option>2K</option>
+                  <option>4K</option>
+                  <option>Same as source</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Format</span>
+                <select id="formatProfile">
+                  <option>9:16 YouTube Shorts</option>
+                  <option>1:1 Square</option>
+                  <option>4:5 Social feed</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Caption style</span>
+                <select id="captionStyle">
+                  <option>Karaoke bold</option>
+                  <option>Clean subtitle</option>
+                  <option>Minimal lower third</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>CRF quality</span>
+                <select id="crfProfile">
+                  <option value="23">Balanced 23</option>
+                  <option value="18">High 18</option>
+                  <option value="28">Small file 28</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>FPS</span>
+                <select id="fpsProfile">
+                  <option>Same as source</option>
+                  <option>30 FPS</option>
+                  <option>60 FPS</option>
+                </select>
+              </label>
+              <label class="toggle-row">
+                <input id="upscaleToggle" type="checkbox" checked />
+                Enable upscale
+              </label>
+              <label class="range-field">
+                <span>Watermark opacity</span>
+                <input id="watermarkOpacity" type="range" min="10" max="100" value="68" />
+              </label>
+              <button class="secondary-action" id="checkDependencyButton">Cek dependency</button>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status"></div>
+    <script src="./app.js"></script>
+  </body>
+</html>

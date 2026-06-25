@@ -1,0 +1,39 @@
+{
+  "name": "cliper-youtube-ai-studio",
+  "version": "1.0.0",
+  "description": "Cliper YouTube AI Studio desktop prototype",
+  "main": "electron/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.cliper.youtubeaistudio",
+    "productName": "Cliper YouTube AI Studio",
+    "artifactName": "Cliper YouTube AI Studio.exe",
+    "asar": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "index.html",
+      "styles.css",
+      "app.js",
+      "electron/**/*",
+      "worker/**/*",
+      "README.md"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "signAndEditExecutable": false,
+      "forceCodeSigning": false
+    }
+  },
+  "devDependencies": {
+    "electron": "^32.3.3",
+    "electron-builder": "^25.1.8"
+  }
+}
