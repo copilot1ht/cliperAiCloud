@@ -801,6 +801,189 @@ svg {
   text-align: right;
 }
 
+.status-pill.warning {
+  background: #fff4dc;
+  border-color: #efd18c;
+  color: #9a6700;
+}
+
+.settings-tabs {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding: 8px;
+}
+
+.settings-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--muted);
+  font-weight: 800;
+  min-height: 38px;
+  padding: 0 12px;
+}
+
+.settings-tab:hover,
+.settings-tab.active {
+  background: #eef6f6;
+  border-color: #c8dedf;
+  color: var(--teal-dark);
+}
+
+.settings-panel {
+  display: none;
+  gap: 18px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-panel.active {
+  display: grid;
+}
+
+#settings-output.active,
+#settings-subtitle.active,
+#settings-watermark.active {
+  grid-template-columns: minmax(360px, 640px);
+}
+
+#settings-cookies.active {
+  grid-template-columns: minmax(420px, 1.1fr) minmax(320px, 0.9fr);
+}
+
+#settings-cookies .reminder-card {
+  grid-column: 1 / -1;
+}
+
+.info-row,
+.runtime-item {
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  justify-content: space-between;
+  min-height: 48px;
+  padding: 10px 12px;
+}
+
+.info-row span,
+.runtime-item span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.info-row strong,
+.runtime-item strong {
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.runtime-list {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.runtime-item.ok strong {
+  color: var(--green);
+}
+
+.cookies-summary {
+  display: grid;
+  gap: 14px;
+}
+
+.cookies-dropzone {
+  align-items: center;
+  background: #f4f8f8;
+  border: 1px dashed #a9cbcb;
+  border-radius: 8px;
+  color: var(--muted);
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  min-height: 116px;
+  padding: 18px;
+  text-align: center;
+}
+
+.cookies-dropzone strong {
+  color: var(--ink);
+  font-size: 18px;
+}
+
+.cookies-dropzone.dragging {
+  background: #e7f5f4;
+  border-color: var(--teal);
+}
+
+.cookie-info-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.cookie-info-grid div {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-height: 70px;
+  padding: 10px 12px;
+}
+
+.cookie-info-grid span,
+.cookie-info-grid strong {
+  display: block;
+}
+
+.cookie-info-grid span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.cookie-info-grid strong {
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+.plain-list,
+.wizard-list {
+  margin: 14px 0 0;
+  padding-left: 20px;
+}
+
+.plain-list li {
+  margin: 7px 0;
+}
+
+.muted-copy,
+.reminder-card p,
+.wizard-list span {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.wizard-list {
+  display: grid;
+  gap: 12px;
+}
+
+.wizard-list li strong,
+.wizard-list li span {
+  display: block;
+}
+
+.wizard-list li span {
+  margin-top: 3px;
+}
+
 .range-field {
   margin-top: 4px;
 }
@@ -829,7 +1012,9 @@ svg {
 @media (max-width: 1180px) {
   .studio-layout,
   .render-layout,
-  .settings-layout {
+  .settings-layout,
+  .settings-panel,
+  #settings-cookies.active {
     grid-template-columns: 1fr;
   }
 
@@ -886,7 +1071,8 @@ svg {
   .form-grid,
   .switch-grid,
   .moment-grid,
-  .metrics-band {
+  .metrics-band,
+  .cookie-info-grid {
     grid-template-columns: 1fr;
   }
 

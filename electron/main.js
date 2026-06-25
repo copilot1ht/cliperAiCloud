@@ -5,6 +5,29 @@ const path = require("path");
 
 let activeWorker = null;
 
+function getConfigPath() {
+  return path.join(app.getPath("userData"), "config.json");
+}
+
+function readConfig() {
+  try {
+    const configPath = getConfigPath();
+    if (!fs.existsSync(configPath)) {
+      return {};
+    }
+    return JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeConfig(config) {
+  const configPath = getConfigPath();
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(config || {}, null, 2), "utf8");
+  return { ok: true, path: configPath };
+}
+
 function getWorkerPath() {
   return path.join(app.getAppPath(), "worker", "cliper_worker.py");
 }
@@ -111,6 +134,10 @@ function createWindow() {
 
 app.whenReady().then(() => {
   ipcMain.handle("cliper:check-dependencies", (event) => runWorker("check", {}, event));
+  ipcMain.handle("cliper:get-config", () => readConfig());
+  ipcMain.handle("cliper:save-config", (_event, config) => writeConfig(config));
+  ipcMain.handle("cliper:validate-cookies", (event, payload) => runWorker("validate-cookies", payload, event));
+  ipcMain.handle("cliper:test-cookies", (event, payload) => runWorker("test-cookies", payload, event));
   ipcMain.handle("cliper:analyze", (event, payload) => runWorker("analyze", payload, event));
   ipcMain.handle("cliper:render", (event, payload) => runWorker("render", payload, event));
   ipcMain.handle("cliper:cancel", () => {
@@ -135,6 +162,10 @@ app.whenReady().then(() => {
       properties: ["openDirectory", "createDirectory"]
     });
     return result.canceled ? null : result.filePaths[0];
+  });
+  ipcMain.handle("cliper:open-external", async (_event, url) => {
+    await shell.openExternal(url);
+    return { ok: true };
   });
 
   createWindow();

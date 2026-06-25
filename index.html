@@ -221,15 +221,31 @@
         </section>
 
         <section class="view" id="view-settings">
-          <div class="settings-layout">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Settings</p>
+              <h2>Configure performance and output options</h2>
+            </div>
+            <span class="status-pill" id="cookiesAgeBadge">Cookies belum dipasang</span>
+          </div>
+
+          <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+            <button class="settings-tab active" data-settings-tab="api">API</button>
+            <button class="settings-tab" data-settings-tab="runtime">Plugin & Runtime</button>
+            <button class="settings-tab" data-settings-tab="output">Output</button>
+            <button class="settings-tab" data-settings-tab="subtitle">Subtitle</button>
+            <button class="settings-tab" data-settings-tab="watermark">Watermark</button>
+            <button class="settings-tab" data-settings-tab="cookies">Cookies Manager</button>
+          </div>
+
+          <div class="settings-panel active" id="settings-api">
             <section class="panel">
-              <p class="eyebrow">API provider</p>
-              <h2>AI settings</h2>
+              <p class="eyebrow">AI provider</p>
+              <h2>AI Models</h2>
               <div class="provider-list" id="providerList"></div>
             </section>
-
             <section class="panel settings-form">
-              <p class="eyebrow">Koneksi</p>
+              <p class="eyebrow">Connection</p>
               <h2>Endpoint utama</h2>
               <label class="field">
                 <span>Base URL</span>
@@ -245,7 +261,29 @@
               </label>
               <button class="primary-action" id="testApiButton">Test API</button>
             </section>
+          </div>
 
+          <div class="settings-panel" id="settings-runtime">
+            <section class="panel settings-form">
+              <p class="eyebrow">GPU acceleration</p>
+              <h2>Device & Runtime</h2>
+              <div class="info-row"><span>Detected GPU</span><strong id="detectedGpu">Detect untuk membaca GPU</strong></div>
+              <label class="toggle-row"><input id="gpuToggle" type="checkbox" checked /> Enable GPU acceleration</label>
+              <div class="info-row"><span>Active encoder</span><strong id="activeEncoder">CPU fallback - libx264</strong></div>
+              <button class="secondary-action" id="detectGpuButton">Detect GPU</button>
+            </section>
+            <section class="panel">
+              <p class="eyebrow">Plugin & Runtime</p>
+              <h2>Dependency status</h2>
+              <div class="runtime-list" id="runtimeList"></div>
+              <div class="action-row">
+                <button class="secondary-action" id="checkDependencyButton">Check ulang</button>
+                <button class="secondary-action" id="openRuntimeGuide">Buka panduan</button>
+              </div>
+            </section>
+          </div>
+
+          <div class="settings-panel" id="settings-output">
             <section class="panel settings-form">
               <p class="eyebrow">Output</p>
               <h2>Render profile</h2>
@@ -254,6 +292,14 @@
                 <input id="outputFolder" placeholder="Pilih folder output" />
               </label>
               <button class="secondary-action" id="chooseOutputFolder">Pilih folder output</button>
+              <label class="field">
+                <span>Format</span>
+                <select id="formatProfile">
+                  <option>9:16 YouTube Shorts</option>
+                  <option>1:1 Square</option>
+                  <option>16:9 Landscape</option>
+                </select>
+              </label>
               <label class="field">
                 <span>Resolusi output</span>
                 <select id="resolutionProfile">
@@ -264,20 +310,13 @@
                   <option>Same as source</option>
                 </select>
               </label>
+              <label class="toggle-row"><input id="upscaleToggle" type="checkbox" checked /> Enable upscale</label>
               <label class="field">
-                <span>Format</span>
-                <select id="formatProfile">
-                  <option>9:16 YouTube Shorts</option>
-                  <option>1:1 Square</option>
-                  <option>4:5 Social feed</option>
-                </select>
-              </label>
-              <label class="field">
-                <span>Caption style</span>
-                <select id="captionStyle">
-                  <option>Karaoke bold</option>
-                  <option>Clean subtitle</option>
-                  <option>Minimal lower third</option>
+                <span>Upscale method</span>
+                <select id="upscaleMethod">
+                  <option>FFmpeg Lanczos</option>
+                  <option>FFmpeg Bicubic</option>
+                  <option>Local AI optional</option>
                 </select>
               </label>
               <label class="field">
@@ -296,15 +335,128 @@
                   <option>60 FPS</option>
                 </select>
               </label>
-              <label class="toggle-row">
-                <input id="upscaleToggle" type="checkbox" checked />
-                Enable upscale
+            </section>
+          </div>
+
+          <div class="settings-panel" id="settings-subtitle">
+            <section class="panel settings-form">
+              <p class="eyebrow">Subtitle & Hook</p>
+              <h2>Caption overlay</h2>
+              <label class="toggle-row"><input id="subtitleBurnToggle" type="checkbox" checked /> Burn subtitle to video</label>
+              <label class="toggle-row"><input id="hookOpeningToggle" type="checkbox" checked /> Show hook opening</label>
+              <label class="field">
+                <span>Caption style</span>
+                <select id="captionStyle">
+                  <option>Karaoke bold</option>
+                  <option>Clean subtitle</option>
+                  <option>TikTok style</option>
+                  <option>YouTube Shorts style</option>
+                  <option>Minimal lower third</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Hook duration</span>
+                <select id="hookDuration">
+                  <option>2 seconds</option>
+                  <option>3 seconds</option>
+                  <option>5 seconds</option>
+                </select>
+              </label>
+            </section>
+          </div>
+
+          <div class="settings-panel" id="settings-watermark">
+            <section class="panel settings-form">
+              <p class="eyebrow">Watermark</p>
+              <h2>Brand overlay</h2>
+              <label class="toggle-row"><input id="watermarkEnabled" type="checkbox" /> Enable watermark</label>
+              <label class="toggle-row"><input id="watermarkInOutput" type="checkbox" /> Show watermark in output</label>
+              <label class="field">
+                <span>Text watermark</span>
+                <input id="watermarkText" placeholder="@channel atau brand" />
               </label>
               <label class="range-field">
                 <span>Watermark opacity</span>
                 <input id="watermarkOpacity" type="range" min="10" max="100" value="68" />
               </label>
-              <button class="secondary-action" id="checkDependencyButton">Cek dependency</button>
+              <label class="field">
+                <span>Position template</span>
+                <select id="watermarkPosition">
+                  <option>Top right</option>
+                  <option>Top left</option>
+                  <option>Bottom right</option>
+                  <option>Bottom left</option>
+                  <option>Center</option>
+                </select>
+              </label>
+            </section>
+          </div>
+
+          <div class="settings-panel" id="settings-cookies">
+            <section class="panel cookies-summary">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Cookies Manager</p>
+                  <h2 id="cookiesStatusTitle">Cookies belum dipasang</h2>
+                </div>
+                <span class="status-pill" id="cookiesStatusBadge">Belum dipasang</span>
+              </div>
+              <div class="cookies-dropzone" id="cookiesDropZone">
+                <strong>Import cookies.txt</strong>
+                <span>Drag & drop file di sini atau klik Import Cookies. Aplikasi hanya menyimpan lokasi file, bukan isi cookies.</span>
+              </div>
+              <div class="cookie-info-grid">
+                <div><span>Nama file</span><strong id="cookiesFileName">-</strong></div>
+                <div><span>Ukuran</span><strong id="cookiesFileSize">-</strong></div>
+                <div><span>Tanggal import</span><strong id="cookiesImportDate">-</strong></div>
+                <div><span>Terakhir dipakai</span><strong id="cookiesLastUsed">-</strong></div>
+                <div><span>Umur cookies</span><strong id="cookiesAge">-</strong></div>
+                <div><span>Status test</span><strong id="cookiesTestStatus">Belum dites</strong></div>
+              </div>
+              <div class="action-row">
+                <button class="primary-action" id="importCookiesButton">Import Cookies</button>
+                <button class="secondary-action" id="replaceCookiesButton">Ganti Cookies</button>
+                <button class="secondary-action" id="testCookiesButton">Test Cookies</button>
+                <button class="danger-action" id="removeCookiesButton">Hapus</button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <p class="eyebrow">Kenapa cookies dibutuhkan?</p>
+              <h2>Digunakan hanya saat video perlu login</h2>
+              <ul class="plain-list">
+                <li>Age Restricted</li>
+                <li>Login Required</li>
+                <li>Member Only</li>
+                <li>Region Locked</li>
+                <li>Private playlist yang punya akses login</li>
+                <li>Video yang memerlukan autentikasi akun</li>
+              </ul>
+              <p class="muted-copy">Jika video publik biasa, aplikasi otomatis memakai yt-dlp tanpa cookies.</p>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Cara mendapatkan cookies</p>
+                  <h2>Wizard export cookies.txt</h2>
+                </div>
+                <button class="secondary-action" id="openExtensionGuide">Open Extension Guide</button>
+              </div>
+              <ol class="wizard-list">
+                <li><strong>Install extension browser.</strong><span>Chrome/Edge: Get cookies.txt LOCALLY atau Cookie-Editor. Firefox: Cookie Quick Manager.</span></li>
+                <li><strong>Login ke YouTube.</strong><span>Pastikan akun sudah login di browser.</span></li>
+                <li><strong>Buka video YouTube.</strong><span>Gunakan video yang ingin diproses atau halaman youtube.com.</span></li>
+                <li><strong>Klik extension.</strong><span>Pilih Export cookies.txt.</span></li>
+                <li><strong>Simpan file.</strong><span>Nama file boleh cookies.txt.</span></li>
+                <li><strong>Kembali ke aplikasi.</strong><span>Klik Import Cookies atau drag & drop file.</span></li>
+              </ol>
+            </section>
+
+            <section class="panel reminder-card">
+              <p class="eyebrow">Reminder</p>
+              <h2>Perbarui cookies setiap sekitar 1 minggu</h2>
+              <p>Cookies browser dapat berubah setelah logout akun, login ulang, browser update, atau Google refresh session. Jika mulai banyak video gagal didownload, export ulang cookies terbaru.</p>
             </section>
           </div>
         </section>

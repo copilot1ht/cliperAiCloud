@@ -53,6 +53,134 @@ def check_dependencies():
     return deps
 
 
+def classify_download_error(exc):
+    text = str(exc).lower()
+    if any(item in text for item in ["sign in", "login", "log in", "authentication", "account"]):
+        return "Login diperlukan"
+    if any(item in text for item in ["age", "confirm your age", "age-restricted"]):
+        return "Age restricted"
+    if any(item in text for item in ["private", "members-only", "members only", "join this channel"]):
+        return "Video private/member only"
+    if any(item in text for item in ["region", "country", "not available in your country"]):
+        return "Region locked"
+    if "cookie" in text and any(item in text for item in ["expired", "invalid", "malformed"]):
+        return "Cookies expired"
+    return "yt-dlp error"
+
+
+def needs_cookies_error(exc):
+    reason = classify_download_error(exc).lower()
+    return any(item in reason for item in ["login", "age", "private", "member", "region"])
+
+
+def validate_cookie_file(cookie_path):
+    if not cookie_path:
+        return {"ok": False, "reason": "File cookies belum dipilih."}
+    path = Path(cookie_path)
+    if not path.exists():
+        return {"ok": False, "reason": "File cookies tidak ditemukan.", "path": str(path)}
+    try:
+        stat = path.stat()
+        if stat.st_size == 0:
+            return {"ok": False, "reason": "Cookies kosong.", "path": str(path)}
+        if stat.st_size > 20 * 1024 * 1024:
+            return {"ok": False, "reason": "Ukuran cookies terlalu besar.", "path": str(path), "sizeBytes": stat.st_size}
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except PermissionError:
+        return {"ok": False, "reason": "Permission denied saat membaca cookies.", "path": str(path)}
+    except Exception as exc:
+        return {"ok": False, "reason": f"File cookies rusak: {exc}", "path": str(path)}
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    data_lines = [line for line in lines if not line.startswith("#")]
+    has_netscape_header = any("netscape http cookie file" in line.lower() for line in lines[:8])
+    valid_rows = [line for line in data_lines if len(line.split("\t")) >= 7]
+    if not has_netscape_header and not valid_rows:
+        return {"ok": False, "reason": "Format bukan Netscape Cookie File.", "path": str(path), "sizeBytes": stat.st_size}
+
+    domains = [line.split("\t")[0].lower() for line in valid_rows]
+    names = [line.split("\t")[5] for line in valid_rows if len(line.split("\t")) >= 6]
+    has_youtube = any("youtube.com" in domain or "youtu.be" in domain for domain in domains)
+    has_google = any("google.com" in domain for domain in domains)
+    important = {"SID", "HSID", "SSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID", "LOGIN_INFO"}
+    important_found = sorted(set(names).intersection(important))
+    if not has_youtube and not has_google:
+        return {"ok": False, "reason": "Cookies tidak berisi domain YouTube/Google.", "path": str(path), "sizeBytes": stat.st_size}
+
+    warning = None
+    if not important_found:
+        warning = "Cookie login penting tidak ditemukan. File mungkin hanya cookies publik."
+    return {
+        "ok": True,
+        "path": str(path),
+        "fileName": path.name,
+        "sizeBytes": stat.st_size,
+        "modifiedAt": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        "hasYoutube": has_youtube,
+        "hasGoogle": has_google,
+        "importantCookies": important_found,
+        "warning": warning,
+    }
+
+
+def test_cookies(payload):
+    validation = validate_cookie_file(payload.get("cookiesPath"))
+    if not validation.get("ok"):
+        return validation
+    yt_dlp = require_yt_dlp()
+    test_url = payload.get("url") or "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+        "cookiefile": payload.get("cookiesPath"),
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(test_url, download=False)
+        return {
+            **validation,
+            "testOk": True,
+            "status": "Cookies valid",
+            "lastTestVideo": info.get("title"),
+            "testedAt": datetime.now().isoformat(),
+        }
+    except Exception as exc:
+        return {
+            **validation,
+            "ok": False,
+            "testOk": False,
+            "status": classify_download_error(exc),
+            "reason": str(exc),
+            "testedAt": datetime.now().isoformat(),
+        }
+
+
+def extract_info_with_cookie_retry(yt_dlp, ydl_opts, url, cookie_path, download=False):
+    public_opts = dict(ydl_opts)
+    public_opts.pop("cookiefile", None)
+    try:
+        with yt_dlp.YoutubeDL(public_opts) as ydl:
+            return ydl.extract_info(url, download=download), False
+    except Exception as public_exc:
+        if not needs_cookies_error(public_exc):
+            raise
+        if not cookie_path:
+            raise RuntimeError(f"{classify_download_error(public_exc)}. Import cookies di Settings > Cookies Manager.") from public_exc
+        validation = validate_cookie_file(cookie_path)
+        if not validation.get("ok"):
+            raise RuntimeError(f"{classify_download_error(public_exc)}. Cookies tidak valid: {validation.get('reason')}") from public_exc
+        emit("log", message=f"{classify_download_error(public_exc)}. Retry otomatis menggunakan cookies.")
+        retry_opts = dict(ydl_opts)
+        retry_opts["cookiefile"] = cookie_path
+        try:
+            with yt_dlp.YoutubeDL(retry_opts) as ydl:
+                return ydl.extract_info(url, download=download), True
+        except Exception as cookie_exc:
+            raise RuntimeError(f"{classify_download_error(cookie_exc)}. Export ulang cookies terbaru lalu coba lagi.") from cookie_exc
+
+
 def require_yt_dlp():
     try:
         import yt_dlp
@@ -323,11 +451,7 @@ def analyze(payload):
         "noplaylist": True,
     }
     cookie_path = payload.get("cookiesPath")
-    if cookie_path and Path(cookie_path).exists():
-        ydl_opts["cookiefile"] = cookie_path
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    info, used_cookies = extract_info_with_cookie_retry(yt_dlp, ydl_opts, url, cookie_path, download=False)
 
     emit("progress", stage="subtitle", progress=28, message="Mengambil subtitle/transkrip")
     try:
@@ -347,6 +471,7 @@ def analyze(payload):
             "webpage_url": info.get("webpage_url") or url,
             "subtitle_language": subtitle_language,
             "transcript_segments": len(transcript),
+            "used_cookies": used_cookies,
         },
         "moments": moments,
         "dependencies": check_dependencies(),
@@ -477,10 +602,7 @@ def render(payload):
         "outtmpl": source_template,
     }
     cookie_path = payload.get("cookiesPath")
-    if cookie_path and Path(cookie_path).exists():
-        ydl_opts["cookiefile"] = cookie_path
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+    info, used_cookies = extract_info_with_cookie_retry(yt_dlp, ydl_opts, url, cookie_path, download=True)
 
     source = next(internal_dir.glob("source.*"), None)
     if source is None:
@@ -538,6 +660,7 @@ def render(payload):
     manifest = {
         "source": url,
         "title": info.get("title"),
+        "used_cookies": used_cookies,
         "created_at": datetime.now().isoformat(),
         "outputs": outputs,
     }
@@ -548,13 +671,17 @@ def render(payload):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", required=True, choices=["check", "analyze", "render"])
+    parser.add_argument("--mode", required=True, choices=["check", "validate-cookies", "test-cookies", "analyze", "render"])
     parser.add_argument("--payload", required=True)
     args = parser.parse_args()
     payload = load_payload(args.payload)
     try:
         if args.mode == "check":
             emit("done", result=check_dependencies())
+        elif args.mode == "validate-cookies":
+            emit("done", result=validate_cookie_file(payload.get("cookiesPath")))
+        elif args.mode == "test-cookies":
+            emit("done", result=test_cookies(payload))
         elif args.mode == "analyze":
             analyze(payload)
         elif args.mode == "render":

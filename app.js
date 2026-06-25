@@ -5,6 +5,10 @@ const state = {
   processingTimer: null,
   scanCount: 0,
   cookiesPath: "",
+  cookiesInfo: null,
+  config: {},
+  dependencies: null,
+  activeSettingsTab: "api",
   lastAnalysis: null,
   previewImageUrl: "",
   logLines: [
@@ -118,11 +122,18 @@ function collectPayload() {
     crfProfile: $("#crfProfile")?.value,
     fpsProfile: $("#fpsProfile")?.value,
     enableUpscale: $("#upscaleToggle")?.checked,
-    addCaptions: $("#autoCaption").checked,
+    upscaleMethod: $("#upscaleMethod")?.value,
+    gpuAcceleration: $("#gpuToggle")?.checked,
+    activeEncoder: $("#activeEncoder")?.textContent,
+    addCaptions: $("#subtitleBurnToggle")?.checked ?? $("#autoCaption").checked,
     autoCut: $("#autoCut").checked,
-    addHook: $("#autoHook").checked,
+    addHook: $("#hookOpeningToggle")?.checked ?? $("#autoHook").checked,
+    hookDuration: $("#hookDuration")?.value,
     faceTrack: $("#faceTrack").checked,
-    addWatermark: $("#watermarkToggle").checked,
+    addWatermark: $("#watermarkInOutput")?.checked ?? $("#watermarkToggle").checked,
+    watermarkText: $("#watermarkText")?.value,
+    watermarkOpacity: $("#watermarkOpacity")?.value,
+    watermarkPosition: $("#watermarkPosition")?.value,
     writeMetadata: $("#metadataToggle").checked,
     baseUrl: $("#baseUrl")?.value,
     apiKey: $("#apiKey")?.value,
@@ -165,6 +176,139 @@ function renderLogs() {
 function pushLog(message) {
   state.logLines.push(message);
   renderLogs();
+}
+
+function setText(selector, value) {
+  const node = $(selector);
+  if (node) node.textContent = value;
+}
+
+function setValue(selector, value) {
+  const node = $(selector);
+  if (!node || value === undefined || value === null) return;
+  if (node.type === "checkbox") {
+    node.checked = Boolean(value);
+    return;
+  }
+  node.value = value;
+}
+
+function fieldValue(id, fallback = "") {
+  const node = $(`#${id}`);
+  if (!node) return fallback;
+  return node.type === "checkbox" ? node.checked : node.value;
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!value) return "-";
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)));
+  return `${(value / Math.pow(1024, index)).toFixed(index ? 1 : 0)} ${units[index]}`;
+}
+
+function formatDate(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" });
+}
+
+function daysSince(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return Math.max(0, Math.floor((Date.now() - date.getTime()) / 86400000));
+}
+
+function cookieAgeText(value) {
+  const days = daysSince(value);
+  if (days === null) return "-";
+  if (days === 0) return "Hari ini";
+  return `${days} hari`;
+}
+
+function normalizeCookiesInfo(config = {}) {
+  const path = config.cookies_path || config.cookiesPath || config.cookies?.path || "";
+  if (!path) return null;
+  const meta = config.cookies_meta || config.cookies || {};
+  return {
+    path,
+    fileName: meta.fileName || path.split(/[\\/]/).pop() || "cookies.txt",
+    sizeBytes: meta.sizeBytes || meta.size || 0,
+    importedAt: config.cookies_last_import || meta.importedAt || meta.importDate || "",
+    lastUsed: config.cookies_last_used || meta.lastUsed || "",
+    lastTest: config.cookies_last_test || meta.lastTest || "",
+    status: config.cookies_status || meta.status || "Cookies Loaded",
+    testStatus: meta.testStatus || config.cookies_test_status || "Belum dites",
+    validation: meta.validation || null
+  };
+}
+
+function renderCookiesManager() {
+  const info = state.cookiesInfo;
+  const hasCookies = Boolean(state.cookiesPath && info);
+  const importedAt = info?.importedAt;
+  const age = daysSince(importedAt);
+  const statusTitle = hasCookies ? "Cookies Loaded" : "Cookies belum dipasang";
+  const statusBadge = hasCookies ? "Loaded" : "Belum dipasang";
+  const stale = hasCookies && age !== null && age > 7;
+
+  setText("#cookiesStatusTitle", hasCookies ? "✓ Cookies Loaded" : "⚠ Cookies belum dipasang");
+  setText("#cookiesStatusBadge", stale ? "Perlu update" : statusBadge);
+  setText("#cookiesFileName", hasCookies ? info.fileName : "-");
+  setText("#cookiesFileSize", hasCookies ? formatBytes(info.sizeBytes) : "-");
+  setText("#cookiesImportDate", hasCookies ? formatDate(importedAt) : "-");
+  setText("#cookiesLastUsed", hasCookies ? formatDate(info.lastUsed) : "-");
+  setText("#cookiesAge", hasCookies ? cookieAgeText(importedAt) : "-");
+  setText("#cookiesTestStatus", hasCookies ? (info.testStatus || info.status || "Belum dites") : "Belum dites");
+  setText("#cookieState", hasCookies ? info.path : "Belum dipilih");
+  setText("#cookiesAgeBadge", stale ? "Cookies mungkin perlu diperbarui." : statusTitle);
+
+  const badge = $("#cookiesAgeBadge");
+  if (badge) {
+    badge.classList.toggle("warning", Boolean(stale));
+    badge.classList.toggle("ok", hasCookies && !stale);
+  }
+  const status = $("#cookiesStatusBadge");
+  if (status) {
+    status.classList.toggle("warning", Boolean(stale));
+    status.classList.toggle("ok", hasCookies && !stale);
+  }
+}
+
+function renderRuntimeList(deps = state.dependencies) {
+  const list = $("#runtimeList");
+  if (!list) return;
+  const items = [
+    ["Python", deps?.python?.version || (deps?.python?.ok ? "Ready" : "Belum dicek"), deps?.python?.ok],
+    ["yt-dlp", deps?.yt_dlp?.version || (deps?.yt_dlp?.ok ? "Ready" : "Belum dicek"), deps?.yt_dlp?.ok],
+    ["FFmpeg", deps?.ffmpeg?.ok ? "Ready" : "Belum dicek", deps?.ffmpeg?.ok],
+    ["FFprobe", deps?.ffprobe?.ok ? "Ready" : "Belum dicek", deps?.ffprobe?.ok],
+    ["OpenAI SDK", deps?.openai?.ok ? "Ready" : "Opsional", deps?.openai?.ok],
+    ["Local AI Upscaler", deps?.upscaler?.ok ? "Ready" : "Opsional", deps?.upscaler?.ok]
+  ];
+  list.innerHTML = items
+    .map(([name, value, ok]) => `
+      <div class="runtime-item ${ok ? "ok" : ""}">
+        <span>${name}</span>
+        <strong>${value}</strong>
+      </div>
+    `)
+    .join("");
+}
+
+function setSettingsTab(tab) {
+  state.activeSettingsTab = tab;
+  $$(".settings-tab").forEach((button) => button.classList.toggle("active", button.dataset.settingsTab === tab));
+  $$(".settings-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `settings-${tab}`));
+}
+
+async function markCookiesUsed() {
+  if (!state.cookiesInfo) return;
+  state.cookiesInfo.lastUsed = new Date().toISOString();
+  renderCookiesManager();
+  await saveConfig({ silent: true });
 }
 
 function renderSessions() {
@@ -269,9 +413,13 @@ async function scanSubtitles() {
   pushLog("[check] cek dependency worker");
   const result = await window.cliper.checkDependencies();
   const deps = result.result || {};
-  $("#subtitleMetric").textContent = deps.yt_dlp?.ok ? "yt-dlp ready" : "yt-dlp missing";
-  $("#apiStatus").textContent = deps.ffmpeg?.ok ? "FFmpeg ready" : "FFmpeg belum ada";
-  $("#runtimeMetric").textContent = deps.ffmpeg?.ok ? "Runtime ready" : "FFmpeg belum ada";
+  state.dependencies = deps;
+  renderRuntimeList(deps);
+  setText("#subtitleMetric", deps.yt_dlp?.ok ? "yt-dlp ready" : "yt-dlp missing");
+  setText("#apiStatus", deps.ffmpeg?.ok ? "FFmpeg ready" : "FFmpeg belum ada");
+  setText("#runtimeMetric", deps.ffmpeg?.ok ? "Runtime ready" : "FFmpeg belum ada");
+  setText("#detectedGpu", "Auto detect aktif setelah FFmpeg tersedia");
+  setText("#activeEncoder", $("#gpuToggle")?.checked && deps.ffmpeg?.ok ? "h264_amf jika tersedia, fallback libx264" : "CPU fallback - libx264");
   pushLog(`[dependency] python=${deps.python?.version || "-"} yt-dlp=${deps.yt_dlp?.ok ? deps.yt_dlp.version : "missing"} ffmpeg=${deps.ffmpeg?.ok ? "ready" : "missing"}`);
   toast("Dependency dicek");
 }
@@ -305,6 +453,10 @@ async function findMoments() {
 
   const data = result.result;
   state.lastAnalysis = data;
+  if (data.video?.used_cookies) {
+    await markCookiesUsed();
+    pushLog("[cookies] digunakan otomatis setelah video meminta login/age verification");
+  }
   momentBank = (data.moments || []).map((item, index) => ({
     ...item,
     id: item.id || index + 1,
@@ -347,6 +499,10 @@ async function startProcessing() {
       toast(result.message);
       return;
     }
+    if (result.result?.manifest?.used_cookies) {
+      await markCookiesUsed();
+      pushLog("[cookies] render berhasil memakai cookies setelah retry otomatis");
+    }
     $("#jobBadge").textContent = "Complete";
     const outputCount = result.result?.outputs?.length || clips.length;
     sessions.unshift({
@@ -366,35 +522,209 @@ async function startProcessing() {
   toast("Buka via .exe untuk render real");
 }
 
-function saveConfig() {
+function buildConfig() {
   const config = {
-    baseUrl: $("#baseUrl")?.value,
-    apiKey: $("#apiKey")?.value,
-    highlightModel: $("#highlightModel")?.value,
-    outputFolder: $("#outputFolder")?.value,
-    captionStyle: $("#captionStyle")?.value,
-    formatProfile: $("#formatProfile")?.value
+    baseUrl: fieldValue("baseUrl", "https://api.openai.com/v1"),
+    apiKey: fieldValue("apiKey"),
+    highlightModel: fieldValue("highlightModel", "gpt-4.1-mini"),
+    outputFolder: fieldValue("outputFolder", "outputs/clips"),
+    formatProfile: fieldValue("formatProfile", "9:16 YouTube Shorts"),
+    resolutionProfile: fieldValue("resolutionProfile", "1080p"),
+    upscaleToggle: fieldValue("upscaleToggle", true),
+    upscaleMethod: fieldValue("upscaleMethod", "FFmpeg Lanczos"),
+    crfProfile: fieldValue("crfProfile", "23"),
+    fpsProfile: fieldValue("fpsProfile", "Same as source"),
+    captionStyle: fieldValue("captionStyle", "Karaoke bold"),
+    subtitleBurnToggle: fieldValue("subtitleBurnToggle", true),
+    hookOpeningToggle: fieldValue("hookOpeningToggle", true),
+    hookDuration: fieldValue("hookDuration", "3 seconds"),
+    watermarkEnabled: fieldValue("watermarkEnabled", false),
+    watermarkInOutput: fieldValue("watermarkInOutput", false),
+    watermarkText: fieldValue("watermarkText"),
+    watermarkOpacity: fieldValue("watermarkOpacity", "68"),
+    watermarkPosition: fieldValue("watermarkPosition", "Top right"),
+    gpuToggle: fieldValue("gpuToggle", true),
+    cookies_path: state.cookiesPath || "",
+    cookies_last_import: state.cookiesInfo?.importedAt || "",
+    cookies_last_test: state.cookiesInfo?.lastTest || "",
+    cookies_last_used: state.cookiesInfo?.lastUsed || "",
+    cookies_status: state.cookiesInfo?.status || "",
+    cookies_test_status: state.cookiesInfo?.testStatus || "",
+    cookies_meta: state.cookiesInfo
   };
-  localStorage.setItem("cliper-config", JSON.stringify(config));
-  $("#apiStatus").textContent = config.apiKey ? "API tersimpan" : "API belum diset";
-  renderProviders();
-  toast("Setting disimpan");
+  return config;
 }
 
-function loadConfig() {
+function applyConfig(config = {}) {
+  state.config = config;
+  setValue("#baseUrl", config.baseUrl || "https://api.openai.com/v1");
+  setValue("#apiKey", config.apiKey || "");
+  setValue("#highlightModel", config.highlightModel || "gpt-4.1-mini");
+  setValue("#outputFolder", config.outputFolder || "outputs/clips");
+  setValue("#formatProfile", config.formatProfile || "9:16 YouTube Shorts");
+  setValue("#resolutionProfile", config.resolutionProfile || "1080p");
+  setValue("#upscaleToggle", config.upscaleToggle ?? true);
+  setValue("#upscaleMethod", config.upscaleMethod || "FFmpeg Lanczos");
+  setValue("#crfProfile", config.crfProfile || "23");
+  setValue("#fpsProfile", config.fpsProfile || "Same as source");
+  setValue("#captionStyle", config.captionStyle || "Karaoke bold");
+  setValue("#subtitleBurnToggle", config.subtitleBurnToggle ?? true);
+  setValue("#hookOpeningToggle", config.hookOpeningToggle ?? true);
+  setValue("#hookDuration", config.hookDuration || "3 seconds");
+  setValue("#watermarkEnabled", config.watermarkEnabled ?? false);
+  setValue("#watermarkInOutput", config.watermarkInOutput ?? false);
+  setValue("#watermarkText", config.watermarkText || "");
+  setValue("#watermarkOpacity", config.watermarkOpacity || "68");
+  setValue("#watermarkPosition", config.watermarkPosition || "Top right");
+  setValue("#gpuToggle", config.gpuToggle ?? true);
+  state.cookiesInfo = normalizeCookiesInfo(config);
+  state.cookiesPath = state.cookiesInfo?.path || "";
+  setText("#apiStatus", config.apiKey ? "API tersimpan" : "API belum diset");
+  renderProviders();
+  renderCookiesManager();
+}
+
+async function saveConfig(options = {}) {
+  const config = buildConfig();
+  state.config = config;
+  localStorage.setItem("cliper-config", JSON.stringify(config));
+  if (window.cliper?.saveConfig) {
+    try {
+      await window.cliper.saveConfig(config);
+    } catch (error) {
+      pushLog(`[config] gagal menyimpan config.json: ${error.message}`);
+    }
+  }
+  setText("#apiStatus", config.apiKey ? "API tersimpan" : "API belum diset");
+  renderProviders();
+  renderCookiesManager();
+  if (!options.silent) toast("Setting disimpan");
+}
+
+async function loadConfig() {
+  let config = {};
   try {
-    const config = JSON.parse(localStorage.getItem("cliper-config") || "{}");
-    Object.entries(config).forEach(([key, value]) => {
-      const node = $(`#${key}`);
-      if (node && value) node.value = value;
-    });
+    config = JSON.parse(localStorage.getItem("cliper-config") || "{}");
   } catch {
     localStorage.removeItem("cliper-config");
   }
+  if (window.cliper?.getConfig) {
+    try {
+      config = { ...config, ...(await window.cliper.getConfig()) };
+    } catch (error) {
+      pushLog(`[config] gagal membaca config.json: ${error.message}`);
+    }
+  }
+  applyConfig(config);
+}
+
+async function validateAndStoreCookies(filePath) {
+  if (!filePath) return;
+  if (!window.cliper?.validateCookies) {
+    state.cookiesPath = filePath;
+    state.cookiesInfo = {
+      path: filePath,
+      fileName: filePath.split(/[\\/]/).pop() || "cookies.txt",
+      sizeBytes: 0,
+      importedAt: new Date().toISOString(),
+      status: "Cookies Loaded",
+      testStatus: "Belum dites"
+    };
+    await saveConfig({ silent: true });
+    toast("Cookies dipilih. Validasi tersedia di .exe");
+    return;
+  }
+
+  toast("Importing cookies...");
+  setText("#cookiesTestStatus", "Importing cookies...");
+  pushLog(`[cookies] validasi ${filePath}`);
+  const result = await window.cliper.validateCookies({ cookiesPath: filePath });
+  const validation = result.result || {};
+  if (result.type === "error" || !validation.ok) {
+    const reason = validation.reason || result.message || "Cookies tidak valid. Silakan export ulang.";
+    setText("#cookiesTestStatus", reason);
+    pushLog(`[cookies] invalid: ${reason}`);
+    toast("Cookies tidak valid. Silakan export ulang.");
+    return;
+  }
+
+  const now = new Date().toISOString();
+  state.cookiesPath = validation.path || filePath;
+  state.cookiesInfo = {
+    path: state.cookiesPath,
+    fileName: validation.fileName || filePath.split(/[\\/]/).pop() || "cookies.txt",
+    sizeBytes: validation.sizeBytes,
+    importedAt: now,
+    lastUsed: "",
+    lastTest: "",
+    status: "Cookies Loaded",
+    testStatus: validation.warning || "Cookies berhasil dimuat.",
+    validation
+  };
+  await saveConfig({ silent: true });
+  renderCookiesManager();
+  pushLog("[cookies] Cookies berhasil dimuat.");
+  toast("Cookies berhasil dimuat.");
+}
+
+async function importCookies() {
+  if (window.cliper?.selectCookieFile) {
+    const filePath = await window.cliper.selectCookieFile();
+    await validateAndStoreCookies(filePath);
+    return;
+  }
+  $("#cookieFile")?.click();
+}
+
+async function testCookies() {
+  if (!state.cookiesPath) {
+    toast("Import cookies dulu");
+    setSettingsTab("cookies");
+    return;
+  }
+  if (!window.cliper?.testCookies) {
+    toast("Test cookies tersedia di .exe");
+    return;
+  }
+  toast("Testing cookies...");
+  setText("#cookiesTestStatus", "Testing cookies...");
+  const result = await window.cliper.testCookies({ cookiesPath: state.cookiesPath, url: $("#youtubeUrl")?.value.trim() });
+  const data = result.result || {};
+  const now = data.testedAt || new Date().toISOString();
+  if (result.type === "error" || !data.testOk) {
+    const status = data.status || data.reason || result.message || "Cookies expired";
+    state.cookiesInfo = { ...(state.cookiesInfo || {}), lastTest: now, testStatus: status, status };
+    await saveConfig({ silent: true });
+    pushLog(`[cookies] test gagal: ${status}`);
+    toast(status === "Login diperlukan" ? "Login diperlukan" : "Cookies expired");
+    return;
+  }
+  state.cookiesInfo = { ...(state.cookiesInfo || {}), lastTest: now, testStatus: "✓ Cookies valid", status: "Cookies Loaded" };
+  await saveConfig({ silent: true });
+  pushLog(`[cookies] valid untuk test video: ${data.lastTestVideo || "-"}`);
+  toast("✓ Cookies valid");
+}
+
+async function removeCookies() {
+  state.cookiesPath = "";
+  state.cookiesInfo = null;
+  await saveConfig({ silent: true });
+  renderCookiesManager();
+  toast("Cookies dihapus dari config");
+}
+
+async function detectGpu() {
+  setText("#detectedGpu", "Detecting GPU...");
+  await scanSubtitles();
+  const hasFfmpeg = state.dependencies?.ffmpeg?.ok;
+  setText("#detectedGpu", hasFfmpeg ? "FFmpeg ready - GPU encoder akan dicoba otomatis saat render" : "GPU belum terdeteksi. CPU fallback aktif.");
+  setText("#activeEncoder", hasFfmpeg && $("#gpuToggle")?.checked ? "h264_amf jika tersedia, fallback libx264" : "CPU fallback - libx264");
+  toast("GPU/runtime selesai dicek");
 }
 
 function bindEvents() {
   $$(".nav-item").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
+  $$(".settings-tab").forEach((button) => button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab)));
 
   $("#youtubeUrl").addEventListener("input", (event) => {
     const clean = event.target.value.replace(/^https?:\/\//, "");
@@ -406,22 +736,19 @@ function bindEvents() {
   $("#captionStyle").addEventListener("change", updateCounters);
 
   $("#chooseCookieFile").addEventListener("click", async () => {
-    if (window.cliper) {
-      const filePath = await window.cliper.selectCookieFile();
-      if (filePath) {
-        state.cookiesPath = filePath;
-        $("#cookieState").textContent = filePath;
-        toast("cookies.txt dipilih");
-      }
-      return;
-    }
-    $("#cookieFile").click();
+    setSettingsTab("cookies");
+    await importCookies();
   });
 
   $("#cookieFile").addEventListener("change", (event) => {
     const file = event.target.files[0];
+    const filePath = file?.path;
+    if (filePath) {
+      validateAndStoreCookies(filePath);
+      return;
+    }
     $("#cookieState").textContent = file ? `${file.name} siap dipakai` : "Belum dipilih";
-    toast(file ? "cookies.txt dipilih" : "cookies.txt kosong");
+    toast(file ? "Buka via .exe untuk validasi file cookies" : "cookies.txt kosong");
   });
 
   $("#scanSubtitles").addEventListener("click", scanSubtitles);
@@ -481,7 +808,7 @@ function bindEvents() {
 
   $("#refreshPreview").addEventListener("click", drawPreview);
   $("#newSessionButton").addEventListener("click", () => setView("studio"));
-  $("#saveConfig").addEventListener("click", saveConfig);
+  $("#saveConfig").addEventListener("click", () => saveConfig());
   $("#chooseOutputFolder").addEventListener("click", async () => {
     if (!window.cliper) {
       toast("Folder picker tersedia di .exe");
@@ -494,6 +821,43 @@ function bindEvents() {
     }
   });
   $("#checkDependencyButton").addEventListener("click", scanSubtitles);
+  $("#detectGpuButton").addEventListener("click", detectGpu);
+  $("#importCookiesButton").addEventListener("click", importCookies);
+  $("#replaceCookiesButton").addEventListener("click", importCookies);
+  $("#testCookiesButton").addEventListener("click", testCookies);
+  $("#removeCookiesButton").addEventListener("click", removeCookies);
+  $("#openExtensionGuide").addEventListener("click", () => {
+    const url = "https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies";
+    if (window.cliper?.openExternal) {
+      window.cliper.openExternal(url);
+    } else {
+      window.open(url, "_blank", "noopener");
+    }
+  });
+  $("#openRuntimeGuide").addEventListener("click", () => {
+    const url = "https://github.com/yt-dlp/yt-dlp#dependencies";
+    if (window.cliper?.openExternal) {
+      window.cliper.openExternal(url);
+    } else {
+      window.open(url, "_blank", "noopener");
+    }
+  });
+  $("#cookiesDropZone").addEventListener("click", importCookies);
+  $("#cookiesDropZone").addEventListener("dragover", (event) => {
+    event.preventDefault();
+    $("#cookiesDropZone").classList.add("dragging");
+  });
+  $("#cookiesDropZone").addEventListener("dragleave", () => $("#cookiesDropZone").classList.remove("dragging"));
+  $("#cookiesDropZone").addEventListener("drop", async (event) => {
+    event.preventDefault();
+    $("#cookiesDropZone").classList.remove("dragging");
+    const file = event.dataTransfer.files?.[0];
+    if (!file?.path) {
+      toast("Drag & drop path tersedia di .exe");
+      return;
+    }
+    await validateAndStoreCookies(file.path);
+  });
   $("#testApiButton").addEventListener("click", () => {
     if (!$("#apiKey").value.trim()) {
       $("#apiStatus").textContent = "API key kosong";
@@ -524,14 +888,16 @@ function bindEvents() {
   }
 }
 
-function init() {
-  loadConfig();
+async function init() {
+  await loadConfig();
   bindEvents();
   renderMoments();
   renderSteps();
   renderLogs();
   renderSessions();
   renderProviders();
+  renderCookiesManager();
+  renderRuntimeList();
   updateCounters();
   drawPreview();
 }
