@@ -1,4 +1,4 @@
-import { Injectable, ServiceUnavailableException } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, ServiceUnavailableException } from "@nestjs/common";
 import { AiRouter } from "@cliper/ai-router";
 import type { CliperChatRequest, CliperChatResponse } from "@cliper/contracts";
 import { randomUUID } from "node:crypto";
@@ -13,7 +13,13 @@ export class GatewayService {
   private router?: AiRouter;
   private routerRevision = -1;
 
-  constructor(private readonly usage: UsageService, private readonly adminStore: AdminStoreService, private readonly pricing: PricingService, private readonly credits: CreditAccountService, private readonly rateLimits: RateLimitService) {}
+  constructor(
+    @Inject(UsageService) private readonly usage: UsageService,
+    @Inject(AdminStoreService) private readonly adminStore: AdminStoreService,
+    @Inject(PricingService) private readonly pricing: PricingService,
+    @Inject(CreditAccountService) private readonly credits: CreditAccountService,
+    @Inject(RateLimitService) private readonly rateLimits: RateLimitService,
+  ) {}
 
   providers() {
     return this.currentRouter().health();
@@ -23,13 +29,24 @@ export class GatewayService {
     const started = Date.now();
     this.rateLimits.assertAllowed(accountId, plan);
     const requestId = String(request.metadata?.requestId || `request-${randomUUID()}`);
+    const clipCount = Number(request.metadata?.clipCount || 0);
+    const maxClips = Math.max(1, Math.floor(Number(process.env.MAX_CLIPS_PER_JOB || 20)));
+    if (Number.isFinite(clipCount) && clipCount > maxClips) {
+      throw new BadRequestException(`Job meminta ${clipCount} clip; batas satu job adalah ${maxClips}. Gunakan batch berikutnya agar biaya tetap terkendali.`);
+    }
     const estimated = this.pricing.estimateRequest(request);
     const reservation = this.credits.reserve(accountId, requestId, Number(estimated.creditChargeMicro));
     try {
       const routedResponse = await this.currentRouter().route(request);
-      const response = this.pricing.priceResponse(routedResponse);
-      this.credits.settle(reservation.id, response.billing.credit_charge_micro);
-      this.usage.record(response, request.module || String(request.metadata?.module || "default"), Date.now() - started, accountId);
+      const module = this.pricing.moduleForRequest(request);
+      const response = this.pricing.priceResponse(routedResponse, module);
+      const actualCharge = Number(response.billing.credit_charge_micro);
+      const reservedCharge = Number(reservation.amountMicro || estimated.creditChargeMicro);
+      if (actualCharge > reservedCharge) {
+        this.credits.increaseReservation(reservation.id, actualCharge - reservedCharge);
+      }
+      this.credits.settle(reservation.id, actualCharge);
+      this.usage.record(response, module, Date.now() - started, accountId);
       const { billing, ...publicResponse } = response;
       return {
         ...publicResponse,

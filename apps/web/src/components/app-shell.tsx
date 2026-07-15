@@ -11,7 +11,7 @@ const mainNav = [
   { href: "/projects", label: "Projects", icon: Boxes },
   { href: "/keys", label: "API Keys", icon: Key },
   { href: "/usage", label: "Usage", icon: BarChart3 },
-  { href: "/billing", label: "Billing", icon: BadgeDollarSign },
+  { href: "/billing", label: "Wallet", icon: BadgeDollarSign },
   { href: "/invoices", label: "Invoices", icon: FileText },
   { href: "/downloads", label: "Downloads", icon: Download },
   { href: "/documentation", label: "Documentation", icon: FileText },

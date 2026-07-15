@@ -1,9 +1,9 @@
-import { Controller, Get } from "@nestjs/common";
+import { Controller, Get, Inject } from "@nestjs/common";
 import { RuntimeConfigService } from "./config/runtime-config.js";
 
 @Controller("health")
 export class HealthController {
-  constructor(private readonly config: RuntimeConfigService) {}
+  constructor(@Inject(RuntimeConfigService) private readonly config: RuntimeConfigService) {}
 
   @Get()
   getHealth() {

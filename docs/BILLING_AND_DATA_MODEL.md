@@ -2,7 +2,9 @@
 
 ## Pricing rule
 
-Cliper AI Cloud memakai cost-based pricing. Admin mengatur target markup, bukan gross margin langsung.
+Cliper AI Cloud memakai cost-based pricing. Admin mengatur target markup, tetapi sistem juga menjaga minimum gross margin agar target bisnis tidak salah tafsir.
+
+`50% markup` bukan `50% margin`: biaya 100 dengan markup 50% menjadi harga 150 dan margin hanya 33,3%. Untuk gross margin 50%, markup efektif minimum adalah 100%. Sistem menerapkan markup efektif tertinggi antara target markup admin dan formula minimum margin.
 
 ```text
 provider_cost = input_tokens × input_rate + output_tokens × output_rate
@@ -14,7 +16,11 @@ credits       = ceil(user_charge / credit_value)
 
 Markup dan gross margin berbeda. Service cost 100 dengan markup 50% menghasilkan user charge 150, gross profit 50, dan gross margin 33,33%.
 
-Pricing policy menyimpan `markupBps`, `computeCostMicroUsd`, `paymentFeeBps`, `reserveBps`, `minimumChargeMicroUsd`, dan `microUsdPerCredit`. Perubahan policy hanya berlaku untuk request baru; histori production wajib menyimpan pricing snapshot pada setiap usage.
+Pricing policy menyimpan `markupBps`, `minimumMarginBps`, `computeCostMicroUsd`, `paymentFeeBps`, `reserveBps`, `minimumChargeMicroUsd`, `minimumClipChargeMicroUsd`, `microUsdPerCredit`, dan `usdToIdr`. Perubahan policy hanya berlaku untuk request baru; histori production wajib menyimpan pricing snapshot pada setiap usage.
+
+Job `story`, `ranking`, dan `highlight` memakai `minimumClipChargeMicroUsd` sebagai lantai service per request, bukan per kandidat internal. Dengan demikian satu Find Highlight yang menghasilkan banyak kandidat tidak membayar biaya AI berulang untuk setiap kartu, tetapi provider cost aktual tetap dihitung dari token nyata. Angka Rp100-200 hanya estimasi minimum yang dapat berubah bila prompt, output, atau provider cost lebih tinggi; sistem tidak boleh memalsukan pemakaian token.
+
+`MAX_CLIPS_PER_JOB` membatasi jumlah clip yang diminta dalam satu request gateway. Batas ini mencegah satu request besar menghabiskan saldo tanpa kontrol; job panjang sebaiknya diproses dalam batch yang jelas, bukan dengan menyembunyikan atau mengubah angka pemakaian.
 
 ## Request lifecycle
 

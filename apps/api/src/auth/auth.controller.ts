@@ -1,11 +1,11 @@
-import { Body, Controller, Headers, Post, Res } from "@nestjs/common";
+import { Body, Controller, Headers, Inject, Post, Res } from "@nestjs/common";
 import type { Response } from "express";
 import { clearSessionCookie, sessionCookie, sessionToken } from "../security/session-cookie.js";
 import { AuthService } from "./auth.service.js";
 
 @Controller("api/auth")
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(@Inject(AuthService) private readonly auth: AuthService) {}
 
   @Post("register")
   async register(@Body() input: { email?: string; password?: string; displayName?: string }, @Res({ passthrough: true }) response: Response) {

@@ -255,6 +255,16 @@ td code { padding: 4px 6px; color: #32474f; background: #f1f5f6; border-radius: 
 .checkout-code code { overflow-wrap: anywhere; padding: 13px; color: #15353c; background: #edf4f4; border: 1px solid var(--line); border-radius: 6px; font-size: 11px; }
 .checkout-code span { color: var(--muted); font-size: 10px; line-height: 1.5; }
 .checkout-actions { display: flex; flex-wrap: wrap; gap: 9px; }
+.topup-panel { display: flex; align-items: center; justify-content: space-between; gap: 18px; border-left: 3px solid var(--teal); }
+.topup-panel h2 { margin: 2px 0 4px; font-size: 18px; }
+.topup-panel p:not(.section-kicker) { max-width: 660px; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.topup-modal { width: min(430px, 100%); }
+.topup-form { padding: 18px 0 3px; }
+.currency-input { display: flex; align-items: center; gap: 9px; min-height: 46px; padding: 0 12px; background: #fff; border: 1px solid #55cbd0; border-radius: 8px; box-shadow: 0 0 0 3px rgba(41, 190, 197, .12); }
+.currency-input b { color: var(--muted); font-size: 12px; }
+.currency-input input { width: 100%; min-width: 0; padding: 0; background: transparent; border: 0; outline: 0; color: var(--ink); font: inherit; font-size: 14px; }
+.topup-form .field-label small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; font-weight: 500; }
+.topup-hint { margin: 12px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .compact-button { min-height: 30px; padding: 6px 10px; font-size: 10px; }
 .danger-notice { border-color: #e8b5bb; background: #fff4f5; }
 .plan-chip { padding: 4px 7px; color: #31535a; background: #eaf3f4; border-radius: 4px; font-size: 9px; font-weight: 800; text-transform: capitalize; }
@@ -352,6 +362,8 @@ td code { padding: 4px 6px; color: #32474f; background: #f1f5f6; border-radius: 
 .pricing-preview strong { color: var(--teal-dark); font-size: 11px; }
 .pricing-form > .button { align-self: stretch; margin: 0 0 12px; }
 .form-status { margin: 2px 0 0; color: var(--teal-dark); font-size: 10px; }
+.live-status { display: flex; align-items: center; gap: 6px; margin: -4px 0 12px; color: var(--muted); font-size: 9px; }
+.live-status i { width: 7px; height: 7px; display: inline-block; border-radius: 50%; background: #159a63; box-shadow: 0 0 0 3px rgba(21,154,99,.12); }
 
 .auth-page { min-height: 100vh; display: grid; grid-template-rows: auto 1fr; background: #edf2f3; }
 .auth-loading { min-height: 100vh; display: grid; place-content: center; justify-items: center; gap: 8px; color: var(--ink); background: #edf2f3; }
@@ -461,6 +473,7 @@ td code { padding: 4px 6px; color: #32474f; background: #f1f5f6; border-radius: 
   .explainer-flow { overflow-x: auto; }
   .economics-equation { grid-template-columns: 1fr; }
   .economics-equation > b { text-align: center; }
+  .topup-panel { align-items: flex-start; flex-direction: column; }
   .pricing-form { grid-template-columns: 1fr 1fr; }
   .pricing-preview { grid-column: 1 / -1; }
   .pricing-form > .button { min-height: 42px; }

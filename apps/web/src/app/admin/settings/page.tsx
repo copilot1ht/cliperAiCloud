@@ -1,11 +1,11 @@
 import { AppShell } from "@/components/app-shell";
-import { Save } from "lucide-react";
+import { Settings2 } from "lucide-react";
 
 export default function AdminSettingsPage() {
   return (
-    <AppShell role="admin" eyebrow="Admin" title="Settings" actions={<button className="button button-primary"><Save size={16} /> Save settings</button>}>
-      <section className="panel form-panel"><div className="panel-head"><div><p className="section-kicker">Platform settings</p><h2>Global configuration</h2></div></div>
-        <div className="form-grid"><label className="field-label">Admin email<input defaultValue="admin@cliper.cloud" /></label><label className="field-label">Support URL<input defaultValue="https://cliper.cloud/support" /></label><label className="field-label">Gateway URL<input defaultValue="https://api.cliper.cloud" /></label><label className="field-label">License server<input defaultValue="https://api.cliper.cloud/license" /></label></div>
+    <AppShell role="admin" eyebrow="Admin" title="Settings">
+      <section className="panel form-panel"><div className="panel-head"><div><p className="section-kicker">Runtime configuration</p><h2>Environment-managed settings</h2><p>Nilai production dikelola melalui environment API atau secret manager, bukan form browser.</p></div><Settings2 size={19} /></div>
+        <div className="readiness-list"><span><i className="ready" /><strong>Admin access</strong><small>Controlled by server bootstrap credentials</small></span><span><i className="ready" /><strong>Gateway origin</strong><small>Configured by API environment</small></span><span><i className="ready" /><strong>Payment provider</strong><small>Configured server-side; secret keys never enter the browser</small></span><span><i className="ready" /><strong>Database and Redis</strong><small>Enable before production release</small></span></div>
       </section>
     </AppShell>
   );

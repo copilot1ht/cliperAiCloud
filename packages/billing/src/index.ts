@@ -5,6 +5,7 @@ export interface UsageCostInput {
   reserveBps?: number;
   minimumChargeMicroUsd?: bigint;
   markupBps: number;
+  minimumMarginBps?: number;
   microUsdPerCredit: bigint;
 }
 
@@ -30,6 +31,14 @@ function bpsCharge(value: bigint, bps: number): bigint {
   return ceilDivide(value * BigInt(bps), 10_000n);
 }
 
+function requiredMarkupBps(minimumMarginBps: number): number {
+  if (!Number.isInteger(minimumMarginBps) || minimumMarginBps < 0 || minimumMarginBps >= 10_000) {
+    throw new Error("Minimum gross margin tidak valid.");
+  }
+  if (minimumMarginBps === 0) return 0;
+  return Math.ceil((minimumMarginBps * 10_000) / (10_000 - minimumMarginBps));
+}
+
 export function quoteUsageCost(input: UsageCostInput): UsageCostQuote {
   if (input.providerCostMicroUsd < 0n || (input.computeCostMicroUsd ?? 0n) < 0n || (input.minimumChargeMicroUsd ?? 0n) < 0n) throw new Error("Cost tidak boleh negatif.");
   if (input.microUsdPerCredit <= 0n) throw new Error("Nilai credit harus lebih besar dari nol.");
@@ -37,7 +46,9 @@ export function quoteUsageCost(input: UsageCostInput): UsageCostQuote {
   const baseCost = input.providerCostMicroUsd + computeCost;
   const overhead = bpsCharge(baseCost, (input.paymentFeeBps ?? 0) + (input.reserveBps ?? 0));
   const serviceCost = [baseCost + overhead, input.minimumChargeMicroUsd ?? 0n].reduce((largest, value) => value > largest ? value : largest, 0n);
-  const userCharge = serviceCost + bpsCharge(serviceCost, input.markupBps);
+  const minimumMarginBps = input.minimumMarginBps ?? 0;
+  const markupBps = Math.max(input.markupBps, requiredMarkupBps(minimumMarginBps));
+  const userCharge = serviceCost + bpsCharge(serviceCost, markupBps);
   const creditChargeMicro = ceilDivide(userCharge * 1_000_000n, input.microUsdPerCredit);
   const grossProfit = userCharge - serviceCost;
   const grossMarginBps = userCharge > 0n ? Number(grossProfit * 10_000n / userCharge) : 0;
@@ -49,7 +60,7 @@ export function quoteUsageCost(input: UsageCostInput): UsageCostQuote {
     userChargeMicroUsd: userCharge,
     grossProfitMicroUsd: grossProfit,
     creditChargeMicro,
-    markupBps: input.markupBps,
+    markupBps,
     grossMarginBps,
   };
 }

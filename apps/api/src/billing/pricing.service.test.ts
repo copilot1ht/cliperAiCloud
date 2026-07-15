@@ -9,9 +9,9 @@ describe("PricingService", () => {
     const pricing = new PricingService(store);
     const quote = pricing.quoteProviderCost(0.0001);
     expect(quote.providerCostMicroUsd).toBe(100n);
-    expect(quote.userChargeMicroUsd).toBe(150n);
-    expect(quote.grossProfitMicroUsd).toBe(50n);
-    expect(quote.creditChargeMicro).toBe(1_500_000n);
+    expect(quote.userChargeMicroUsd).toBe(200n);
+    expect(quote.grossProfitMicroUsd).toBe(100n);
+    expect(quote.creditChargeMicro).toBe(2_000_000n);
   });
 
   it("keeps provider cost private from policy overhead calculations", () => {
@@ -20,6 +20,6 @@ describe("PricingService", () => {
     const quote = new PricingService(store).quoteProviderCost(0.00008);
     expect(quote.providerCostMicroUsd).toBe(80n);
     expect(quote.serviceCostMicroUsd).toBe(105n);
-    expect(quote.userChargeMicroUsd).toBe(132n);
+    expect(quote.userChargeMicroUsd).toBe(210n);
   });
 });

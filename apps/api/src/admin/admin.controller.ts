@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Inject, Param, Patch, Post, UseGuards } from "@nestjs/common";
 import { AuthService, authStorageMode, type MemberPlan, type MemberStatus } from "../auth/auth.service.js";
 import { GatewayService } from "../gateway/gateway.service.js";
 import { AdminSessionGuard } from "../security/admin-session.guard.js";
@@ -24,17 +24,17 @@ const plans = [
 @UseGuards(AdminSessionGuard)
 export class AdminController {
   constructor(
-    private readonly gateway: GatewayService,
-    private readonly usage: UsageService,
-    private readonly auth: AuthService,
-    private readonly store: AdminStoreService,
-    private readonly runtimeConfig: RuntimeConfigService,
-    private readonly desktopSessions: DesktopSessionService,
-    private readonly rateLimits: RateLimitService,
-    private readonly securityEvents: SecurityEventService,
-    private readonly providerConnections: ProviderConnectionService,
-    private readonly paymentsService: PaymentService,
-    private readonly database: DatabaseService,
+    @Inject(GatewayService) private readonly gateway: GatewayService,
+    @Inject(UsageService) private readonly usage: UsageService,
+    @Inject(AuthService) private readonly auth: AuthService,
+    @Inject(AdminStoreService) private readonly store: AdminStoreService,
+    @Inject(RuntimeConfigService) private readonly runtimeConfig: RuntimeConfigService,
+    @Inject(DesktopSessionService) private readonly desktopSessions: DesktopSessionService,
+    @Inject(RateLimitService) private readonly rateLimits: RateLimitService,
+    @Inject(SecurityEventService) private readonly securityEvents: SecurityEventService,
+    @Inject(ProviderConnectionService) private readonly providerConnections: ProviderConnectionService,
+    @Inject(PaymentService) private readonly paymentsService: PaymentService,
+    @Inject(DatabaseService) private readonly database: DatabaseService,
   ) {}
 
   @Get("overview")

@@ -1,10 +1,5 @@
-import { AppShell } from "@/components/app-shell";
-import { MemberBilling } from "@/components/member-billing";
+import { redirect } from "next/navigation";
 
 export default function PlansPage() {
-  return (
-    <AppShell eyebrow="Subscription" title="Plans & credits">
-      <MemberBilling view="plans" />
-    </AppShell>
-  );
+  redirect("/billing");
 }

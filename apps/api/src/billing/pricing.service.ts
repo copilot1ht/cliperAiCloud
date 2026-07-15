@@ -1,6 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { quoteUsageCost, type UsageCostQuote } from "@cliper/billing";
-import type { CliperChatRequest, CliperInternalChatResponse } from "@cliper/contracts";
+import type { AiModule, CliperChatRequest, CliperInternalChatResponse } from "@cliper/contracts";
 import { AdminStoreService } from "../admin/admin-store.service.js";
 
 function usdToMicro(value: number): bigint {
@@ -15,33 +15,35 @@ function microToUsd(value: bigint): number {
 export class PricingService {
   constructor(private readonly adminStore: AdminStoreService) {}
 
-  quoteProviderCost(providerCostUsd: number): UsageCostQuote {
+  quoteProviderCost(providerCostUsd: number, module?: AiModule): UsageCostQuote {
     const policy = this.adminStore.pricingPolicy();
     return quoteUsageCost({
       providerCostMicroUsd: usdToMicro(providerCostUsd),
       computeCostMicroUsd: BigInt(policy.computeCostMicroUsd),
       paymentFeeBps: policy.paymentFeeBps,
       reserveBps: policy.reserveBps,
-      minimumChargeMicroUsd: BigInt(policy.minimumChargeMicroUsd),
+      minimumChargeMicroUsd: BigInt(this.isClipModule(module) ? Math.max(policy.minimumChargeMicroUsd, policy.minimumClipChargeMicroUsd) : policy.minimumChargeMicroUsd),
       markupBps: policy.markupBps,
+      minimumMarginBps: policy.minimumMarginBps,
       microUsdPerCredit: BigInt(policy.microUsdPerCredit),
     });
   }
 
   estimateRequest(request: CliperChatRequest): UsageCostQuote {
     const promptChars = request.messages.reduce((total, message) => total + message.content.length, 0);
-    const estimatedInputTokens = Math.max(1, Math.ceil(promptChars / 4 * 1.15));
+    const module = this.moduleForRequest(request);
+    const estimatedInputTokens = Math.max(1, Math.ceil(promptChars / 4 * 1.25));
     const moduleBudgets = this.adminStore.moduleMaxTokens();
-    const estimatedOutputTokens = Math.max(32, Number(request.max_tokens || moduleBudgets[request.module || "default"] || 1000));
+    const estimatedOutputTokens = Math.max(32, Number(request.max_tokens || moduleBudgets[module] || moduleBudgets.default || 1000));
     const providers = this.adminStore.providersForRouter().filter((provider) => provider.enabled !== false && provider.apiKeys.length > 0);
     const maxInputRate = providers.reduce((value, provider) => Math.max(value, provider.inputUsdPerM || 0), 0);
     const maxOutputRate = providers.reduce((value, provider) => Math.max(value, provider.outputUsdPerM || 0), 0);
     const estimatedProviderCost = estimatedInputTokens / 1_000_000 * maxInputRate + estimatedOutputTokens / 1_000_000 * maxOutputRate;
-    return this.quoteProviderCost(estimatedProviderCost);
+    return this.quoteProviderCost(estimatedProviderCost, module);
   }
 
-  priceResponse(response: CliperInternalChatResponse): CliperInternalChatResponse {
-    const quote = this.quoteProviderCost(response.billing.provider_cost_usd);
+  priceResponse(response: CliperInternalChatResponse, module?: AiModule): CliperInternalChatResponse {
+    const quote = this.quoteProviderCost(response.billing.provider_cost_usd, module);
     return {
       ...response,
       billing: {
@@ -54,5 +56,22 @@ export class PricingService {
         markup_percent: quote.markupBps / 100,
       },
     };
+  }
+
+  moduleForRequest(request: CliperChatRequest): AiModule {
+    const value = String(request.module || request.metadata?.module || "default").toLowerCase();
+    if (["story", "ranking", "highlight", "title", "hook", "caption", "metadata", "test", "default"].includes(value)) return value as AiModule;
+    if (value.includes("highlight") || value.includes("moment")) return "highlight";
+    if (value.includes("rank")) return "ranking";
+    if (value.includes("story")) return "story";
+    if (value.includes("title")) return "title";
+    if (value.includes("hook")) return "hook";
+    if (value.includes("caption") || value.includes("subtitle")) return "caption";
+    if (value.includes("metadata") || value.includes("upload")) return "metadata";
+    return "default";
+  }
+
+  private isClipModule(module?: AiModule): boolean {
+    return module === "story" || module === "ranking" || module === "highlight";
   }
 }

@@ -9,7 +9,7 @@ export interface AdminMenuItem {
 
 export const adminMenu: AdminMenuItem[] = [
   { href: "/admin/overview", label: "Admin Overview", icon: LayoutDashboard },
-  { href: "/admin/users", label: "Users & Plans", icon: Users },
+  { href: "/admin/users", label: "Users & Access", icon: Users },
   { href: "/admin/providers", label: "Providers", icon: ServerCog },
   { href: "/admin/ai-router", label: "AI Router", icon: Route },
   { href: "/admin/revenue", label: "Revenue", icon: BarChart3 },

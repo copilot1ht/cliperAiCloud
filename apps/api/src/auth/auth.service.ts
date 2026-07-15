@@ -242,11 +242,11 @@ export class AuthService {
     return this.safeUser(user);
   }
 
-  syncBillingState(id: string, input: { plan: MemberPlan; balanceMicro: number; deviceLimit: number }): void {
+  syncBillingState(id: string, input: { plan?: MemberPlan; balanceMicro: number; deviceLimit?: number }): void {
     const user = Array.from(this.users.values()).find((item) => item.id === id);
     if (!user) return;
-    user.plan = input.plan;
-    user.deviceLimit = Math.max(1, Math.round(input.deviceLimit));
+    if (input.plan) user.plan = input.plan;
+    if (input.deviceLimit !== undefined) user.deviceLimit = Math.max(1, Math.round(input.deviceLimit));
     user.credits = Math.max(0, input.balanceMicro / 1_000_000);
     this.creditAccounts?.setBalance(user.id, Math.max(0, Math.round(input.balanceMicro)), "postgresql-payment-sync");
   }

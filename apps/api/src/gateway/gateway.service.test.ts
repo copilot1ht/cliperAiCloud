@@ -12,8 +12,8 @@ describe("GatewayService billing boundary", () => {
     };
     const usage = { record: vi.fn() };
     const store = { revision: () => 1 };
-    const pricing = { estimateRequest: () => ({ creditChargeMicro: 2000n }), priceResponse: () => internal };
-    const credits = { reserve: () => ({ id: "reservation-a" }), settle: vi.fn(), release: vi.fn() };
+    const pricing = { estimateRequest: () => ({ creditChargeMicro: 2000n }), moduleForRequest: () => "test", priceResponse: () => internal };
+    const credits = { reserve: () => ({ id: "reservation-a", amountMicro: 2000 }), increaseReservation: vi.fn(), settle: vi.fn(), release: vi.fn() };
     const rateLimits = { assertAllowed: vi.fn() };
     const service = new GatewayService(usage as never, store as never, pricing as never, credits as never, rateLimits as never);
     (service as unknown as { router: { route: () => Promise<CliperInternalChatResponse> }; routerRevision: number }).router = { route: async () => internal };

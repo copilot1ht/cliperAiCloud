@@ -1,4 +1,4 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from "@nestjs/common";
+import { CanActivate, ExecutionContext, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import type { Request } from "express";
 import { AuthService, type MemorySession } from "../auth/auth.service.js";
 import { sessionToken } from "./session-cookie.js";
@@ -7,7 +7,7 @@ export type SessionAuthenticatedRequest = Request & { cliperSession?: Omit<Memor
 
 @Injectable()
 export class SessionGuard implements CanActivate {
-  constructor(private readonly authService: AuthService) {}
+  constructor(@Inject(AuthService) private readonly authService: AuthService) {}
 
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<SessionAuthenticatedRequest>();

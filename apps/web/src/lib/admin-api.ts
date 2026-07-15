@@ -87,11 +87,14 @@ export interface PaymentRecord {
 
 export interface PricingPolicy {
   markupBps: number;
+  minimumMarginBps: number;
   computeCostMicroUsd: number;
   paymentFeeBps: number;
   reserveBps: number;
   minimumChargeMicroUsd: number;
+  minimumClipChargeMicroUsd: number;
   microUsdPerCredit: number;
+  usdToIdr: number;
   updatedAt: string;
 }
 

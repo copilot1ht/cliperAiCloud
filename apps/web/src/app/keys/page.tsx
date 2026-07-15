@@ -41,7 +41,7 @@ export default function KeysPage() {
         method: "POST",
         headers: getHeaders(),
         credentials: "include",
-        body: JSON.stringify({ plan: "starter", deviceLimit: 2 }),
+        body: JSON.stringify({ deviceLimit: 2 }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.message || "Tidak dapat membuat key.");

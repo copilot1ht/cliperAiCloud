@@ -3,8 +3,8 @@ import { MemberBilling } from "@/components/member-billing";
 
 export default function BillingPage() {
   return (
-    <AppShell eyebrow="Billing" title="Subscription plans">
-      <MemberBilling view="plans" />
+    <AppShell eyebrow="Wallet" title="Wallet & top-up">
+      <MemberBilling view="wallet" />
     </AppShell>
   );
 }

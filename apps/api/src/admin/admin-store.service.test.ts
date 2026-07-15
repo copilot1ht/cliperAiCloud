@@ -85,5 +85,13 @@ describe("AdminStoreService", () => {
     const policy = store.updatePricingPolicy({ markupBps: 5000, microUsdPerCredit: 100 });
     expect(policy.markupBps).toBe(5000);
     expect(policy.microUsdPerCredit).toBe(100);
+    expect(policy.minimumMarginBps).toBe(5000);
+    expect(policy.minimumClipChargeMicroUsd).toBe(5000);
+    expect(policy.usdToIdr).toBe(16000);
+  });
+
+  it("does not allow the business margin floor below 50 percent", () => {
+    const store = new AdminStoreService();
+    expect(() => store.updatePricingPolicy({ minimumMarginBps: 4_999 })).toThrow("Pricing basis points");
   });
 });

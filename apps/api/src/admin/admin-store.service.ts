@@ -39,20 +39,26 @@ export interface PaymentRecord {
 
 export interface PricingPolicyInput {
   markupBps?: number;
+  minimumMarginBps?: number;
   computeCostMicroUsd?: number;
   paymentFeeBps?: number;
   reserveBps?: number;
   minimumChargeMicroUsd?: number;
+  minimumClipChargeMicroUsd?: number;
   microUsdPerCredit?: number;
+  usdToIdr?: number;
 }
 
 export interface PricingPolicyState {
   markupBps: number;
+  minimumMarginBps: number;
   computeCostMicroUsd: number;
   paymentFeeBps: number;
   reserveBps: number;
   minimumChargeMicroUsd: number;
+  minimumClipChargeMicroUsd: number;
   microUsdPerCredit: number;
+  usdToIdr: number;
   updatedAt: string;
 }
 
@@ -97,11 +103,14 @@ export class AdminStoreService {
     const legacyMarkupPercent = finiteNumber(process.env.DEFAULT_MARKUP_PERCENT, 50);
     this.pricingPolicyValue = {
       markupBps: Math.round(finiteNumber(process.env.DEFAULT_MARKUP_BPS, legacyMarkupPercent * 100)),
+      minimumMarginBps: Math.round(finiteNumber(process.env.MINIMUM_MARGIN_BPS, 5_000, 5_000)),
       computeCostMicroUsd: Math.round(finiteNumber(process.env.COMPUTE_COST_MICRO_USD, 0)),
       paymentFeeBps: Math.round(finiteNumber(process.env.PAYMENT_FEE_BPS, 0)),
       reserveBps: Math.round(finiteNumber(process.env.RISK_RESERVE_BPS, 0)),
       minimumChargeMicroUsd: Math.round(finiteNumber(process.env.MINIMUM_REQUEST_MICRO_USD, 0)),
+      minimumClipChargeMicroUsd: Math.round(finiteNumber(process.env.MINIMUM_CLIP_CHARGE_MICRO_USD, 5_000)),
       microUsdPerCredit: Math.max(1, Math.round(finiteNumber(process.env.MICRO_USD_PER_CREDIT, 100))),
+      usdToIdr: Math.round(finiteNumber(process.env.PLATFORM_USD_TO_IDR, 16_000, 1)),
       updatedAt: new Date().toISOString(),
     };
     for (const provider of providersFromEnv()) {
@@ -134,18 +143,22 @@ export class AdminStoreService {
   updatePricingPolicy(input: PricingPolicyInput): PricingPolicyState {
     const current = this.pricingPolicyValue;
     const markupBps = input.markupBps === undefined ? current.markupBps : Math.round(finiteNumber(input.markupBps, current.markupBps));
+    const minimumMarginBps = input.minimumMarginBps === undefined ? current.minimumMarginBps : Math.round(finiteNumber(input.minimumMarginBps, current.minimumMarginBps));
     const paymentFeeBps = input.paymentFeeBps === undefined ? current.paymentFeeBps : Math.round(finiteNumber(input.paymentFeeBps, current.paymentFeeBps));
     const reserveBps = input.reserveBps === undefined ? current.reserveBps : Math.round(finiteNumber(input.reserveBps, current.reserveBps));
-    if (markupBps > 100_000 || paymentFeeBps > 10_000 || reserveBps > 10_000) {
+    if (markupBps > 100_000 || minimumMarginBps < 5_000 || minimumMarginBps > 9_500 || paymentFeeBps > 10_000 || reserveBps > 10_000) {
       throw new BadRequestException("Pricing basis points melebihi batas aman.");
     }
     this.pricingPolicyValue = {
       markupBps,
+      minimumMarginBps,
       computeCostMicroUsd: input.computeCostMicroUsd === undefined ? current.computeCostMicroUsd : Math.round(finiteNumber(input.computeCostMicroUsd, current.computeCostMicroUsd)),
       paymentFeeBps,
       reserveBps,
       minimumChargeMicroUsd: input.minimumChargeMicroUsd === undefined ? current.minimumChargeMicroUsd : Math.round(finiteNumber(input.minimumChargeMicroUsd, current.minimumChargeMicroUsd)),
+      minimumClipChargeMicroUsd: input.minimumClipChargeMicroUsd === undefined ? current.minimumClipChargeMicroUsd : Math.round(finiteNumber(input.minimumClipChargeMicroUsd, current.minimumClipChargeMicroUsd)),
       microUsdPerCredit: input.microUsdPerCredit === undefined ? current.microUsdPerCredit : Math.max(1, Math.round(finiteNumber(input.microUsdPerCredit, current.microUsdPerCredit, 1))),
+      usdToIdr: input.usdToIdr === undefined ? current.usdToIdr : Math.max(1, Math.round(finiteNumber(input.usdToIdr, current.usdToIdr, 1))),
       updatedAt: new Date().toISOString(),
     };
     this.touch();

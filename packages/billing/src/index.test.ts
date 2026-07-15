@@ -36,6 +36,14 @@ describe("quoteUsageCost", () => {
     expect(quote.userChargeMicroUsd).toBe(150n);
     expect(quote.grossProfitMicroUsd).toBe(50n);
   });
+
+  it("enforces a real 50 percent gross margin when configured", () => {
+    const quote = quoteUsageCost({ providerCostMicroUsd: 100n, markupBps: 5000, minimumMarginBps: 5000, microUsdPerCredit: 1n });
+    expect(quote.userChargeMicroUsd).toBe(200n);
+    expect(quote.grossProfitMicroUsd).toBe(100n);
+    expect(quote.markupBps).toBe(10000);
+    expect(quote.grossMarginBps).toBe(5000);
+  });
 });
 
 describe("payment webhook security", () => {

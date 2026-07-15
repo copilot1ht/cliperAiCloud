@@ -1,4 +1,4 @@
-import { Controller, Get, Req, UseGuards } from "@nestjs/common";
+import { Controller, Get, Inject, Req, UseGuards } from "@nestjs/common";
 import { AuthService, authStorageMode } from "../auth/auth.service.js";
 import { CreditAccountService } from "../billing/credit-account.service.js";
 import { LicenseService } from "../license/license.service.js";
@@ -9,10 +9,10 @@ import { UsageService } from "../usage/usage.service.js";
 @UseGuards(SessionGuard)
 export class MemberController {
   constructor(
-    private readonly auth: AuthService,
-    private readonly credits: CreditAccountService,
-    private readonly licenses: LicenseService,
-    private readonly usage: UsageService,
+    @Inject(AuthService) private readonly auth: AuthService,
+    @Inject(CreditAccountService) private readonly credits: CreditAccountService,
+    @Inject(LicenseService) private readonly licenses: LicenseService,
+    @Inject(UsageService) private readonly usage: UsageService,
   ) {}
 
   @Get("overview")

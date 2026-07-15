@@ -2,22 +2,20 @@
 
 import { ArrowRight, Check, CircleHelp, Route, Save, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { adminFetch, type AdminProvider, type PlanCode, type RoutingRule } from "@/lib/admin-api";
+import { adminFetch, type AdminProvider, type RoutingRule } from "@/lib/admin-api";
 import { AdminError, AdminLoading, EmptyState, LocalModeNotice } from "@/components/admin-ui";
 
 interface RouterPayload { mode: string; providers: AdminProvider[]; rules: RoutingRule[] }
-const plans: PlanCode[] = ["free", "starter", "pro", "enterprise"];
 const moduleNames: Record<string, string> = { story: "Story segmentation", ranking: "Candidate ranking", highlight: "Highlight finder", title: "Title generator", hook: "Hook maker", caption: "Caption cleaner", metadata: "Metadata generator" };
 
 export function AdminRouter() {
   const [data, setData] = useState<RouterPayload | null>(null);
-  const [plan, setPlan] = useState<PlanCode>("pro");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState("");
   const [saved, setSaved] = useState("");
   const load = useCallback(() => { setError(""); adminFetch<RouterPayload>("/api/admin/router").then(setData).catch((reason) => setError(reason.message)); }, []);
   useEffect(load, [load]);
-  const rules = useMemo(() => (data?.rules || []).filter((item) => item.plan === plan), [data, plan]);
+  const rules = useMemo(() => data?.rules || [], [data]);
   const change = (id: string, field: keyof RoutingRule, value: string | number | boolean) => setData((current) => current ? { ...current, rules: current.rules.map((item) => item.id === id ? { ...item, [field]: value } : item) } : current);
   const save = async (rule: RoutingRule) => {
     setSaving(rule.id); setSaved(""); setError("");
@@ -39,9 +37,9 @@ export function AdminRouter() {
       <div className="explainer-flow"><b>Desktop</b><ArrowRight size={15} /><b>Cliper Cloud</b><ArrowRight size={15} /><b>Primary / fallback</b></div>
     </section>
     <section className="panel table-panel">
-      <div className="panel-head admin-toolbar"><div><p className="section-kicker">Routing rules</p><h2>Provider priority per module and plan</h2><p>Perubahan berlaku pada request gateway berikutnya. Primary dan fallback tidak boleh kosong.</p></div><div className="segmented plan-segments">{plans.map((item) => <button key={item} className={plan === item ? "selected" : ""} onClick={() => setPlan(item)}>{item}</button>)}</div></div>
+      <div className="panel-head admin-toolbar"><div><p className="section-kicker">Routing rules</p><h2>Provider priority per AI module</h2><p>Perubahan berlaku pada request gateway berikutnya. Primary dan fallback tidak boleh kosong.</p></div></div>
       {!providerOptions.length ? <EmptyState title="No enabled providers" detail="Aktifkan provider dan masukkan key terlebih dahulu di halaman Providers." /> : <div className="router-editor-list">{rules.map((rule) => <article className="router-editor-row" key={rule.id}>
-        <span className="route-module"><strong>{moduleNames[rule.module] || rule.module}</strong><small>{rule.module} · {rule.plan}</small></span>
+        <span className="route-module"><strong>{moduleNames[rule.module] || rule.module}</strong><small>{rule.module} · wallet usage</small></span>
         <label><small>Primary</small><select value={rule.primary} onChange={(event) => change(rule.id, "primary", event.target.value)}>{providerOptions.map((provider) => <option key={provider.code} value={provider.code}>{provider.displayName}</option>)}</select></label>
         <ArrowRight className="route-arrow" size={16} />
         <label><small>Fallback</small><select value={rule.fallback} onChange={(event) => change(rule.id, "fallback", event.target.value)}>{providerOptions.map((provider) => <option key={provider.code} value={provider.code}>{provider.displayName}</option>)}</select></label>

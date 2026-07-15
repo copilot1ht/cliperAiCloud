@@ -42,10 +42,10 @@ export default function DashboardPage() {
     {!data && !error && <section className="panel admin-loading"><span /> Memuat saldo dan usage...</section>}
     {data && <>
       <section className="stats-grid">
-        <StatCard label="Active plan" value={data.user.plan.toUpperCase()} detail={data.user.email} icon={ShieldCheck} tone="blue" />
+        <StatCard label="Wallet status" value={data.mode.includes("memory") ? "Local" : "Live"} detail={data.user.email} icon={ShieldCheck} tone="blue" />
         <StatCard label="Active API keys" value={String(data.keys.active)} detail={`${data.keys.total} key dibuat`} icon={Key} />
         <StatCard label="Bound devices" value={`${data.keys.devicesUsed} / ${data.user.deviceLimit}`} detail="Dihitung dari license aktif" icon={Activity} tone="amber" />
-        <StatCard label="Available credits" value={displayCredits(data.credits.availableMicro)} detail={`${displayCredits(data.credits.reservedMicro)} sedang direservasi`} icon={Coins} tone="coral" />
+        <StatCard label="Available AI credits" value={displayCredits(data.credits.availableMicro)} detail={`${displayCredits(data.credits.reservedMicro)} sedang direservasi`} icon={Coins} tone="coral" />
       </section>
       <section className="panel">
         <div className="panel-head"><div><p className="section-kicker">Desktop activation</p><h2>Connect Cliper Studio</h2><p>Key yang dibuat di portal sudah dapat dipakai langsung oleh License API dan AI Gateway.</p></div><Link href="/keys">Manage keys</Link></div>

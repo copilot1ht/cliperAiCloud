@@ -68,6 +68,20 @@ export class CreditAccountService {
     return { ...account };
   }
 
+  increaseReservation(reservationId: string, additionalMicro: number): CreditReservation {
+    const reservation = this.reservations.get(reservationId);
+    if (!reservation) throw new Error("Credit reservation tidak ditemukan atau sudah diselesaikan.");
+    const additional = safeMicro(additionalMicro);
+    if (additional === 0) return { ...reservation };
+    const account = this.account(reservation.accountId);
+    const available = account.balanceMicro - account.reservedMicro;
+    if (available < additional) throw new ForbiddenException("Saldo credit tidak cukup untuk biaya pemakaian aktual.");
+    account.reservedMicro += additional;
+    reservation.amountMicro += additional;
+    this.record(account, reservation.requestId, "reserve", -additional);
+    return { ...reservation };
+  }
+
   release(reservationId: string): CreditAccountState | undefined {
     const reservation = this.reservations.get(reservationId);
     if (!reservation) return undefined;

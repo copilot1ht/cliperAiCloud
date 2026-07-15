@@ -103,11 +103,33 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Run
   const paymentProvider = String(env.PAYMENT_PROVIDER || "sandbox").toLowerCase();
   const sandboxAllowed = String(env.ALLOW_SANDBOX_PAYMENTS || "false").toLowerCase() === "true";
   if (production && paymentProvider === "sandbox" && !sandboxAllowed) {
-    warnings.push("Sandbox payment dinonaktifkan di production; billing akan menolak checkout sampai adapter QRIS resmi dikonfigurasi.");
+    warnings.push("Sandbox payment dinonaktifkan di production; pilih PAYMENT_PROVIDER=midtrans untuk checkout nyata.");
   }
   if (production && paymentProvider === "sandbox" && sandboxAllowed && secretLength(env.PAYMENT_SANDBOX_WEBHOOK_SECRET) < 32) {
     errors.push("PAYMENT_SANDBOX_WEBHOOK_SECRET wajib minimal 32 karakter ketika sandbox diizinkan pada production.");
   }
+  if (paymentProvider === "midtrans" && secretLength(env.MIDTRANS_SERVER_KEY) < 20) {
+    const message = "MIDTRANS_SERVER_KEY wajib dikonfigurasi ketika PAYMENT_PROVIDER=midtrans.";
+    production ? errors.push(message) : warnings.push(message);
+  }
+  if (paymentProvider === "midtrans" && !env.WEB_ORIGIN) {
+    warnings.push("WEB_ORIGIN diperlukan agar redirect selesai Midtrans kembali ke invoice user.");
+  }
+  const minTopup = Number(env.PAYMENT_MIN_TOPUP_IDR || 25_000);
+  const maxTopup = Number(env.PAYMENT_MAX_TOPUP_IDR || 10_000_000);
+  if (!Number.isSafeInteger(minTopup) || !Number.isSafeInteger(maxTopup) || minTopup < 25_000 || maxTopup < minTopup) {
+    errors.push("PAYMENT_MIN_TOPUP_IDR/PAYMENT_MAX_TOPUP_IDR tidak valid; minimum wajib >= 25000 dan max harus >= minimum.");
+  }
+  const creditsPerIdr = Number(env.PAYMENT_CREDITS_PER_IDR || 1);
+  if (!Number.isFinite(creditsPerIdr) || creditsPerIdr <= 0) errors.push("PAYMENT_CREDITS_PER_IDR harus berupa angka lebih besar dari nol.");
+  const minimumMarginBps = Number(env.MINIMUM_MARGIN_BPS || 5_000);
+  if (!Number.isInteger(minimumMarginBps) || minimumMarginBps < 5_000 || minimumMarginBps > 9_500) {
+    errors.push("MINIMUM_MARGIN_BPS harus integer antara 5000 dan 9500 agar margin gross minimal 50% tetap terjaga.");
+  }
+  const minimumClipCharge = Number(env.MINIMUM_CLIP_CHARGE_MICRO_USD || 5_000);
+  if (!Number.isSafeInteger(minimumClipCharge) || minimumClipCharge < 0) errors.push("MINIMUM_CLIP_CHARGE_MICRO_USD harus integer nol atau lebih.");
+  const usdToIdr = Number(env.PLATFORM_USD_TO_IDR || 16_000);
+  if (!Number.isFinite(usdToIdr) || usdToIdr <= 0) errors.push("PLATFORM_USD_TO_IDR harus lebih besar dari nol.");
 
   return {
     mode,

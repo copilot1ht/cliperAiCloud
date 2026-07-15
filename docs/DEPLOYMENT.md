@@ -34,8 +34,19 @@ BOOTSTRAP_ADMIN_EMAIL=EMAIL_ADMIN
 BOOTSTRAP_ADMIN_PASSWORD_HASH=HASH_ARGON2ID
 ALLOW_LEGACY_API_KEY_AUTH=false
 DATABASE_URL=${{Postgres.DATABASE_URL}}
-PAYMENT_PROVIDER=sandbox
+PAYMENT_PROVIDER=midtrans
 ALLOW_SANDBOX_PAYMENTS=false
+MIDTRANS_MERCHANT_ID=your-sandbox-merchant-id
+MIDTRANS_CLIENT_KEY=your-sandbox-client-key
+MIDTRANS_SERVER_KEY=your-sandbox-server-key
+MIDTRANS_IS_PRODUCTION=false
+PAYMENT_MIN_TOPUP_IDR=25000
+PAYMENT_MAX_TOPUP_IDR=10000000
+PAYMENT_CREDITS_PER_IDR=1
+MINIMUM_MARGIN_BPS=5000
+MINIMUM_CLIP_CHARGE_MICRO_USD=5000
+PLATFORM_USD_TO_IDR=16000
+MAX_CLIPS_PER_JOB=20
 ```
 
 Jangan set `CLIPER_DEV_API_KEY` atau `DEV_ADMIN_*` pada production.
@@ -48,9 +59,13 @@ PostgreSQL wajib untuk Payment Engine. Redis direkomendasikan dan dapat direfere
 REDIS_URL=${{Redis.REDIS_URL}}
 ```
 
-Dengan `ALLOW_SANDBOX_PAYMENTS=false`, checkout production sengaja ditolak sampai adapter QRIS resmi dipasang. Jangan mengaktifkan sandbox untuk menerima uang nyata.
+Untuk uji lokal gunakan Sandbox Access Keys. Midtrans Snap menyediakan hosted checkout; QRIS muncul apabila metode tersebut aktif pada akun merchant. Set `MIDTRANS_IS_PRODUCTION=true` hanya setelah Production Access Keys dan notification URL HTTPS siap. Jangan menaruh Server Key di GitHub, browser, atau log.
+
+Atur Payment Notification URL di Midtrans MAP ke `https://<API_DOMAIN>/api/payments/webhook/midtrans`. Endpoint ini harus dapat diakses publik melalui HTTPS. Redirect user ke `/invoices?invoice=<NUMBER>` tidak menggantikan notification URL: saldo hanya diberikan dari callback yang signature-nya valid.
 
 Implementasi control-plane MVP saat ini masih memakai store proses untuk beberapa data. Jangan menaikkan replica lebih dari satu sebelum repository persistence Prisma selesai diintegrasikan.
+
+Pricing gateway memakai provider token cost aktual. `MINIMUM_MARGIN_BPS=5000` berarti gross margin minimum 50% (markup efektif minimum 100%); `MINIMUM_CLIP_CHARGE_MICRO_USD=5000` hanya lantai estimasi job highlight, bukan harga palsu per kartu. Sesuaikan rate provider di environment API sebelum membuka akses user.
 
 ### Membuat hash password admin
 

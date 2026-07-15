@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
   UnauthorizedException,
@@ -17,7 +18,7 @@ import {
   SubscriptionStatus,
 } from "../generated/prisma/client.js";
 import { PaymentProviderService } from "./payment-provider.service.js";
-import { AuthService, type MemberPlan } from "../auth/auth.service.js";
+import { AuthService, authStorageMode, type MemberPlan } from "../auth/auth.service.js";
 
 interface PaymentIdentity {
   id: string;
@@ -58,6 +59,27 @@ const plans: PlanDefinition[] = [
     description: "500.000 Cliper Credits dan routing AI prioritas.",
   },
 ];
+
+const DEFAULT_TOPUP_MIN_IDR = 25_000;
+const DEFAULT_TOPUP_MAX_IDR = 10_000_000;
+
+function configuredTopupAmount(name: string, fallback: number): number {
+  const value = Number(process.env[name] || fallback);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function topupCreditMicro(amountIdr: number): bigint {
+  const rawRate = String(process.env.PAYMENT_CREDITS_PER_IDR || "1").trim();
+  if (!/^\d+(?:\.\d{1,6})?$/.test(rawRate)) {
+    throw new BadRequestException("PAYMENT_CREDITS_PER_IDR tidak valid.");
+  }
+  const [whole, fraction = ""] = rawRate.split(".");
+  const rateMicro = BigInt(whole || "0") * 1_000_000n + BigInt(fraction.padEnd(6, "0"));
+  if (rateMicro <= 0n || rateMicro > 1_000_000_000_000n) throw new BadRequestException("PAYMENT_CREDITS_PER_IDR tidak valid.");
+  const creditMicro = BigInt(amountIdr) * rateMicro;
+  if (creditMicro <= 0n) throw new BadRequestException("Nominal top-up menghasilkan credit tidak valid.");
+  return creditMicro;
+}
 
 function planByCode(value: unknown): PlanDefinition {
   const code = String(value || "").trim().toUpperCase();
@@ -104,13 +126,17 @@ function asNumber(value: bigint): number {
 @Injectable()
 export class PaymentService {
   constructor(
-    private readonly database: DatabaseService,
-    private readonly providers: PaymentProviderService,
-    private readonly auth: AuthService,
+    @Inject(DatabaseService) private readonly database: DatabaseService,
+    @Inject(PaymentProviderService) private readonly providers: PaymentProviderService,
+    @Inject(AuthService) private readonly auth: AuthService,
   ) {}
 
   planCatalog() {
     return plans.map(({ creditMicro: _creditMicro, ...plan }) => ({ ...plan, code: plan.code.toLowerCase() }));
+  }
+
+  private localReadMode(): boolean {
+    return authStorageMode() !== "bootstrap-memory";
   }
 
   async createInvoice(identity: PaymentIdentity, requestedPlan: unknown) {
@@ -206,6 +232,70 @@ export class PaymentService {
     return this.safeInvoice(invoice);
   }
 
+  async createTopupInvoice(identity: PaymentIdentity, requestedAmount: unknown) {
+    const amountIdr = Number(requestedAmount);
+    const minimum = configuredTopupAmount("PAYMENT_MIN_TOPUP_IDR", DEFAULT_TOPUP_MIN_IDR);
+    const maximum = configuredTopupAmount("PAYMENT_MAX_TOPUP_IDR", DEFAULT_TOPUP_MAX_IDR);
+    if (!Number.isSafeInteger(amountIdr) || amountIdr < minimum || amountIdr > maximum) {
+      throw new BadRequestException(`Nominal top-up harus antara ${minimum.toLocaleString("id-ID")} dan ${maximum.toLocaleString("id-ID")} IDR.`);
+    }
+    const creditMicro = topupCreditMicro(amountIdr);
+    await this.expireOpenInvoices(identity.id);
+    const number = invoiceNumber();
+    const expiresAt = new Date(Date.now() + 15 * 60_000);
+    const provider = this.providers.active();
+    const providerPayment = await provider.createPayment({
+      invoiceNumber: number,
+      amountIdr,
+      expiresAt: expiresAt.toISOString(),
+      customer: identity,
+      description: `Cliper AI Cloud top-up ${amountIdr.toLocaleString("id-ID")} IDR`,
+    });
+    const invoice = await this.serializable(async (tx) => {
+      await tx.user.upsert({
+        where: { id: identity.id },
+        create: { id: identity.id, email: identity.email.toLowerCase(), displayName: identity.displayName, passwordHash: "external-bootstrap-auth" },
+        update: { email: identity.email.toLowerCase(), displayName: identity.displayName },
+      });
+      const payment = await tx.paymentTransaction.create({
+        data: {
+          userId: identity.id,
+          provider: providerPayment.provider,
+          externalId: providerPayment.externalId,
+          amountIdr,
+          status: PaymentStatus.PENDING,
+          idempotencyKey: `invoice:${number}`,
+          metadata: jsonInput({ provider: providerPayment.safeMetadata || {}, invoiceNumber: number, kind: "topup" }),
+        },
+      });
+      return tx.invoice.create({
+        data: {
+          number,
+          userId: identity.id,
+          paymentId: payment.id,
+          provider: providerPayment.provider,
+          providerReference: providerPayment.externalId,
+          paymentUrl: providerPayment.paymentUrl,
+          qrString: providerPayment.qrString,
+          status: InvoiceStatus.OPEN,
+          subtotalIdr: amountIdr,
+          totalIdr: amountIdr,
+          dueAt: expiresAt,
+          expiresAt,
+          metadata: {
+            kind: "topup",
+            creditMicro: creditMicro.toString(),
+            credits: Number(creditMicro / 1_000_000n),
+            amountIdr,
+          },
+          items: { create: [{ description: "Cliper Credits top-up", quantity: 1, unitPriceIdr: amountIdr, amountIdr, metadata: { kind: "topup" } }] },
+        },
+        include: { payment: true, items: true },
+      });
+    });
+    return this.safeInvoice(invoice);
+  }
+
   async processWebhook(providerCode: string, rawBody: Buffer, headers: Record<string, string | string[] | undefined>) {
     const provider = this.providers.byCode(providerCode);
     const verified = provider.verifyWebhook(rawBody, headers);
@@ -243,6 +333,28 @@ export class PaymentService {
   }
 
   async memberBilling(userId: string) {
+    if (this.localReadMode()) {
+      return {
+        mode: "development-memory",
+        plans: this.planCatalog(),
+        wallet: {
+          balanceMicro: 0,
+          reservedMicro: 0,
+          availableMicro: 0,
+          lifetimeGrantedMicro: 0,
+          lifetimeSpentMicro: 0,
+        },
+        topup: {
+          currency: "IDR",
+          minIdr: configuredTopupAmount("PAYMENT_MIN_TOPUP_IDR", DEFAULT_TOPUP_MIN_IDR),
+          maxIdr: configuredTopupAmount("PAYMENT_MAX_TOPUP_IDR", DEFAULT_TOPUP_MAX_IDR),
+          creditsPerIdr: Number(process.env.PAYMENT_CREDITS_PER_IDR || "1"),
+        },
+        subscription: null,
+        invoices: [],
+        notice: "Pembayaran lokal aktif. Hubungkan PostgreSQL dan Midtrans untuk transaksi nyata.",
+      };
+    }
     await this.expireOpenInvoices(userId);
     const client = this.database.client();
     const [invoices, account, subscription] = await Promise.all([
@@ -259,6 +371,12 @@ export class PaymentService {
         availableMicro: asNumber((account?.balanceMicro || 0n) - (account?.reservedMicro || 0n)),
         lifetimeGrantedMicro: asNumber(account?.lifetimeGrantedMicro || 0n),
         lifetimeSpentMicro: asNumber(account?.lifetimeSpentMicro || 0n),
+      },
+      topup: {
+        currency: "IDR",
+        minIdr: configuredTopupAmount("PAYMENT_MIN_TOPUP_IDR", DEFAULT_TOPUP_MIN_IDR),
+        maxIdr: configuredTopupAmount("PAYMENT_MAX_TOPUP_IDR", DEFAULT_TOPUP_MAX_IDR),
+        creditsPerIdr: Number(process.env.PAYMENT_CREDITS_PER_IDR || "1"),
       },
       subscription: subscription ? {
         id: subscription.id,
@@ -280,6 +398,23 @@ export class PaymentService {
   }
 
   async adminPayments() {
+    if (this.localReadMode()) {
+      return {
+        mode: "development-memory",
+        summary: {
+          grossIdr: 0,
+          refundedIdr: 0,
+          netIdr: 0,
+          paidCount: 0,
+          pendingCount: 0,
+          failedCount: 0,
+          expiredCount: 0,
+          activeSubscriptions: 0,
+        },
+        payments: [],
+        notice: "Data payment sementara kosong pada mode lokal.",
+      };
+    }
     const client = this.database.client();
     await this.expireOpenInvoices();
     const [payments, activeSubscriptions] = await Promise.all([
@@ -405,6 +540,32 @@ export class PaymentService {
         return { ok: true, duplicate: true, accepted: true };
       }
       const metadata = metadataRecord(invoice.metadata);
+      if (String(metadata.kind || "plan") === "topup") {
+        const creditMicro = safeBigInt(metadata.creditMicro);
+        const account = await tx.userCreditAccount.upsert({
+          where: { userId: payment.userId },
+          create: { userId: payment.userId, balanceMicro: creditMicro, lifetimeGrantedMicro: creditMicro },
+          update: { balanceMicro: { increment: creditMicro }, lifetimeGrantedMicro: { increment: creditMicro } },
+        });
+        await tx.creditLedger.create({
+          data: {
+            accountId: account.id,
+            invoiceId: invoice.id,
+            type: LedgerType.GRANT,
+            amountMicro: creditMicro,
+            balanceAfterMicro: account.balanceMicro,
+            idempotencyKey: `payment-paid:${provider}:${event.eventId}`,
+            description: `Top-up credit ${invoice.number}`,
+            costSnapshot: { amountIdr: event.amountIdr, provider, externalId: event.externalId, kind: "topup" },
+          },
+        });
+        const now = new Date();
+        await tx.paymentTransaction.update({ where: { id: payment.id }, data: { status: PaymentStatus.PAID, paidAt: now } });
+        await tx.invoice.update({ where: { id: invoice.id }, data: { status: InvoiceStatus.PAID, paidAt: now } });
+        await tx.paymentLog.create({ data: { ...this.paymentLogData(provider, event, payloadHash, signature, true), invoiceId: invoice.id } });
+        await tx.auditLog.create({ data: { actorId: payment.userId, action: "payment.topup_paid", entityType: "invoice", entityId: invoice.id, metadata: { invoice: invoice.number, amountIdr: event.amountIdr, creditMicro: creditMicro.toString() } } });
+        return { ok: true, duplicate: false, accepted: true, status: "paid", invoice: invoice.number };
+      }
       const plan = planByCode(metadata.planCode);
       const creditMicro = safeBigInt(metadata.creditMicro);
       if (creditMicro !== plan.creditMicro) throw new ConflictException("Snapshot credit invoice tidak cocok dengan plan.");
@@ -510,9 +671,9 @@ export class PaymentService {
     const account = await this.database.client().userCreditAccount.findUnique({ where: { userId: payment.userId } });
     const plan = payment.subscription?.planCode.toLowerCase() as MemberPlan | undefined;
     this.auth.syncBillingState(payment.userId, {
-      plan: plan || "free",
+      plan,
       balanceMicro: asNumber(account?.balanceMicro || 0n),
-      deviceLimit: payment.subscription?.planDefinition.deviceLimit || 1,
+      deviceLimit: payment.subscription?.planDefinition.deviceLimit,
     });
   }
 
@@ -547,6 +708,7 @@ export class PaymentService {
       paidAt: invoice.paidAt?.toISOString(),
       plan: String(metadata.planCode || "").toLowerCase(),
       credits: Number(metadata.credits || 0),
+      kind: String(metadata.kind || "plan"),
       payment: invoice.payment ? { id: invoice.payment.id, status: invoice.payment.status.toLowerCase(), externalId: invoice.payment.externalId } : null,
       items: invoice.items || [],
     };
