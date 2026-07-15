@@ -39,6 +39,8 @@ The endpoint must be publicly reachable over HTTPS. Keep the API service awake a
 7. API verifies the signature, amount, invoice, and replay window.
 8. Credits are granted once in PostgreSQL.
 
+If a notification is delayed, the member Billing page and admin Payments page can call the Midtrans Status API (`GET /v2/{order_id}/status`). The response is still checked against the stored order ID and gross amount, then passed through the same idempotent settlement path as a webhook. A browser finish redirect never grants credit.
+
 The finish redirect is not proof of payment. Only a verified notification can grant credits.
 
 ## 4. Test checklist
@@ -47,6 +49,8 @@ The finish redirect is not proof of payment. Only a verified notification can gr
 - Complete it using a Midtrans Sandbox payment method.
 - Confirm the callback appears in the API logs without exposing the Server Key.
 - Refresh Billing and confirm invoice status becomes `paid` and credits increase once.
+- Use `Check Midtrans status` if the notification is delayed; confirm it can settle the invoice only when Midtrans reports a matching status and amount.
+- From Admin > Payments, use `Sync status` for a pending transaction and verify the result is safe to repeat.
 - Send the same notification twice and confirm the credit balance increases only once.
 - Send a modified signature and confirm the API returns an authorization error.
 - Test an expired or failed transaction.
