@@ -8,6 +8,8 @@ import { RuntimeConfigService } from "../config/runtime-config.js";
 import { DesktopSessionService } from "../security/desktop-session.service.js";
 import { RateLimitService } from "../security/rate-limit.service.js";
 import { SecurityEventService } from "../security/security-event.service.js";
+import { listProviderCatalog } from "./provider-catalog.js";
+import { ProviderConnectionService, type ProviderConnectionInput } from "./provider-connection.service.js";
 
 const plans = [
   { code: "free", name: "Free", priceIdr: 0, credits: 100, deviceLimit: 1, active: true },
@@ -28,6 +30,7 @@ export class AdminController {
     private readonly desktopSessions: DesktopSessionService,
     private readonly rateLimits: RateLimitService,
     private readonly securityEvents: SecurityEventService,
+    private readonly providerConnections: ProviderConnectionService,
   ) {}
 
   @Get("overview")
@@ -46,8 +49,8 @@ export class AdminController {
       },
       providers: {
         total: providers.length,
-        ready: providers.filter((item) => item.status === "ready").length,
-        needsKey: providers.filter((item) => item.status === "needs-key").length,
+        ready: providers.filter((item) => item.status === "healthy").length,
+        needsKey: providers.filter((item) => item.status === "untested" || item.status === "offline").length,
         items: this.gateway.providers(),
       },
       routing: { rules: this.store.listRoutes().length, enabled: this.store.listRoutes().filter((item) => item.enabled).length },
@@ -134,17 +137,34 @@ export class AdminController {
 
   @Get("providers")
   providers() {
-    return { mode: "development-memory", providers: this.store.listProviders() };
+    return { mode: "development-memory", catalog: listProviderCatalog(), providers: this.store.listProviders() };
+  }
+
+  @Post("providers/test")
+  testProvider(@Body() input: ProviderConnectionInput) {
+    return this.providerConnections.test(input);
   }
 
   @Post("providers")
-  createProvider(@Body() input: AdminProviderInput) {
-    return this.store.createProvider(input);
+  async createProvider(@Body() input: AdminProviderInput) {
+    const connection = await this.providerConnections.test({ provider: input.provider, apiKey: input.apiKey });
+    return this.store.saveDetectedProvider(input, connection);
   }
 
   @Patch("providers/:id")
   updateProvider(@Param("id") id: string, @Body() input: AdminProviderInput) {
     return this.store.updateProvider(id, input);
+  }
+
+  @Post("providers/:id/test")
+  async testStoredProvider(@Param("id") id: string) {
+    try {
+      const connection = await this.providerConnections.test(this.store.providerConnectionInput(id));
+      return this.store.applyConnectionResult(id, connection);
+    } catch (error) {
+      this.store.recordProviderFailure(id, error);
+      throw error;
+    }
   }
 
   @Delete("providers/:id")

@@ -3,20 +3,16 @@ import { providersFromEnv, type ProviderDefinition } from "@cliper/ai-router";
 import type { AiModule } from "@cliper/contracts";
 import { randomUUID } from "node:crypto";
 import { decryptSecret, encryptSecret } from "@cliper/security";
+import { getProviderPreset, isSupportedProvider } from "./provider-catalog.js";
+import type { ProviderConnectionResult } from "./provider-connection.service.js";
 
 export type AdminPlan = "free" | "starter" | "pro" | "enterprise";
 
 export interface AdminProviderInput {
-  code?: string;
-  displayName?: string;
-  baseUrl?: string;
-  model?: string;
-  apiKeys?: string | string[];
+  provider?: string;
+  apiKey?: string;
   enabled?: boolean;
-  priority?: number;
-  timeoutMs?: number;
-  inputUsdPerM?: number;
-  outputUsdPerM?: number;
+  defaultModel?: string;
 }
 
 export interface RoutingRule {
@@ -60,7 +56,18 @@ export interface PricingPolicyState {
   updatedAt: string;
 }
 
-type StoredProvider = Omit<ProviderDefinition, "apiKeys"> & { id: string; encryptedApiKeys: string[]; updatedAt: string };
+type ProviderHealthState = "healthy" | "offline" | "untested";
+type StoredProvider = Omit<ProviderDefinition, "apiKeys"> & {
+  id: string;
+  encryptedApiKeys: string[];
+  availableModels: string[];
+  health: ProviderHealthState;
+  lastHealthAt?: string;
+  lastLatencyMs?: number;
+  lastError?: string;
+  modelSource: "api" | "preset";
+  updatedAt: string;
+};
 
 const modules: AiModule[] = ["story", "ranking", "highlight", "title", "hook", "caption", "metadata"];
 const moduleBudgets: Partial<Record<AiModule, number>> = {
@@ -72,16 +79,6 @@ const moduleBudgets: Partial<Record<AiModule, number>> = {
   caption: 700,
   metadata: 500,
 };
-
-function normalizeCode(value: string): string {
-  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
-}
-
-function keysFromInput(value: string | string[] | undefined): string[] | undefined {
-  if (value === undefined) return undefined;
-  const raw = Array.isArray(value) ? value : value.split(/[\n,]+/);
-  return Array.from(new Set(raw.map((item) => String(item).trim()).filter(Boolean)));
-}
 
 function finiteNumber(value: unknown, fallback: number, minimum = 0): number {
   const parsed = Number(value);
@@ -108,9 +105,20 @@ export class AdminStoreService {
       updatedAt: new Date().toISOString(),
     };
     for (const provider of providersFromEnv()) {
+      if (!provider.apiKeys.length || !isSupportedProvider(provider.code)) continue;
       const id = `provider-${provider.code}`;
       const { apiKeys, ...definition } = provider;
-      this.providersValue.set(id, { ...definition, id, encryptedApiKeys: this.encryptKeys(apiKeys), updatedAt: new Date().toISOString() });
+      const preset = getProviderPreset(provider.code);
+      this.providersValue.set(id, {
+        ...definition,
+        protocol: definition.protocol || preset.protocol,
+        id,
+        encryptedApiKeys: this.encryptKeys(apiKeys),
+        availableModels: [provider.model],
+        health: "untested",
+        modelSource: "preset",
+        updatedAt: new Date().toISOString(),
+      });
     }
     this.seedRoutes();
   }
@@ -145,41 +153,58 @@ export class AdminStoreService {
   }
 
   providersForRouter(): ProviderDefinition[] {
-    return Array.from(this.providersValue.values()).map(({ id: _id, updatedAt: _updatedAt, encryptedApiKeys, ...provider }) => ({
-      ...provider,
-      apiKeys: this.decryptKeys(encryptedApiKeys),
-    }));
+    return Array.from(this.providersValue.values()).map((stored) => {
+      const {
+        id: _id,
+        updatedAt: _updatedAt,
+        encryptedApiKeys,
+        availableModels: _availableModels,
+        health: _health,
+        lastHealthAt: _lastHealthAt,
+        lastLatencyMs: _lastLatencyMs,
+        lastError: _lastError,
+        modelSource: _modelSource,
+        ...provider
+      } = stored;
+      return { ...provider, apiKeys: this.decryptKeys(encryptedApiKeys) };
+    });
   }
 
   listProviders() {
     return Array.from(this.providersValue.values()).map((provider) => this.safeProvider(provider));
   }
 
-  createProvider(input: AdminProviderInput) {
-    const code = normalizeCode(input.code || input.displayName || "");
-    const displayName = String(input.displayName || "").trim();
-    const baseUrl = String(input.baseUrl || "").trim().replace(/\/+$/, "");
-    const model = String(input.model || "").trim();
-    const apiKeys = keysFromInput(input.apiKeys) || [];
-    if (!code || !displayName || !baseUrl || !model) {
-      throw new BadRequestException("Code, nama provider, base URL, dan model wajib diisi.");
-    }
-    if (!/^https?:\/\//i.test(baseUrl)) throw new BadRequestException("Base URL provider harus memakai http atau https.");
-    if (Array.from(this.providersValue.values()).some((item) => item.code === code)) {
-      throw new BadRequestException("Code provider sudah digunakan.");
-    }
+  saveDetectedProvider(input: AdminProviderInput, connection: ProviderConnectionResult) {
+    const apiKey = String(input.apiKey || "").trim();
+    if (!apiKey) throw new BadRequestException("API key wajib diisi.");
+    const existing = Array.from(this.providersValue.values()).find((item) => item.code === connection.provider);
+    const preset = getProviderPreset(connection.provider);
+    const currentKeys = existing ? this.decryptKeys(existing.encryptedApiKeys) : [];
+    const apiKeys = Array.from(new Set([...currentKeys, apiKey]));
+    const requestedModel = String(input.defaultModel || "").trim();
+    const defaultModel = requestedModel && connection.models.includes(requestedModel)
+      ? requestedModel
+      : existing && connection.models.includes(existing.model) ? existing.model : connection.defaultModel;
     const provider: StoredProvider = {
-      id: randomUUID(),
-      code,
-      displayName,
-      baseUrl,
-      model,
+      ...(existing || {} as StoredProvider),
+      id: existing?.id || randomUUID(),
+      code: connection.provider,
+      displayName: connection.displayName,
+      baseUrl: connection.baseUrl,
+      model: defaultModel,
+      protocol: connection.protocol,
       encryptedApiKeys: this.encryptKeys(apiKeys),
+      availableModels: connection.models,
+      health: "healthy",
+      lastHealthAt: connection.checkedAt,
+      lastLatencyMs: connection.latencyMs,
+      lastError: undefined,
+      modelSource: connection.modelSource,
       enabled: input.enabled !== false,
-      priority: finiteNumber(input.priority, 100, 1),
-      timeoutMs: finiteNumber(input.timeoutMs, 45_000, 5_000),
-      inputUsdPerM: finiteNumber(input.inputUsdPerM, 0),
-      outputUsdPerM: finiteNumber(input.outputUsdPerM, 0),
+      priority: existing?.priority || preset.priority,
+      timeoutMs: existing?.timeoutMs || preset.timeoutMs,
+      inputUsdPerM: existing?.inputUsdPerM || 0,
+      outputUsdPerM: existing?.outputUsdPerM || 0,
       updatedAt: new Date().toISOString(),
     };
     this.providersValue.set(provider.id, provider);
@@ -190,41 +215,61 @@ export class AdminStoreService {
   updateProvider(id: string, input: AdminProviderInput) {
     const current = this.providersValue.get(id);
     if (!current) throw new NotFoundException("Provider tidak ditemukan.");
-    const code = input.code === undefined ? current.code : normalizeCode(input.code);
-    if (!code) throw new BadRequestException("Code provider tidak valid.");
-    if (Array.from(this.providersValue.values()).some((item) => item.id !== id && item.code === code)) {
-      throw new BadRequestException("Code provider sudah digunakan.");
+    const requestedModel = input.defaultModel === undefined ? current.model : String(input.defaultModel).trim();
+    if (!current.availableModels.includes(requestedModel)) {
+      throw new BadRequestException("Model default tidak tersedia untuk provider ini.");
     }
-    const baseUrl = input.baseUrl === undefined ? current.baseUrl : String(input.baseUrl).trim().replace(/\/+$/, "");
-    if (!/^https?:\/\//i.test(baseUrl)) throw new BadRequestException("Base URL provider harus memakai http atau https.");
-    const nextKeys = keysFromInput(input.apiKeys);
     const provider: StoredProvider = {
       ...current,
-      code,
-      displayName: input.displayName === undefined ? current.displayName : String(input.displayName).trim(),
-      baseUrl,
-      model: input.model === undefined ? current.model : String(input.model).trim(),
-      encryptedApiKeys: nextKeys === undefined || nextKeys.length === 0 ? current.encryptedApiKeys : this.encryptKeys(nextKeys),
+      model: requestedModel,
       enabled: input.enabled === undefined ? current.enabled : Boolean(input.enabled),
-      priority: input.priority === undefined ? current.priority : finiteNumber(input.priority, current.priority || 100, 1),
-      timeoutMs: input.timeoutMs === undefined ? current.timeoutMs : finiteNumber(input.timeoutMs, current.timeoutMs || 45_000, 5_000),
-      inputUsdPerM: input.inputUsdPerM === undefined ? current.inputUsdPerM : finiteNumber(input.inputUsdPerM, current.inputUsdPerM || 0),
-      outputUsdPerM: input.outputUsdPerM === undefined ? current.outputUsdPerM : finiteNumber(input.outputUsdPerM, current.outputUsdPerM || 0),
       updatedAt: new Date().toISOString(),
     };
-    if (!provider.displayName || !provider.model) throw new BadRequestException("Nama provider dan model wajib diisi.");
     this.providersValue.set(id, provider);
-    if (code !== current.code) {
-      for (const [routeId, route] of this.routesValue.entries()) {
-        this.routesValue.set(routeId, {
-          ...route,
-          primary: route.primary === current.code ? code : route.primary,
-          fallback: route.fallback === current.code ? code : route.fallback,
-        });
-      }
-    }
     this.touch();
     return this.safeProvider(provider);
+  }
+
+  providerConnectionInput(id: string) {
+    const provider = this.providersValue.get(id);
+    if (!provider) throw new NotFoundException("Provider tidak ditemukan.");
+    const apiKey = this.decryptKeys(provider.encryptedApiKeys)[0];
+    if (!apiKey) throw new BadRequestException("Provider belum memiliki API key.");
+    return { provider: provider.code, apiKey };
+  }
+
+  applyConnectionResult(id: string, connection: ProviderConnectionResult) {
+    const current = this.providersValue.get(id);
+    if (!current) throw new NotFoundException("Provider tidak ditemukan.");
+    const provider: StoredProvider = {
+      ...current,
+      baseUrl: connection.baseUrl,
+      protocol: connection.protocol,
+      model: connection.models.includes(current.model) ? current.model : connection.defaultModel,
+      availableModels: connection.models,
+      health: "healthy",
+      lastHealthAt: connection.checkedAt,
+      lastLatencyMs: connection.latencyMs,
+      lastError: undefined,
+      modelSource: connection.modelSource,
+      updatedAt: new Date().toISOString(),
+    };
+    this.providersValue.set(id, provider);
+    this.touch();
+    return this.safeProvider(provider);
+  }
+
+  recordProviderFailure(id: string, error: unknown) {
+    const current = this.providersValue.get(id);
+    if (!current) return;
+    this.providersValue.set(id, {
+      ...current,
+      health: "offline",
+      lastHealthAt: new Date().toISOString(),
+      lastError: error instanceof Error ? error.message.slice(0, 180) : "Test koneksi gagal.",
+      updatedAt: new Date().toISOString(),
+    });
+    this.touch();
   }
 
   deleteProvider(id: string) {
@@ -374,7 +419,7 @@ export class AdminStoreService {
       keyCount: apiKeys.length,
       configured: apiKeys.length > 0,
       keyPreview: apiKeys.length ? `${apiKeys[0]!.slice(0, 5)}...${apiKeys[0]!.slice(-4)}` : "",
-      status: provider.enabled === false ? "disabled" : apiKeys.length ? "ready" : "needs-key",
+      status: provider.enabled === false ? "disabled" : !apiKeys.length ? "untested" : provider.health,
     };
   }
 

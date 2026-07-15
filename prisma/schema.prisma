@@ -246,15 +246,21 @@ model AiProvider {
   code               String          @unique
   displayName        String
   baseUrl            String
+  protocol           String          @default("openai-chat")
   encryptedKeyBundle String
   defaultModel       String
+  availableModels    Json            @default("[]")
+  modelSource        String          @default("preset")
   status             ProviderStatus  @default(HEALTHY)
+  enabled            Boolean         @default(true)
   priority           Int             @default(100)
   inputUsdPerM       Decimal         @default(0) @db.Decimal(12, 6)
   outputUsdPerM      Decimal         @default(0) @db.Decimal(12, 6)
   markupBpsOverride  Int?
   lastHealthAt       DateTime?
   lastLatencyMs      Int?
+  lastHealthMessage  String?
+  lastModelSyncAt    DateTime?
   usages             AiUsage[]
   logs               ProviderLog[]
   priceHistory       ProviderPrice[]

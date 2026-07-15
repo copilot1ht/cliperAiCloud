@@ -69,7 +69,9 @@ Desktop menukar key menjadi access token 15 menit dan rotating refresh token. Re
 
 Gateway menentukan provider/model sesuai modul, kesehatan, biaya, dan fallback. Respons tetap mengikuti format OpenAI Chat Completions, tetapi identitas provider/model internal dinormalisasi menjadi `cliper-cloud`/`auto`; desktop hanya menerima jumlah Cliper Credits yang dipotong.
 
-Admin dapat menambah provider OpenAI-compatible dari halaman Providers, memasukkan satu atau banyak API key, lalu menentukan primary dan fallback per modul/plan di halaman AI Router. Desktop tetap hanya menerima satu key `clip_sk_*` dan tidak pernah menerima key Gemini, DeepSeek, atau provider lain.
+Admin menambahkan DeepSeek, Gemini, OpenAI, Qwen, atau Claude melalui **Provider Manager V2**. Form hanya meminta jenis provider, API key, dan status aktif. Server menguji key, mengambil daftar model, mengukur latency, memilih default model, lalu menyimpan key dalam encrypted pool. Menambahkan provider yang sama dengan key berbeda akan memperbesar key pool tanpa menimpa key lama. Primary dan fallback per modul/plan tetap diatur melalui AI Router. Desktop hanya menerima satu key `clip_sk_*` dan tidak pernah menerima key provider.
+
+Claude dirutekan menggunakan Anthropic Messages API native. Provider lain memakai endpoint OpenAI-compatible yang sudah ditetapkan dalam katalog backend. Base URL, timeout, priority, dan model tidak dapat diisi bebas dari browser. Untuk keamanan, raw provider key tidak pernah dikirim kembali setelah disimpan.
 
 ## Billing cost-based
 

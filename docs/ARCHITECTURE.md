@@ -13,9 +13,9 @@ NestJS Gateway /v1/chat/completions
         |
         v
 AI Router
-   |             |
-   v             v
-Gemini       DeepSeek       future OpenAI-compatible providers
+   |          |          |        |        |
+   v          v          v        v        v
+DeepSeek   Gemini     OpenAI    Qwen    Claude native
 ```
 
 ## Routing
@@ -36,24 +36,9 @@ Cliper Credits bukan raw model tokens. Raw input/output tokens dipakai untuk men
 
 Markup 50% berbeda dengan gross margin 50%. Cost 80 dan charge 120 menghasilkan markup 50%, profit 40, tetapi gross margin terhadap revenue adalah 33,3%.
 
-`PROVIDER_CONFIG_JSON` menerima array konfigurasi generic:
+Provider Manager memakai katalog backend, bukan konfigurasi endpoint bebas dari browser. Admin hanya memilih provider dan menempel API key. API menjalankan `GET /models` dengan autentikasi resmi provider, menyaring model chat yang kompatibel, mengukur latency, lalu menyimpan base URL, protocol, model, health, dan waktu pemeriksaan. DeepSeek, Gemini, OpenAI, dan Qwen dirutekan melalui Chat Completions; Claude memakai Anthropic Messages API native.
 
-```json
-[
-  {
-    "code": "provider-code",
-    "displayName": "Provider Name",
-    "baseUrl": "https://provider.example/v1",
-    "model": "model-name",
-    "apiKeys": ["key-1", "key-2"],
-    "priority": 10,
-    "modulePriority": { "highlight": 5, "caption": 25 },
-    "inputUsdPerM": 0,
-    "outputUsdPerM": 0,
-    "enabled": true
-  }
-]
-```
+Setiap penambahan key wajib lolos validasi provider. Default model hanya dapat dipilih dari model hasil discovery. Kegagalan test mengubah health menjadi offline tanpa menghapus key terakhir yang masih tersimpan.
 
 Di production, key dari database harus didekripsi sesaat sebelum pemanggilan provider. Jangan menyimpan JSON berisi raw key di repository.
 

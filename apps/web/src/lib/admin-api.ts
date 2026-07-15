@@ -28,7 +28,14 @@ export interface AdminProvider {
   code: string;
   displayName: string;
   baseUrl: string;
+  protocol: "openai-chat" | "anthropic-messages";
   model: string;
+  availableModels: string[];
+  health: "healthy" | "offline" | "untested";
+  lastHealthAt?: string;
+  lastLatencyMs?: number;
+  lastError?: string;
+  modelSource: "api" | "preset";
   enabled: boolean;
   priority: number;
   timeoutMs: number;
@@ -38,7 +45,22 @@ export interface AdminProvider {
   keyCount: number;
   configured: boolean;
   keyPreview: string;
-  status: "ready" | "needs-key" | "disabled";
+  status: "healthy" | "offline" | "untested" | "disabled";
+}
+
+export interface ProviderCatalogItem {
+  code: "deepseek" | "gemini" | "openai" | "qwen" | "claude";
+  displayName: string;
+}
+
+export interface ProviderTestResult {
+  provider: ProviderCatalogItem["code"];
+  displayName: string;
+  models: string[];
+  defaultModel: string;
+  latencyMs: number;
+  health: "healthy";
+  checkedAt: string;
 }
 
 export interface RoutingRule {

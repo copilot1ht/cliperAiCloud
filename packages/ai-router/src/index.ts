@@ -231,7 +231,7 @@ export class AiRouter {
         const bRank = bPlanRank >= 0 ? bPlanRank : 1000 + (b.modulePriority?.[module] ?? b.priority ?? 100);
         return aRank - bRank || a.failures - b.failures;
       });
-    if (!candidates.length) throw new Error("Tidak ada AI provider aktif. Tambahkan Gemini atau DeepSeek API key di server.");
+    if (!candidates.length) throw new Error("Tidak ada AI provider aktif. Tambahkan dan uji API key melalui Provider Manager.");
 
     const errors: string[] = [];
     for (const provider of candidates) {

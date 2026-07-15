@@ -29,20 +29,47 @@ describe("AdminStoreService", () => {
 
   it("applies provider and route changes to router snapshots", () => {
     const store = new AdminStoreService();
-    const provider = store.createProvider({
-      code: "custom",
-      displayName: "Custom AI",
-      baseUrl: "https://example.test/v1",
-      model: "custom-model",
-      apiKeys: "custom-secret",
+    const provider = store.saveDetectedProvider({ provider: "openai", apiKey: "custom-secret" }, {
+      provider: "openai",
+      displayName: "OpenAI",
+      baseUrl: "https://api.openai.com/v1",
+      protocol: "openai-chat",
+      models: ["gpt-5-mini", "gpt-4.1-mini"],
+      defaultModel: "gpt-5-mini",
+      latencyMs: 320,
+      health: "healthy",
+      checkedAt: new Date().toISOString(),
+      modelSource: "api",
     });
-    expect(store.providersForRouter().find((item) => item.code === "custom")?.apiKeys).toEqual(["custom-secret"]);
+    expect(store.providersForRouter().find((item) => item.code === "openai")?.apiKeys).toEqual(["custom-secret"]);
     const rule = store.listRoutes().find((item) => item.plan === "pro" && item.module === "title")!;
-    store.updateRoute(rule.id, { primary: "custom", fallback: "gemini" });
-    expect(store.planRoutes().pro?.title).toEqual(["custom", "gemini"]);
+    store.updateRoute(rule.id, { primary: "openai", fallback: "gemini" });
+    expect(store.planRoutes().pro?.title).toEqual(["openai", "gemini"]);
     store.updateRoute(rule.id, { primary: rule.primary, fallback: rule.fallback });
     store.deleteProvider(provider.id);
-    expect(store.listProviders().some((item) => item.code === "custom")).toBe(false);
+    expect(store.listProviders().some((item) => item.code === "openai")).toBe(false);
+  });
+
+  it("appends validated keys and only accepts detected default models", () => {
+    const store = new AdminStoreService();
+    const connection = {
+      provider: "openai" as const,
+      displayName: "OpenAI",
+      baseUrl: "https://api.openai.com/v1",
+      protocol: "openai-chat" as const,
+      models: ["gpt-5-mini", "gpt-4.1-mini"],
+      defaultModel: "gpt-5-mini",
+      latencyMs: 250,
+      health: "healthy" as const,
+      checkedAt: new Date().toISOString(),
+      modelSource: "api" as const,
+    };
+    const first = store.saveDetectedProvider({ provider: "openai", apiKey: "first-secret-key" }, connection);
+    const second = store.saveDetectedProvider({ provider: "openai", apiKey: "second-secret-key" }, connection);
+    expect(second.id).toBe(first.id);
+    expect(second.keyCount).toBe(2);
+    expect(() => store.updateProvider(first.id, { defaultModel: "not-detected" })).toThrow("Model default tidak tersedia");
+    expect(store.updateProvider(first.id, { defaultModel: "gpt-4.1-mini" }).model).toBe("gpt-4.1-mini");
   });
 
   it("calculates revenue only from paid records and subtracts refunds", () => {

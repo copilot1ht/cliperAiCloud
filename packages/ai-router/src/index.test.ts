@@ -68,4 +68,35 @@ describe("AiRouter", () => {
     expect(starter.provider).toBe("deepseek");
     expect(pro.provider).toBe("gemini");
   });
+
+  it("uses the native Anthropic Messages protocol for Claude", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "msg_test",
+      model: "claude-sonnet-4-6",
+      content: [{ type: "text", text: "judul yang natural" }],
+      usage: { input_tokens: 12, output_tokens: 4 },
+    }), { status: 200 }));
+    const router = new AiRouter({
+      fetchImpl,
+      providers: [{
+        code: "claude",
+        displayName: "Claude",
+        baseUrl: "https://api.anthropic.com/v1",
+        model: "claude-sonnet-4-6",
+        apiKeys: ["anthropic-secret"],
+        protocol: "anthropic-messages",
+      }],
+    });
+    const result = await router.route({
+      module: "title",
+      messages: [{ role: "system", content: "Buat judul." }, { role: "user", content: "Transcript" }],
+    });
+    expect(result.choices[0]?.message.content).toBe("judul yang natural");
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.anthropic.com/v1/messages");
+    expect((init.headers as Record<string, string>)["x-api-key"]).toBe("anthropic-secret");
+    const body = JSON.parse(String(init.body));
+    expect(body.system).toBe("Buat judul.");
+    expect(body.messages).toEqual([{ role: "user", content: "Transcript" }]);
+  });
 });
