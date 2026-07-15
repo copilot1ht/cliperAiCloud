@@ -95,10 +95,6 @@ export interface PricingPolicy {
   updatedAt: string;
 }
 
-export function apiBase(): string {
-  return (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4100").replace(/\/$/, "");
-}
-
 export async function adminFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${apiBase()}${path}`, {
     ...init,
@@ -130,3 +126,4 @@ export function formatDate(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "-" : new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
+import { apiBase } from "./api-base";

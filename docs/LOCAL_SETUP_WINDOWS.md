@@ -5,7 +5,7 @@ Dokumen ini menyiapkan Cliper AI Cloud untuk development lokal. Jangan gunakan k
 ## 1. Software wajib
 
 - Node.js LTS yang memenuhi `>=20.19.0`.
-- pnpm 11.
+- pnpm 10.34.5.
 - Git.
 - Docker Desktop dengan WSL 2 backend.
 - PostgreSQL client opsional untuk debugging.

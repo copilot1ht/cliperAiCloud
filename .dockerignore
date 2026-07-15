@@ -1,0 +1,17 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+.next
+.turbo
+.vercel
+.logs
+.run
+backups
+coverage
+dist
+node_modules
+*.log
+*.dump
+*.tsbuildinfo

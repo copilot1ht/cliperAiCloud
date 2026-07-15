@@ -2,6 +2,7 @@
 
 import { Cloud, Eye, EyeOff, LockKeyhole, LogIn, UserPlus } from "lucide-react";
 import { FormEvent, useState } from "react";
+import { apiBase } from "@/lib/api-base";
 
 type AuthMode = "login" | "register";
 
@@ -16,7 +17,7 @@ export function AuthLogin() {
     setLoading(true);
     setMessage("");
     const data = new FormData(event.currentTarget);
-    const apiUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4100").replace(/\/$/, "");
+    const apiUrl = apiBase();
     try {
       const response = await fetch(`${apiUrl}/api/auth/${mode === "login" ? "login" : "register"}`, {
         method: "POST",

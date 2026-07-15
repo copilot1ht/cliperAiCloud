@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { KeyManager, type LicenseKeySummary } from "@/components/key-manager";
+import { apiBase } from "@/lib/api-base";
 
 export default function KeysPage() {
   const [keys, setKeys] = useState<LicenseKeySummary[]>([]);
@@ -11,7 +12,7 @@ export default function KeysPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
 
-  const apiUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4100").replace(/\/$/, "");
+  const apiUrl = apiBase();
 
   const getHeaders = () => {
     return {

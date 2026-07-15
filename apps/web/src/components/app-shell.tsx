@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Activity, BadgeDollarSign, Bell, Boxes, ChevronDown, Cloud, CreditCard, Crown, Download, FileText, Gauge, Home, Key, Layers, LogOut, MessageCircle, Menu, Route, ScrollText, ServerCog, Settings, ShieldCheck, Sparkles, User, Users, Wallet, X, BarChart3 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { apiBase } from "@/lib/api-base";
 
 const mainNav = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
@@ -49,7 +50,7 @@ export function AppShell({ children, title, eyebrow, actions, role = "member" }:
   const navigation = role === "admin" ? adminNav : mainNav;
 
   useEffect(() => {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4100";
+    const apiUrl = apiBase();
     const controller = new AbortController();
     fetch(`${apiUrl.replace(/\/$/, "")}/health/ready`, { cache: "no-store", signal: controller.signal })
       .then((response) => response.json())
@@ -59,7 +60,7 @@ export function AppShell({ children, title, eyebrow, actions, role = "member" }:
   }, []);
 
   useEffect(() => {
-    const apiUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4100").replace(/\/$/, "");
+    const apiUrl = apiBase();
     fetch(`${apiUrl}/api/auth/session`, { method: "POST", credentials: "include" })
       .then(async (response) => {
         const session = await response.json();
@@ -74,7 +75,7 @@ export function AppShell({ children, title, eyebrow, actions, role = "member" }:
   }, [role]);
 
   const signOut = async () => {
-    const apiUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4100").replace(/\/$/, "");
+    const apiUrl = apiBase();
     try {
       await fetch(`${apiUrl}/api/auth/logout`, { method: "POST", credentials: "include" });
     } catch {}

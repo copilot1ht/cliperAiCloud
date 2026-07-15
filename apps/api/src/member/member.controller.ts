@@ -1,5 +1,5 @@
 import { Controller, Get, Req, UseGuards } from "@nestjs/common";
-import { AuthService } from "../auth/auth.service.js";
+import { AuthService, authStorageMode } from "../auth/auth.service.js";
 import { CreditAccountService } from "../billing/credit-account.service.js";
 import { LicenseService } from "../license/license.service.js";
 import { SessionGuard, type SessionAuthenticatedRequest } from "../security/session.guard.js";
@@ -23,7 +23,7 @@ export class MemberController {
     const keys = this.licenses.listKeys(accountId);
     const usage = this.usage.summary(accountId);
     return {
-      mode: "development-memory",
+      mode: authStorageMode(),
       user: { id: user.id, displayName: user.displayName, email: user.email, plan: user.plan, deviceLimit: user.deviceLimit },
       credits: {
         balanceMicro: credit.balanceMicro,

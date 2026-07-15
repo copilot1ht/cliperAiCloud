@@ -33,7 +33,7 @@ export interface MemorySession {
 
 export interface AuthResult {
   ok: true;
-  mode: "development-memory";
+  mode: "development-memory" | "bootstrap-memory";
   token: string;
   expiresAt: string;
   user: { id: string; email: string; displayName: string; role: AuthRole };
@@ -56,6 +56,26 @@ function validEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
+export function authStorageMode(): "development-memory" | "bootstrap-memory" {
+  return String(process.env.NODE_ENV || "development").toLowerCase() === "production"
+    ? "bootstrap-memory"
+    : "development-memory";
+}
+
+function adminEmail(): string {
+  const production = String(process.env.NODE_ENV || "development").toLowerCase() === "production";
+  return normalizeEmail(production
+    ? process.env.BOOTSTRAP_ADMIN_EMAIL || ""
+    : process.env.DEV_ADMIN_EMAIL || process.env.BOOTSTRAP_ADMIN_EMAIL || "");
+}
+
+function adminPasswordHash(): string {
+  const production = String(process.env.NODE_ENV || "development").toLowerCase() === "production";
+  return String(production
+    ? process.env.BOOTSTRAP_ADMIN_PASSWORD_HASH || ""
+    : process.env.DEV_ADMIN_PASSWORD_HASH || process.env.BOOTSTRAP_ADMIN_PASSWORD_HASH || "");
+}
+
 @Injectable()
 export class AuthService {
   private readonly users = new Map<string, MemoryUser>();
@@ -73,21 +93,21 @@ export class AuthService {
   }
 
   async login(input: { email?: string; password?: string }): Promise<AuthResult> {
-    this.assertDevelopmentMode();
+    this.assertBootstrapAuth();
     const email = normalizeEmail(input.email || "");
     const password = String(input.password || "");
     this.assertLoginAllowed(email);
     if (!validEmail(email) || !password) this.rejectLogin(email);
 
-    const adminEmail = normalizeEmail(process.env.DEV_ADMIN_EMAIL || "");
-    const adminHash = String(process.env.DEV_ADMIN_PASSWORD_HASH || "");
-    if (email === adminEmail) {
-      if (!adminHash || !(await verify(adminHash, password))) this.rejectLogin(email);
+    const configuredAdminEmail = adminEmail();
+    const configuredAdminHash = adminPasswordHash();
+    if (email === configuredAdminEmail) {
+      if (!configuredAdminHash || !(await verify(configuredAdminHash, password))) this.rejectLogin(email);
       const result = this.createSession({
-        id: "development-admin",
+        id: "bootstrap-admin",
         email,
         displayName: "Cliper Administrator",
-        passwordHash: adminHash,
+        passwordHash: configuredAdminHash,
         role: "admin",
         plan: "enterprise",
         status: "active",
@@ -97,7 +117,7 @@ export class AuthService {
         lastActiveAt: new Date().toISOString(),
       });
       this.loginAttempts.delete(email);
-      this.securityEvents?.record({ event: "web_login_success", severity: "info", accountId: "development-admin", detail: "Admin login successful." });
+      this.securityEvents?.record({ event: "web_login_success", severity: "info", accountId: "bootstrap-admin", detail: "Admin login successful." });
       return result;
     }
 
@@ -130,8 +150,8 @@ export class AuthService {
 
   listUsers() {
     const admin = {
-      id: "development-admin",
-      email: normalizeEmail(process.env.DEV_ADMIN_EMAIL || ""),
+      id: "bootstrap-admin",
+      email: adminEmail(),
       displayName: "Cliper Administrator",
       role: "admin" as const,
       plan: "enterprise" as const,
@@ -153,14 +173,14 @@ export class AuthService {
     credits?: number;
     deviceLimit?: number;
   }) {
-    this.assertDevelopmentMode();
+    this.assertBootstrapAuth();
     const email = normalizeEmail(input.email || "");
     const password = String(input.password || "");
     const displayName = String(input.displayName || "").trim();
     if (!validEmail(email)) throw new BadRequestException("Format email tidak valid.");
     if (password.length < 10) throw new BadRequestException("Password minimal 10 karakter.");
     if (displayName.length < 2 || displayName.length > 80) throw new BadRequestException("Nama harus 2-80 karakter.");
-    if (email === normalizeEmail(process.env.DEV_ADMIN_EMAIL || "") || this.users.has(email)) {
+    if (email === adminEmail() || this.users.has(email)) {
       throw new BadRequestException("Email sudah digunakan.");
     }
     const now = new Date().toISOString();
@@ -228,7 +248,7 @@ export class AuthService {
     this.sessions.set(token, { token, userId: user.id, email: user.email, displayName: user.displayName, role: user.role, expiresAt });
     return {
       ok: true,
-      mode: "development-memory",
+      mode: authStorageMode(),
       token,
       expiresAt: new Date(expiresAt).toISOString(),
       user: { id: user.id, email: user.email, displayName: user.displayName, role: user.role },
@@ -283,9 +303,9 @@ export class AuthService {
     return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
   }
 
-  private assertDevelopmentMode(): void {
-    if (String(process.env.NODE_ENV || "development").toLowerCase() === "production") {
-      throw new ServiceUnavailableException("Development auth dinonaktifkan pada production. Gunakan database-backed auth.");
+  private assertBootstrapAuth(): void {
+    if (!adminEmail() || !adminPasswordHash()) {
+      throw new ServiceUnavailableException("Bootstrap admin belum dikonfigurasi pada server.");
     }
   }
 }

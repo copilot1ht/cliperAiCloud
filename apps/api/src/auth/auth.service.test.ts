@@ -6,6 +6,8 @@ const original = {
   NODE_ENV: process.env.NODE_ENV,
   DEV_ADMIN_EMAIL: process.env.DEV_ADMIN_EMAIL,
   DEV_ADMIN_PASSWORD_HASH: process.env.DEV_ADMIN_PASSWORD_HASH,
+  BOOTSTRAP_ADMIN_EMAIL: process.env.BOOTSTRAP_ADMIN_EMAIL,
+  BOOTSTRAP_ADMIN_PASSWORD_HASH: process.env.BOOTSTRAP_ADMIN_PASSWORD_HASH,
 };
 
 beforeEach(async () => {
@@ -32,6 +34,15 @@ describe("AuthService", () => {
     const result = await new AuthService().login({ email: "admin@test.local", password: "strong-admin-password" });
     expect(result.user.role).toBe("admin");
     expect(result.redirectTo).toBe("/admin/overview");
+  });
+
+  it("allows the separately configured bootstrap admin in production", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.BOOTSTRAP_ADMIN_EMAIL = "owner@cliper.test";
+    process.env.BOOTSTRAP_ADMIN_PASSWORD_HASH = await hash("production-admin-password");
+    const result = await new AuthService().login({ email: "owner@cliper.test", password: "production-admin-password" });
+    expect(result.mode).toBe("bootstrap-memory");
+    expect(result.user.role).toBe("admin");
   });
 
   it("blocks member registration using the fixed admin email", async () => {

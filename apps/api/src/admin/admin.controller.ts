@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from "@nestjs/common";
-import { AuthService, type MemberPlan, type MemberStatus } from "../auth/auth.service.js";
+import { AuthService, authStorageMode, type MemberPlan, type MemberStatus } from "../auth/auth.service.js";
 import { GatewayService } from "../gateway/gateway.service.js";
 import { AdminSessionGuard } from "../security/admin-session.guard.js";
 import { UsageService } from "../usage/usage.service.js";
@@ -40,7 +40,7 @@ export class AdminController {
     const payments = this.store.revenue();
     const usage = this.usage.summary();
     return {
-      mode: "development-memory",
+      mode: authStorageMode(),
       users: {
         total: users.length,
         members: users.filter((item) => item.role === "member").length,
@@ -67,7 +67,7 @@ export class AdminController {
 
   @Get("users")
   users() {
-    return { mode: "development-memory", users: this.auth.listUsers(), plans };
+    return { mode: authStorageMode(), users: this.auth.listUsers(), plans };
   }
 
   @Get("system-health")
@@ -77,7 +77,7 @@ export class AdminController {
     const providers = this.gateway.providers();
     const memory = process.memoryUsage();
     return {
-      mode: "development-memory",
+      mode: authStorageMode(),
       checkedAt: new Date().toISOString(),
       process: {
         uptimeSeconds: Math.round(process.uptime()),
@@ -103,7 +103,7 @@ export class AdminController {
   @Get("security")
   security() {
     return {
-      mode: "development-memory",
+      mode: authStorageMode(),
       sessions: this.desktopSessions.summary(),
       events: this.securityEvents.list(100),
       eventSummary: this.securityEvents.summary(),
@@ -137,7 +137,7 @@ export class AdminController {
 
   @Get("providers")
   providers() {
-    return { mode: "development-memory", catalog: listProviderCatalog(), providers: this.store.listProviders() };
+    return { mode: authStorageMode(), catalog: listProviderCatalog(), providers: this.store.listProviders() };
   }
 
   @Post("providers/test")
@@ -174,7 +174,7 @@ export class AdminController {
 
   @Get("router")
   router() {
-    return { mode: "development-memory", providers: this.store.listProviders(), rules: this.store.listRoutes() };
+    return { mode: authStorageMode(), providers: this.store.listProviders(), rules: this.store.listRoutes() };
   }
 
   @Patch("router/:id")
@@ -187,7 +187,7 @@ export class AdminController {
     const payment = this.store.revenue();
     const usage = this.usage.summary();
     return {
-      mode: "development-memory",
+      mode: authStorageMode(),
       payment,
       usage,
       pricing: this.store.pricingPolicy(),
@@ -198,17 +198,17 @@ export class AdminController {
 
   @Get("pricing")
   pricing() {
-    return { mode: "development-memory", policy: this.store.pricingPolicy() };
+    return { mode: authStorageMode(), policy: this.store.pricingPolicy() };
   }
 
   @Patch("pricing")
   updatePricing(@Body() input: PricingPolicyInput) {
-    return { mode: "development-memory", policy: this.store.updatePricingPolicy(input) };
+    return { mode: authStorageMode(), policy: this.store.updatePricingPolicy(input) };
   }
 
   @Get("payments")
   payments() {
-    return { mode: "development-memory", summary: this.store.revenue(), payments: this.store.listPayments() };
+    return { mode: authStorageMode(), summary: this.store.revenue(), payments: this.store.listPayments() };
   }
 
   @Post("payments")

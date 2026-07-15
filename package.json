@@ -2,7 +2,7 @@
   "name": "cliper-ai-cloud",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "pnpm@11.5.0",
+  "packageManager": "pnpm@10.34.5",
   "engines": {
     "node": ">=20.19.0"
   },
@@ -19,6 +19,9 @@
     "db:validate": "prisma validate",
     "db:migrate": "prisma migrate dev",
     "config:check": "pnpm --filter @cliper/api config:check",
+    "build:web": "pnpm --filter @cliper/web build",
+    "build:api": "pnpm --filter @cliper/api... build",
+    "admin:hash": "pnpm --filter @cliper/api hash:password",
     "backup:postgres": "powershell -ExecutionPolicy Bypass -File scripts/backup-postgres.ps1",
     "qa:signed-session": "powershell -ExecutionPolicy Bypass -File scripts/qa-signed-session.ps1",
     "qa": "pnpm typecheck && pnpm test && pnpm build"

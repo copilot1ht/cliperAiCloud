@@ -60,7 +60,7 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Run
   const activeProviders = providers.filter((provider) => provider.enabled);
   if (!activeProviders.length) {
     const message = "Tidak ada provider AI aktif. Konfigurasikan minimal satu provider key.";
-    production ? errors.push(message) : warnings.push(message);
+    warnings.push(message);
   }
 
   const requiredSecrets: Array<[string, number]> = [
@@ -81,19 +81,20 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Run
   if (production && env.CLIPER_DEV_API_KEY) {
     errors.push("CLIPER_DEV_API_KEY tidak boleh dipakai pada production; gunakan database-backed API key.");
   }
-  if (production && (env.DEV_ADMIN_EMAIL || env.DEV_ADMIN_PASSWORD_HASH)) {
-    errors.push("DEV_ADMIN_* tidak boleh dipakai pada production; gunakan database-backed admin account.");
+  if (production && (!env.BOOTSTRAP_ADMIN_EMAIL || !env.BOOTSTRAP_ADMIN_PASSWORD_HASH)) {
+    errors.push("BOOTSTRAP_ADMIN_EMAIL dan BOOTSTRAP_ADMIN_PASSWORD_HASH wajib untuk control-plane MVP.");
   }
-  if (!production && (!env.DEV_ADMIN_EMAIL || !env.DEV_ADMIN_PASSWORD_HASH)) {
+  if (production && (env.DEV_ADMIN_EMAIL || env.DEV_ADMIN_PASSWORD_HASH)) {
+    warnings.push("DEV_ADMIN_* diabaikan pada production; gunakan BOOTSTRAP_ADMIN_*.");
+  }
+  if (!production && (!env.DEV_ADMIN_EMAIL || !env.DEV_ADMIN_PASSWORD_HASH) && (!env.BOOTSTRAP_ADMIN_EMAIL || !env.BOOTSTRAP_ADMIN_PASSWORD_HASH)) {
     warnings.push("Fixed development admin belum dikonfigurasi.");
   }
   if (!env.DATABASE_URL) {
-    const message = "DATABASE_URL belum dikonfigurasi.";
-    production ? errors.push(message) : warnings.push(message);
+    warnings.push("DATABASE_URL belum dikonfigurasi; persistence database belum aktif.");
   }
   if (!env.REDIS_URL) {
-    const message = "REDIS_URL belum dikonfigurasi.";
-    production ? errors.push(message) : warnings.push(message);
+    warnings.push("REDIS_URL belum dikonfigurasi; distributed cache belum aktif.");
   }
   const origins = String(env.WEB_ORIGIN || "");
   const secureOrigins = Boolean(origins) && origins !== "*";

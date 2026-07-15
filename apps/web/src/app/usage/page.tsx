@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { StatCard } from "@/components/stat-card";
 import { formatDate } from "@/lib/admin-api";
+import { apiBase } from "@/lib/api-base";
 
 interface MemberUsagePayload {
   mode: string;
@@ -28,7 +29,7 @@ export default function UsagePage() {
   const [data, setData] = useState<MemberUsagePayload | null>(null);
   const [error, setError] = useState("");
   const load = useCallback(async () => {
-    const base = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4100").replace(/\/$/, "");
+    const base = apiBase();
     try {
       const response = await fetch(`${base}/api/member/overview`, { cache: "no-store", credentials: "include" });
       const payload = await response.json().catch(() => ({}));

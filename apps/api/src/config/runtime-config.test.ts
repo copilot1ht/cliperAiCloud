@@ -10,6 +10,8 @@ const safeProduction = {
   REFRESH_TOKEN_SECRET: "r".repeat(40),
   ADMIN_API_KEY: "a".repeat(32),
   PROVIDER_ENCRYPTION_KEY: "e".repeat(32),
+  BOOTSTRAP_ADMIN_EMAIL: "admin@cliper.test",
+  BOOTSTRAP_ADMIN_PASSWORD_HASH: "argon-hash-placeholder",
   GEMINI_API_KEYS: "gemini-key",
 };
 
@@ -24,6 +26,14 @@ describe("validateRuntimeConfig", () => {
     const report = validateRuntimeConfig({ ...safeProduction, CLIPER_DEV_API_KEY: "development" });
     expect(report.ready).toBe(false);
     expect(report.errors.join(" ")).toContain("CLIPER_DEV_API_KEY");
+  });
+
+  it("can start the control plane before the first provider is configured", () => {
+    const { GEMINI_API_KEYS: _provider, ...withoutProvider } = safeProduction;
+    const report = validateRuntimeConfig(withoutProvider);
+    expect(report.errors).toEqual([]);
+    expect(report.ready).toBe(false);
+    expect(report.warnings.join(" ")).toContain("provider AI");
   });
 
   it("does not expose provider key values in its report", () => {

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { StatCard } from "@/components/stat-card";
 import { formatDate } from "@/lib/admin-api";
+import { apiBase } from "@/lib/api-base";
 
 interface MemberOverview {
   mode: string;
@@ -23,7 +24,7 @@ export default function DashboardPage() {
   const [data, setData] = useState<MemberOverview | null>(null);
   const [error, setError] = useState("");
   const load = useCallback(async () => {
-    const apiUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4100").replace(/\/$/, "");
+    const apiUrl = apiBase();
     try {
       const response = await fetch(`${apiUrl}/api/member/overview`, { cache: "no-store", credentials: "include" });
       const payload = await response.json().catch(() => ({}));
@@ -51,7 +52,7 @@ export default function DashboardPage() {
         <div className="readiness-list"><span><i className="ready" /><strong>1. Generate API key</strong><small>Key rahasia hanya ditampilkan satu kali.</small></span><span><i className="ready" /><strong>2. Paste di desktop</strong><small>Masukkan key pada Settings Cliper Studio.</small></span><span><i className="ready" /><strong>3. Verify license</strong><small>Server memeriksa pemilik, status, device, plan, dan saldo.</small></span><span><i className="ready" /><strong>4. Start clipping</strong><small>Biaya aktual dikonversi menjadi Cliper Credits.</small></span></div>
       </section>
       <section className="panel table-panel">
-        <div className="panel-head"><div><p className="section-kicker">Actual usage</p><h2>Recent gateway requests</h2><p>User hanya melihat debit credits. Provider cost dan markup tetap internal.</p></div><span className="status-tag fallback">{data.mode === "development-memory" ? "Local test mode" : "Live"}</span></div>
+        <div className="panel-head"><div><p className="section-kicker">Actual usage</p><h2>Recent gateway requests</h2><p>User hanya melihat debit credits. Provider cost dan markup tetap internal.</p></div><span className="status-tag fallback">{data.mode.includes("memory") ? "Preview store" : "Live"}</span></div>
         {data.usage.recent.length ? <div className="table-scroll"><table><thead><tr><th>Module</th><th>Tokens</th><th>Credits</th><th>Time</th></tr></thead><tbody>{data.usage.recent.map((item) => <tr key={item.id}><td><strong>{item.module}</strong></td><td>{item.tokens.toLocaleString("id-ID")}</td><td>{displayCredits(item.creditChargeMicro)}</td><td>{formatDate(item.createdAt)}</td></tr>)}</tbody></table></div> : <div className="admin-empty"><strong>Belum ada AI request</strong><span>Usage akan muncul setelah desktop mengirim request melalui Cliper API key ini.</span></div>}
       </section>
     </>}
