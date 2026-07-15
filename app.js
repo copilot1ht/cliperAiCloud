@@ -57,9 +57,7 @@ const providerTasks = [
 ];
 
 const aiProviderDefaults = {
-  cloud: { label: "Cliper Cloud Gateway", baseUrl: "https://api.cliper.cloud/v1", model: "auto", requiresKey: true },
-  custom: { label: "Custom / OpenAI Compatible", baseUrl: "", model: "", requiresKey: true },
-  local: { label: "Local Heuristic", baseUrl: "", model: "local-heuristic", requiresKey: false }
+  cloud: { label: "Cliper Cloud Gateway", baseUrl: "https://api.cliper.cloud/v1", model: "auto", requiresKey: true }
 };
 
 const PRODUCTION_RENDER_PRESET = {
@@ -1284,7 +1282,7 @@ function isValidYoutubeUrl(url) {
 
 function isAiEnabled() {
   const payload = providerPayload();
-  return payload.providerType !== "local" && Boolean(payload.apiKey && payload.baseUrl && payload.model);
+  return payload.providerType === "cloud" && Boolean(payload.apiKey && payload.baseUrl && payload.model);
 }
 
 let metadataTimer = null;
@@ -1318,6 +1316,12 @@ async function fetchMetadata(url) {
   if (!isValidYoutubeUrl(url)) {
     setText("#previewTitle", "URL tidak valid");
     setText("#previewUrl", url || "Masukkan link YouTube");
+    return;
+  }
+  if (aiProviderRequiresConnectedStatus()) {
+    setView("settings");
+    setSettingsTab("api");
+    toast("Hubungkan Cliper AI Cloud terlebih dahulu");
     return;
   }
   metadataUrl = url;
@@ -1415,18 +1419,16 @@ function renderProviders() {
   const providerList = $("#providerList");
   if (!providerList) return;
   const payload = providerPayload();
-  const provider = aiProviderDefaults[payload.providerType] || aiProviderDefaults.local;
-  const model = payload.model || "local-heuristic";
-  const ready = payload.providerType === "local" || Boolean(payload.baseUrl && payload.apiKey && model);
+  const provider = aiProviderDefaults.cloud;
+  const model = "Auto";
+  const ready = Boolean(payload.providerType === "cloud" && payload.baseUrl && payload.apiKey);
   const statusText = $("#providerStatusText")?.textContent || "";
   const features = payload.aiFeatures || aiFeatureConfig();
   const activeFeatureCount = Object.values(features).filter(Boolean).length;
-  if (payload.providerType === "local") {
-    setText("#aiModeTitle", "Local mode active ✓");
-  } else if (/connected|valid|sukses|ready/i.test(statusText)) {
+  if (/connected|valid|sukses|ready/i.test(statusText)) {
     setText("#aiModeTitle", `${provider.label} active ✓ · ${activeFeatureCount} module ON`);
   } else {
-    setText("#aiModeTitle", `${provider.label} configured · local fallback ready`);
+    setText("#aiModeTitle", `${provider.label} belum terhubung`);
   }
   providerList.innerHTML = providerTasks
     .map(
@@ -1439,7 +1441,7 @@ function renderProviders() {
           aiTtsToggle: "tts"
         }[toggleId];
         const enabled = Boolean(features[key]);
-        const engine = enabled && ready && payload.providerType !== "local" ? `${provider.label} · ${model}` : "Local heuristic";
+        const engine = enabled && ready ? `${provider.label} · ${model}` : "Menunggu koneksi cloud";
         return `
         <article class="provider-item ${enabled ? "" : "disabled"}">
           <div>
@@ -1475,17 +1477,9 @@ async function openSessionFolder(index) {
 }
 
 function providerPayload() {
-  const providerType = $("#providerType")?.value || "custom";
   const apiKey = $("#apiKey")?.value?.trim();
-  const hasApiKey = Boolean(apiKey);
-  const modelValue = $("#highlightModel")?.value?.trim();
-  const activeProviderType = hasApiKey ? providerType : "local";
-  const features = activeProviderType === "local"
-    ? aiFeatureConfig()
-    : { highlight: true, hook: true, caption: true, title: true, tts: false };
-  const anyFeatureEnabled = Object.values(features).some(Boolean);
-  const effectiveProviderType = anyFeatureEnabled ? activeProviderType : "local";
-  let selectedModel = modelValue || (effectiveProviderType === "local" ? "local-heuristic" : (aiProviderDefaults[effectiveProviderType]?.model || ""));
+  const features = aiFeatureConfig();
+  const selectedModel = "auto";
   const maxTokensByModule = {
     test: 320,
     highlight: 1600,
@@ -1511,9 +1505,9 @@ function providerPayload() {
     test: 2,
     default: 2
   };
-  let baseUrl = $("#baseUrl")?.value?.trim();
+  const baseUrl = aiProviderDefaults.cloud.baseUrl;
   return {
-    providerType: effectiveProviderType,
+    providerType: "cloud",
     baseUrl,
     apiKey,
     model: selectedModel,
@@ -1605,7 +1599,7 @@ function providerErrorMessage(status, payload) {
     return "Connected but empty response - cek model, endpoint, atau format provider";
   }
   if (/model.*not found|model not found|not_found/i.test(text)) {
-    return "Model not found - klik Load Models atau isi model manual yang benar";
+    return "Model routing Cloud tidak tersedia - coba hubungkan ulang Cliper AI Cloud";
   }
   if (/timeout|timed out/i.test(text)) {
     return "Connection Timeout - cek koneksi atau Base URL";
@@ -1613,15 +1607,9 @@ function providerErrorMessage(status, payload) {
   return text;
 }
 
-function setModelOptions(models = []) {
-  const list = $("#highlightModelOptions");
-  if (!list) return;
-  list.innerHTML = models.map((model) => `<option value="${model}"></option>`).join("");
-}
-
 function applyProviderDefaults(force = false) {
-  const providerType = $("#providerType")?.value || "custom";
-  const preset = aiProviderDefaults[providerType] || aiProviderDefaults.custom;
+  const providerType = "cloud";
+  const preset = aiProviderDefaults.cloud;
   const base = $("#baseUrl");
   const key = $("#apiKey");
   const model = $("#highlightModel");
@@ -1629,99 +1617,33 @@ function applyProviderDefaults(force = false) {
   if (base && (force || !base.value || isKnownDefault)) {
     base.value = preset.baseUrl;
   }
-  if (model && (force || !model.value)) {
-    model.value = preset.model || "";
+  if (model) {
+    model.value = "auto";
+    model.readOnly = true;
   }
   if (key) {
     key.disabled = false;
-    key.placeholder = providerType === "cloud" ? "clip_sk_xxxxxxxxx" : "Masukkan API key";
+    key.placeholder = "clip_sk_xxxxxxxxx";
   }
   if (base) {
-    base.disabled = false;
+    base.value = preset.baseUrl;
+    base.disabled = true;
   }
-  const localMode = !key?.value?.trim();
-  setProviderStatus(localMode ? "Local mode active ✓ API optional" : "Belum dites", localMode);
-  if (localMode) {
-    setText("#apiStatus", "Local heuristic active");
-  }
+  const connected = /connected|valid|sukses|ready/i.test($("#providerStatusText")?.textContent || "");
+  setProviderStatus(key?.value?.trim() ? (connected ? $("#providerStatusText").textContent : "API key tersimpan · test connection") : "Cliper AI Cloud belum terhubung", connected);
+  setText("#apiStatus", key?.value?.trim() ? "Cliper Cloud API key tersimpan" : "Cliper AI Cloud belum terhubung");
   renderProviders();
-}
-
-async function loadProviderModels(options = {}) {
-  const payload = providerPayload();
-  const preset = aiProviderDefaults[payload.providerType] || aiProviderDefaults.custom;
-  if (payload.providerType === "local") {
-    const models = ["local-heuristic", "local-transcript-score", "local-fast"];
-    setModelOptions(models);
-    $("#highlightModel").value = payload.model || "local-heuristic";
-    setProviderStatus("Local heuristic siap", true);
-    pushLog(`[ai] Local heuristic mode aktif`);
-    renderProviders();
-    if (!options.silent) toast("Local heuristic ready");
-    return { ok: true, providerType: "local", models, suggestedModel: payload.model || "local-heuristic", status: "Local ready" };
-  }
-  if (preset.requiresKey && !payload.apiKey) {
-    const models = ["local-heuristic"];
-    setModelOptions(models);
-    $("#highlightModel").value = "local-heuristic";
-    setProviderStatus("Local mode active ✓ API optional", true);
-    setText("#apiStatus", "Local heuristic active");
-    renderProviders();
-    if (!options.silent) toast("API kosong, fallback ke local heuristic");
-    return { ok: true, providerType: "local", models, suggestedModel: "local-heuristic", status: "Local heuristic active" };
-  }
-  if (!window.cliper?.loadModels) {
-    const fallback = preset.model ? [preset.model] : [];
-    setModelOptions(fallback);
-    if (fallback[0]) $("#highlightModel").value = fallback[0];
-    setProviderStatus("Load Models tersedia di .exe", false);
-    toast("Buka via .exe untuk Load Models");
-    return null;
-  }
-  setProviderStatus("Loading models...", true);
-  await saveConfig({ silent: true });
-  const result = await window.cliper.loadModels(payload);
-  if (!result?.ok) {
-    const status = result?.status || "Load Models gagal";
-    const manualModel = payload.model || preset.model || "gpt-4.1-mini";
-    setModelOptions([manualModel]);
-    $("#highlightModel").value = manualModel;
-    setProviderStatus(`Model list gagal, memakai model manual: ${manualModel}`, false);
-    pushLog(`[ai] Load Models gagal: provider=${payload.providerType} baseUrl=${payload.baseUrl} model=${payload.model} status=${status}`);
-    toast("Model list gagal, model manual tetap dipakai");
-    renderProviders();
-    return { ...(result || {}), ok: true, status: "Model list gagal, memakai model manual", models: [manualModel], suggestedModel: manualModel, warning: status };
-  }
-  const models = Array.isArray(result.models) ? result.models : [];
-  setModelOptions(models);
-  if (result.suggestedModel) {
-    $("#highlightModel").value = result.suggestedModel;
-  }
-  const status = `${result.status || "Connected"} - ${models.length || 0} model`;
-  setProviderStatus(status, true);
-  setText("#apiStatus", "AI connected");
-  pushLog(`[ai] ${preset.label} connected, ${models.length} models loaded, selected=${$("#highlightModel").value || "-"}`);
-  renderProviders();
-  if (!options.silent) toast("Models loaded");
-  return result;
 }
 
 async function testProvider(options = {}) {
   const payload = providerPayload();
-  const preset = aiProviderDefaults[payload.providerType] || aiProviderDefaults.custom;
-  if (payload.providerType === "local") {
-    setProviderStatus("Local heuristic aktif", true);
-    setText("#apiStatus", "Local heuristic active");
-    pushLog(`[ai] Local heuristic mode selected, no network test required`);
-    if (!options.silent) toast("Local heuristic aktif");
-    return { ok: true, status: "Local heuristic active", response: "OK", usage: {} };
-  }
-  if (preset.requiresKey && !payload.apiKey) {
-    setProviderStatus("Local mode active ✓ API optional", true);
-    setText("#apiStatus", "Local heuristic active");
-    pushLog(`[ai] API kosong, fallback ke local heuristic`);
-    if (!options.silent) toast("API kosong, local heuristic aktif");
-    return { ok: true, status: "Local heuristic active", response: "OK", usage: {} };
+  const preset = aiProviderDefaults.cloud;
+  if (!payload.apiKey) {
+    const status = "API key Cliper AI Cloud wajib diisi";
+    setProviderStatus(status, false);
+    setText("#apiStatus", "Cliper AI Cloud belum terhubung");
+    if (!options.silent) toast(status);
+    return { ok: false, status };
   }
   if (!window.cliper?.testProvider) {
     setProviderStatus("Test API tersedia di .exe", false);
@@ -1764,7 +1686,7 @@ async function testProvider(options = {}) {
 
 function aiProviderRequiresConnectedStatus() {
   const payload = providerPayload();
-  if (payload.providerType === "local" || !payload.apiKey) return false;
+  if (payload.providerType !== "cloud" || !payload.apiKey) return true;
   const status = $("#providerStatusText")?.textContent || "";
   return !/connected|valid|sukses|ready/i.test(status);
 }
@@ -1846,6 +1768,14 @@ async function findMoments() {
     toast("Buka via .exe untuk analisa real");
     return;
   }
+  if (aiProviderRequiresConnectedStatus()) {
+    setView("settings");
+    setSettingsTab("api");
+    const message = providerPayload().apiKey ? "Test API Cliper AI Cloud dulu sampai Connected." : "Masukkan API key Cliper AI Cloud terlebih dahulu.";
+    pushLog(`[ai] analisa diblokir: ${message}`);
+    toast(message);
+    return;
+  }
 
   clearInterval(state.processingTimer);
   state.progress = 0;
@@ -1870,8 +1800,8 @@ async function findMoments() {
   addAiUsage(data.ai_usage || {});
   const diagnostics = data.ai_diagnostics || {};
   const aiStatus = diagnostics.ai_used
-    ? `AI ${diagnostics.provider || "Custom"} aktif · ${diagnostics.requests || 0} request · ${diagnostics.retry_count || 0} retry`
-    : `Fallback lokal${diagnostics.last_fallback_reason ? ` · ${diagnostics.last_fallback_reason}` : ""}`;
+    ? `Cliper AI Cloud aktif · ${diagnostics.requests || 0} request · ${diagnostics.retry_count || 0} retry`
+    : `Fallback internal${diagnostics.last_fallback_reason ? ` · ${diagnostics.last_fallback_reason}` : ""}`;
   setText("#aiPipelineStatus", aiStatus);
   pushLog(`[ai diagnostics] used=${Boolean(diagnostics.ai_used)} provider=${diagnostics.provider || "-"} model=${diagnostics.model || "-"} requests=${diagnostics.requests || 0} retries=${diagnostics.retry_count || 0} fallback=${diagnostics.fallback_events || 0}`);
   if (diagnostics.last_fallback_reason) {
@@ -1918,11 +1848,11 @@ async function startProcessing() {
     return;
   }
   const payload = collectPayload();
-  if (payload.providerType !== "local" && aiProviderRequiresConnectedStatus()) {
+  if (aiProviderRequiresConnectedStatus()) {
     setView("settings");
     setSettingsTab("api");
-    const message = "Test API dulu sampai Connected agar AI benar-benar dipakai.";
-    pushLog(`[ai] render diblokir: provider/API key ada tetapi status belum Connected`);
+    const message = payload.apiKey ? "Test API Cliper AI Cloud dulu sampai Connected." : "Masukkan API key Cliper AI Cloud terlebih dahulu.";
+    pushLog(`[ai] render diblokir: ${message}`);
     toast(message);
     return;
   }
@@ -1985,17 +1915,17 @@ async function startProcessing() {
 
 function buildConfig() {
   const config = {
-    providerType: fieldValue("providerType", "custom"),
-    baseUrl: fieldValue("baseUrl", ""),
+    providerType: "cloud",
+    baseUrl: aiProviderDefaults.cloud.baseUrl,
     apiKey: fieldValue("apiKey"),
-    highlightModel: fieldValue("highlightModel", "local-heuristic"),
+    highlightModel: "auto",
     aiHighlightToggle: fieldValue("aiHighlightToggle", true),
     aiHookToggle: fieldValue("aiHookToggle", true),
     aiCaptionToggle: fieldValue("aiCaptionToggle", true),
     aiTitleToggle: fieldValue("aiTitleToggle", true),
     aiTtsToggle: fieldValue("aiTtsToggle", false),
-    providerStatus: $("#providerStatusText")?.textContent || "Local heuristic ready",
-    apiStatus: $("#apiStatus")?.textContent || "Local heuristic active",
+    providerStatus: $("#providerStatusText")?.textContent || "Cliper AI Cloud belum terhubung",
+    apiStatus: $("#apiStatus")?.textContent || "Cliper AI Cloud belum terhubung",
     apiLastTestedAt: state.apiLastTestedAt || "",
     apiLastLatencyMs: state.apiLastLatencyMs || 0,
     apiLastResponse: state.apiLastResponse || "",
@@ -2071,12 +2001,22 @@ function buildConfig() {
 }
 
 function applyConfig(config = {}) {
+  const legacyProvider = Boolean(config.providerType && config.providerType !== "cloud");
+  if (legacyProvider) {
+    config = {
+      ...config,
+      providerType: "cloud",
+      baseUrl: aiProviderDefaults.cloud.baseUrl,
+      highlightModel: "auto",
+      apiKey: "",
+      providerStatus: "Legacy provider removed. Enter a Cliper AI Cloud key."
+    };
+  }
   state.config = config;
-  const providerType = config.providerType === "local" ? "custom" : (config.providerType || "custom");
-  setValue("#providerType", providerType);
-  setValue("#baseUrl", config.baseUrl || "");
+  setValue("#providerType", "cloud");
+  setValue("#baseUrl", aiProviderDefaults.cloud.baseUrl);
   setValue("#apiKey", config.apiKey || "");
-  setValue("#highlightModel", config.highlightModel || "local-heuristic");
+  setValue("#highlightModel", "auto");
   applyProviderDefaults(false);
   setValue("#aiHighlightToggle", config.aiHighlightToggle ?? true);
   setValue("#aiHookToggle", config.aiHookToggle ?? true);
@@ -2148,7 +2088,7 @@ function applyConfig(config = {}) {
   setValue("#deleteTempAfterExport", config.deleteTempAfterExport ?? true);
   state.cookiesInfo = normalizeCookiesInfo(config);
   state.cookiesPath = state.cookiesInfo?.path || "";
-  setText("#apiStatus", !config.apiKey ? "Local heuristic active" : "API tersimpan");
+  setText("#apiStatus", !config.apiKey ? "Cliper AI Cloud belum terhubung" : "Cliper Cloud API key tersimpan");
   applyProviderDefaults(false);
   renderProviders();
   renderCookiesManager();
@@ -2171,16 +2111,10 @@ async function saveConfig(options = {}) {
       pushLog(`[config] gagal menyimpan config.json: ${error.message}`);
     }
   }
-  setText("#apiStatus", config.apiKey ? "API tersimpan" : "API belum diset");
-  if (!config.apiKey) {
-    setText("#apiStatus", "Local heuristic active");
-  }
+  setText("#apiStatus", config.apiKey ? "Cliper Cloud API key tersimpan" : "Cliper AI Cloud belum terhubung");
   renderProviders();
   renderCookiesManager();
   if (!options.silent) toast("Setting disimpan");
-  if (state.config.providerType === "local") {
-    setText("#apiStatus", "Local heuristic active");
-  }
 }
 
 async function loadConfig() {
@@ -2210,8 +2144,15 @@ async function loadConfig() {
   const browserSafeConfig = { ...config };
   delete browserSafeConfig.apiKey;
   localStorage.setItem("cliper-config", JSON.stringify(browserSafeConfig));
-  if (config.providerType === "local") {
-    config.providerType = "custom";
+  if (config.providerType && config.providerType !== "cloud") {
+    pushLog("[config] provider lama dihapus; Settings sekarang hanya memakai Cliper AI Cloud");
+    config = {
+      ...config,
+      providerType: "cloud",
+      baseUrl: aiProviderDefaults.cloud.baseUrl,
+      highlightModel: "auto",
+      apiKey: ""
+    };
   }
   applyConfig(config);
 }
@@ -2816,18 +2757,11 @@ function bindEvents() {
   });
   $("#checkDependencyButton").addEventListener("click", scanSubtitles);
   $("#detectGpuButton").addEventListener("click", detectGpu);
-  $("#providerType").addEventListener("change", () => {
-    applyProviderDefaults(true);
-    renderPipelinePreview();
-  });
-  $("#baseUrl").addEventListener("input", renderProviders);
+  applyProviderDefaults(true);
   $("#apiKey").addEventListener("input", () => {
     renderProviders();
-    const payload = providerPayload();
-    if (payload.providerType === "local") {
-      setProviderStatus("Local mode active ✓ API optional", true);
-      setText("#apiStatus", "Local heuristic active");
-    }
+    setProviderStatus($("#apiKey").value.trim() ? "API key tersimpan · test connection" : "Cliper AI Cloud belum terhubung", false);
+    setText("#apiStatus", $("#apiKey").value.trim() ? "Cliper Cloud API key tersimpan" : "Cliper AI Cloud belum terhubung");
   });
   $("#toggleApiKeyVisibility").addEventListener("click", () => {
     const input = $("#apiKey");
@@ -2838,8 +2772,6 @@ function bindEvents() {
     button.title = show ? "Sembunyikan API key" : "Tampilkan API key";
   });
   $("#highlightModel").addEventListener("input", renderProviders);
-  $("#loadModelsButton").addEventListener("click", () => loadProviderModels());
-  $("#loadModelsButtonSecondary").addEventListener("click", () => loadProviderModels());
   $("#importCookiesButton").addEventListener("click", importCookies);
   $("#replaceCookiesButton").addEventListener("click", importCookies);
   $("#testCookiesButton").addEventListener("click", testCookies);

@@ -60,7 +60,7 @@
           <h1>Cliper Studio Plus</h1>
           </div>
           <div class="status-row">
-            <span class="status-pill" id="apiStatus">Local heuristic active</span>
+            <span class="status-pill" id="apiStatus">Cliper AI Cloud belum terhubung</span>
             <span class="status-pill" id="clipCounter">0 clip dipilih</span>
             <span class="status-pill version-pill" id="appVersion">v1.7.0</span>
             <button class="icon-button" id="saveConfig" title="Simpan setting">
@@ -361,8 +361,8 @@
 
           <div class="settings-panel active" id="settings-api">
             <section class="panel">
-              <p class="eyebrow">AI Enhancement (Optional)</p>
-              <h2 id="aiModeTitle">Local mode active ✓</h2>
+              <p class="eyebrow">AI Enhancement</p>
+              <h2 id="aiModeTitle">Cliper AI Cloud belum terhubung</h2>
               <div class="ai-toggle-grid">
                 <label><input id="aiHighlightToggle" type="checkbox" checked /> Highlight Finder AI</label>
                 <label><input id="aiHookToggle" type="checkbox" checked /> Hook Maker AI</label>
@@ -374,33 +374,24 @@
             <section class="panel settings-form">
               <p class="eyebrow">Connection</p>
               <h2>Endpoint utama</h2>
+              <input id="providerType" type="hidden" value="cloud" />
               <label class="field">
-                <span>Provider Type</span>
-                <select id="providerType">
-                  <option value="cloud">Cliper Cloud Gateway</option>
-                  <option value="custom">Custom / OpenAI Compatible</option>
-                </select>
+                <span>AI provider</span>
+                <input id="baseUrl" value="https://api.cliper.cloud/v1" readonly />
               </label>
               <label class="field">
-                <span>Base URL</span>
-                <input id="baseUrl" placeholder="https://api.openai.com/v1" />
-              </label>
-              <label class="field">
-                <span>API key</span>
+                <span>Cliper AI Cloud API key</span>
                 <div class="api-key-field">
-                  <input id="apiKey" type="password" placeholder="Masukkan API key jika ingin refine AI" />
+                  <input id="apiKey" type="password" placeholder="clip_sk_xxxxxxxxx" />
                   <button class="icon-button api-eye-button" id="toggleApiKeyVisibility" type="button" title="Tampilkan API key">
                     <svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></svg>
                   </button>
                 </div>
               </label>
               <label class="field">
-                <span>Model highlight</span>
-                <div class="input-action">
-                  <input id="highlightModel" list="highlightModelOptions" placeholder="Klik Load Models untuk auto pilih" />
-                  <button class="secondary-action" id="loadModelsButton" type="button">Load Models</button>
-                </div>
-                <datalist id="highlightModelOptions"></datalist>
+                <span>Model routing</span>
+                <input id="highlightModel" value="auto" readonly />
+                <small>Model dipilih otomatis oleh Cliper AI Cloud sesuai tugas dan biaya.</small>
               </label>
               <div class="provider-status-box" id="providerStatusBox">
                 <span>Status</span>
@@ -412,8 +403,7 @@
                 <em id="aiCostSummary">Estimated cost: Rp 0</em>
               </div>
               <div class="action-row">
-                <button class="secondary-action" id="loadModelsButtonSecondary" type="button">Load Models</button>
-                <button class="primary-action" id="testApiButton" type="button">Test API</button>
+                <button class="primary-action" id="testApiButton" type="button">Hubungkan &amp; Test Cloud</button>
               </div>
             </section>
           </div>
