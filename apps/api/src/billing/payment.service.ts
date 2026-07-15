@@ -19,7 +19,7 @@ import {
   SubscriptionStatus,
 } from "../generated/prisma/client.js";
 import { PaymentProviderService } from "./payment-provider.service.js";
-import { AuthService, authStorageMode, type MemberPlan } from "../auth/auth.service.js";
+import { AuthService, type MemberPlan } from "../auth/auth.service.js";
 
 interface PaymentIdentity {
   id: string;
@@ -137,7 +137,7 @@ export class PaymentService {
   }
 
   private localReadMode(): boolean {
-    return authStorageMode() !== "bootstrap-memory";
+    return !this.database.configured();
   }
 
   async createInvoice(identity: PaymentIdentity, requestedPlan: unknown) {
