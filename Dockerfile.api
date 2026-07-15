@@ -4,6 +4,7 @@ ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssl && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && corepack prepare pnpm@10.34.5 --activate
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.base.json prisma.config.ts ./
@@ -21,6 +22,8 @@ COPY apps/api apps/api
 COPY packages packages
 COPY prisma prisma
 
+ARG DATABASE_URL=postgresql://postgres:postgres@localhost:5432/cliper_build?schema=public
+ENV DATABASE_URL=$DATABASE_URL
 RUN pnpm db:generate
 RUN pnpm --filter @cliper/api... build
 
@@ -30,6 +33,7 @@ ENV NODE_ENV=production
 ENV PORT=4100
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssl && rm -rf /var/lib/apt/lists/*
 COPY --from=build --chown=node:node /app /app
 
 USER node
