@@ -16,7 +16,9 @@ Konfigurasi yang dibaca otomatis:
 - `railway.json`
 - `Dockerfile.api`
 - Healthcheck `/health/live`
-- Start command `node apps/api/dist/main.js`
+- Start command `prisma migrate deploy` lalu `node apps/api/dist/main.js`
+
+Pada Railway service settings, set **Root Directory** ke `/` dan **Config File Path** ke `/railway.json`. Jangan memakai `apps/api` sebagai root karena Docker membutuhkan seluruh workspace. Pastikan watch paths mencakup `apps/api/**`, `packages/**`, `prisma/**`, `Dockerfile.api`, `package.json`, dan `pnpm-lock.yaml`.
 
 ### Environment wajib
 
@@ -31,18 +33,22 @@ LICENSE_KEY_PEPPER=MINIMAL_32_KARAKTER_RANDOM
 BOOTSTRAP_ADMIN_EMAIL=EMAIL_ADMIN
 BOOTSTRAP_ADMIN_PASSWORD_HASH=HASH_ARGON2ID
 ALLOW_LEGACY_API_KEY_AUTH=false
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+PAYMENT_PROVIDER=sandbox
+ALLOW_SANDBOX_PAYMENTS=false
 ```
 
 Jangan set `CLIPER_DEV_API_KEY` atau `DEV_ADMIN_*` pada production.
 
 Provider key tidak wajib saat boot. Login ke Admin > Providers setelah deploy, lalu tambahkan DeepSeek, Gemini, OpenAI, Qwen, atau Claude. Readiness akan berstatus setup sampai provider sehat tersedia.
 
-PostgreSQL dan Redis direkomendasikan dan dapat direferensikan dari service Railway:
+PostgreSQL wajib untuk Payment Engine. Redis direkomendasikan dan dapat direferensikan dari service Railway:
 
 ```text
-DATABASE_URL=${{Postgres.DATABASE_URL}}
 REDIS_URL=${{Redis.REDIS_URL}}
 ```
+
+Dengan `ALLOW_SANDBOX_PAYMENTS=false`, checkout production sengaja ditolak sampai adapter QRIS resmi dipasang. Jangan mengaktifkan sandbox untuk menerima uang nyata.
 
 Implementasi control-plane MVP saat ini masih memakai store proses untuk beberapa data. Jangan menaikkan replica lebih dari satu sebelum repository persistence Prisma selesai diintegrasikan.
 
@@ -71,6 +77,8 @@ Output Directory: default Next.js
 Node.js: 22
 ```
 
+Project Vercel harus menjadi project **web**, bukan `cliper-ai-cloud-api`. Jika halaman deployment menunjuk project API, disconnect repository dari project tersebut lalu import ulang sebagai web dengan Root Directory `apps/web`.
+
 `apps/web/vercel.json` menyediakan pengaturan yang sama. `vercel.json` di root menjadi fallback bila project terlanjur diimpor dengan Root Directory `/`.
 
 Environment Vercel:
@@ -97,5 +105,7 @@ railway logs --build --latest --lines 200
 railway logs --deployment --latest --lines 200
 railway logs --http --status ">=400" --lines 100
 ```
+
+Jalankan perintah Railway di atas hanya setelah CLI login ke workspace yang memiliki project target dan `railway link` berhasil. Login ke workspace lain tidak dapat membaca deployment log meskipun repository GitHub sama.
 
 Jika Railway gagal sebelum start, cek Docker build. Jika `/health/live` berhasil tetapi UI menampilkan setup, konfigurasi provider belum sehat atau dependency operasional belum tersambung.
