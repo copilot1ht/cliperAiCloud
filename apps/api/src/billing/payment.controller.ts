@@ -54,6 +54,12 @@ export class PaymentController {
     return this.payments.invoiceStatus(request.cliperSession?.userId || "", number);
   }
 
+  @Post("invoices/:number/sync")
+  @UseGuards(SessionGuard)
+  syncInvoice(@Req() request: SessionAuthenticatedRequest, @Param("number") number: string) {
+    return this.payments.syncInvoiceStatus(request.cliperSession?.userId || "", number);
+  }
+
   @Post("sandbox/:number/complete")
   @UseGuards(SessionGuard)
   completeSandbox(@Req() request: SessionAuthenticatedRequest, @Param("number") number: string) {

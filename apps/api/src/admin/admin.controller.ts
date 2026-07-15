@@ -219,4 +219,9 @@ export class AdminController {
   refundPayment(@Param("id") id: string) {
     return this.paymentsService.refund(id);
   }
+
+  @Post("payments/:id/sync")
+  syncPayment(@Param("id") id: string) {
+    return this.paymentsService.syncPaymentStatus(id);
+  }
 }

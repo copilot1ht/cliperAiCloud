@@ -105,6 +105,7 @@ export interface PaymentProvider {
   readonly code: string;
   createPayment(input: CreateProviderPaymentInput): Promise<CreateProviderPaymentResult>;
   verifyWebhook(rawBody: Buffer, headers: Record<string, string | string[] | undefined>): VerifiedPaymentWebhook;
+  getTransactionStatus?(externalId: string): Promise<PaymentWebhookEvent>;
   refund?(externalId: string, amountIdr: number): Promise<{ ok: true; reference: string }>;
 }
 

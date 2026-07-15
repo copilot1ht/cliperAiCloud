@@ -75,6 +75,22 @@ export function MemberBilling({ view }: { view: BillingView }) {
       setError(reason instanceof Error ? reason.message : "Billing tidak dapat dimuat.");
     }
   }, []);
+  const syncStatus = useCallback(async (silent = false) => {
+    if (!selected) return;
+    if (selected.provider === "sandbox") {
+      await load();
+      return;
+    }
+    if (!silent) { setBusy("status"); setError(""); }
+    try {
+      await paymentFetch(`/api/payments/invoices/${encodeURIComponent(selected.number)}/sync`, { method: "POST" });
+      await load();
+    } catch (reason) {
+      if (!silent) setError(reason instanceof Error ? reason.message : "Status pembayaran belum dapat diperiksa.");
+    } finally {
+      if (!silent) setBusy("");
+    }
+  }, [load, selected]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
@@ -82,9 +98,9 @@ export function MemberBilling({ view }: { view: BillingView }) {
   }, []);
   useEffect(() => {
     if (!selected || selected.status !== "open") return;
-    const timer = window.setInterval(() => { void load(); }, 8_000);
+    const timer = window.setInterval(() => { void syncStatus(true); }, 8_000);
     return () => window.clearInterval(timer);
-  }, [load, selected]);
+  }, [selected, syncStatus]);
 
   const countdown = useMemo(() => {
     if (!selected?.expiresAt || selected.status !== "open") return "";
@@ -142,6 +158,7 @@ export function MemberBilling({ view }: { view: BillingView }) {
       <div className="checkout-actions">
         {selected.paymentUrl && selected.provider !== "sandbox" && <a className="button button-primary" href={selected.paymentUrl} target="_blank" rel="noreferrer">Open payment <ExternalLink size={15} /></a>}
         {selected.provider === "sandbox" && selected.status === "open" && <button className="button button-primary" disabled={busy === selected.number} onClick={() => void completeSandbox()}><CreditCard size={15} /> {busy === selected.number ? "Processing..." : "Complete sandbox payment"}</button>}
+        {selected.provider !== "sandbox" && selected.status === "open" && <button className="button button-secondary" disabled={busy === "status"} onClick={() => void syncStatus()}><ShieldCheck size={15} /> {busy === "status" ? "Checking..." : "Check Midtrans status"}</button>}
         <button className="button button-secondary" onClick={() => void load()}><RefreshCw size={15} /> Refresh status</button>
       </div>
     </section>}

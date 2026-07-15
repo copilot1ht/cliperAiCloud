@@ -201,6 +201,36 @@ export class MidtransPaymentProvider implements PaymentProvider {
     }
   }
 
+  async getTransactionStatus(externalId: string): Promise<PaymentWebhookEvent> {
+    const requestedOrderId = String(externalId || "").trim();
+    if (!requestedOrderId) throw new BadRequestException("Midtrans order ID kosong.");
+    const payload = await this.request(`${this.apiOrigin}/v2/${encodeURIComponent(requestedOrderId)}/status`, {
+      method: "GET",
+      headers: this.headers(),
+    });
+    const orderId = String(payload.order_id || "").trim();
+    const amountIdr = midtransAmount(payload.gross_amount);
+    if (!orderId || orderId !== requestedOrderId || !Number.isSafeInteger(amountIdr) || amountIdr <= 0) {
+      throw new BadRequestException("Respons status Midtrans tidak cocok dengan invoice.");
+    }
+    const transactionStatus = String(payload.transaction_status || "pending").toLowerCase();
+    const transactionId = String(payload.transaction_id || "").trim();
+    const signaturePart = createHash("sha256")
+      .update(`${orderId}:${transactionStatus}:${transactionId}:${amountIdr}`)
+      .digest("hex")
+      .slice(0, 16);
+    const event: PaymentWebhookEvent = {
+      eventId: `midtrans:status:${orderId}:${transactionStatus}:${transactionId || signaturePart}`,
+      externalId: orderId,
+      invoiceNumber: orderId,
+      amountIdr,
+      status: midtransStatus(transactionStatus, payload.fraud_status),
+      occurredAt: String(payload.settlement_time || payload.transaction_time || new Date().toISOString()),
+    };
+    if (!validEvent(event)) throw new BadRequestException("Status transaksi Midtrans tidak valid.");
+    return event;
+  }
+
   async refund(externalId: string, amountIdr: number): Promise<{ ok: true; reference: string }> {
     const refundKey = `cliper-refund-${externalId}`.slice(0, 50);
     const payload = await this.request(`${this.apiOrigin}/v2/${encodeURIComponent(externalId)}/refund`, {
@@ -245,8 +275,18 @@ export class PaymentProviderService {
   }
 
   byCode(code: string): PaymentProvider {
-    if (![SANDBOX_CODE, MIDTRANS_CODE].includes(String(code).toLowerCase())) throw new BadRequestException("Payment provider tidak didukung.");
-    return this.active();
+    const normalized = String(code || "").trim().toLowerCase();
+    if (normalized === MIDTRANS_CODE) {
+      if (!this.midtrans) throw new ServiceUnavailableException("Midtrans belum dikonfigurasi. Isi MIDTRANS_SERVER_KEY di environment API.");
+      return this.midtrans;
+    }
+    if (normalized === SANDBOX_CODE) {
+      const production = process.env.NODE_ENV === "production";
+      const sandboxAllowed = String(process.env.ALLOW_SANDBOX_PAYMENTS || "false").toLowerCase() === "true";
+      if (production && !sandboxAllowed) throw new ServiceUnavailableException("Sandbox payment dinonaktifkan di production.");
+      return this.sandbox;
+    }
+    throw new BadRequestException("Payment provider tidak didukung.");
   }
 
   sandboxEvent(event: PaymentWebhookEvent): { rawBody: Buffer; signature: string } {

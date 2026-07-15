@@ -4,9 +4,10 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from "@nestjs/common";
-import type { PaymentWebhookEvent } from "@cliper/billing";
+import { paymentPayloadHash, type PaymentWebhookEvent } from "@cliper/billing";
 import { randomBytes } from "node:crypto";
 import { DatabaseService } from "../database/database.service.js";
 import {
@@ -395,6 +396,39 @@ export class PaymentService {
     const invoice = await this.database.client().invoice.findFirst({ where: { userId, number }, include: { payment: true, items: true } });
     if (!invoice) throw new NotFoundException("Invoice tidak ditemukan.");
     return this.safeInvoice(invoice);
+  }
+
+  async syncInvoiceStatus(userId: string, number: string) {
+    if (this.localReadMode()) throw new ServiceUnavailableException("Status Midtrans membutuhkan PostgreSQL aktif.");
+    const invoice = await this.database.client().invoice.findFirst({
+      where: { userId, number },
+      include: { payment: true, items: true },
+    });
+    if (!invoice?.payment) throw new NotFoundException("Invoice payment tidak ditemukan.");
+    return this.syncPaymentStatus(invoice.payment.id, userId);
+  }
+
+  async syncPaymentStatus(paymentId: string, actorId = "bootstrap-admin") {
+    if (this.localReadMode()) throw new ServiceUnavailableException("Status Midtrans membutuhkan PostgreSQL aktif.");
+    const payment = await this.database.client().paymentTransaction.findUnique({
+      where: { id: paymentId },
+      include: { invoice: true },
+    });
+    if (!payment?.invoice) throw new NotFoundException("Payment atau invoice tidak ditemukan.");
+    if (actorId !== "bootstrap-admin" && payment.userId !== actorId) throw new UnauthorizedException("Invoice bukan milik user ini.");
+    const provider = this.providers.byCode(payment.provider);
+    if (!provider.getTransactionStatus) {
+      throw new ConflictException("Provider payment ini tidak mendukung status sync otomatis.");
+    }
+    const event = await provider.getTransactionStatus(payment.externalId);
+    if (event.externalId !== payment.externalId || event.invoiceNumber !== payment.invoice.number || event.amountIdr !== payment.amountIdr) {
+      throw new ConflictException("Status provider tidak cocok dengan payment yang tersimpan.");
+    }
+    const normalizedBody = Buffer.from(JSON.stringify(event));
+    const result = await this.applyWebhook(provider.code, event, paymentPayloadHash(normalizedBody), undefined);
+    if (result.accepted && event.status === "paid") await this.syncRuntimeBilling(provider.code, event.externalId);
+    const latest = await this.database.client().invoice.findUnique({ where: { id: payment.invoice.id }, include: { payment: true, items: true } });
+    return { ...result, synced: true, invoice: latest ? this.safeInvoice(latest) : undefined };
   }
 
   async adminPayments() {

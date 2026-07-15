@@ -60,4 +60,20 @@ describe("MidtransPaymentProvider", () => {
     expect(provider.verifyWebhook(raw, {})).toMatchObject({ verified: true, event: { externalId: orderId, amountIdr: 25_000, status: "paid" } });
     expect(provider.verifyWebhook(Buffer.from(raw.toString().replace("25000.00", "26000.00")), {}).verified).toBe(false);
   });
+
+  it("reads the official transaction status without exposing the server key", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      order_id: "CLP-20260715-TEST",
+      gross_amount: "25000.00",
+      transaction_status: "settlement",
+      transaction_id: "trx-status-1",
+      settlement_time: "2026-07-15 12:00:00",
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const event = await provider.getTransactionStatus("CLP-20260715-TEST");
+    expect(event).toMatchObject({ externalId: "CLP-20260715-TEST", invoiceNumber: "CLP-20260715-TEST", amountIdr: 25_000, status: "paid" });
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls[0]?.[0]).toContain("/v2/CLP-20260715-TEST/status");
+    expect(String(calls[0]?.[1]?.headers && (calls[0][1].headers as Record<string, string>).Authorization)).not.toContain(serverKey);
+  });
 });
