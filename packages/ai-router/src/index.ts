@@ -1,11 +1,14 @@
 import type { AiModule, CliperChatRequest, CliperInternalChatResponse, ProviderHealth } from "@cliper/contracts";
 
+export type ProviderProtocol = "openai-chat" | "anthropic-messages";
+
 export interface ProviderDefinition {
   code: string;
   displayName: string;
   baseUrl: string;
   model: string;
   apiKeys: string[];
+  protocol?: ProviderProtocol;
   modules?: AiModule[];
   priority?: number;
   modulePriority?: Partial<Record<AiModule, number>>;
@@ -40,8 +43,9 @@ function numberFromEnv(value: string | undefined, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function normalizeEndpoint(baseUrl: string): string {
+function normalizeEndpoint(baseUrl: string, protocol: ProviderProtocol = "openai-chat"): string {
   const clean = baseUrl.replace(/\/+$/, "");
+  if (protocol === "anthropic-messages") return clean.endsWith("/messages") ? clean : `${clean}/messages`;
   return clean.endsWith("/chat/completions") ? clean : `${clean}/chat/completions`;
 }
 
@@ -69,6 +73,16 @@ function extractContent(payload: Record<string, unknown>): string {
     return content.map((part) => typeof part === "object" && part ? String((part as Record<string, unknown>).text ?? "") : "").join(" ").trim();
   }
   return "";
+}
+
+function extractAnthropicContent(payload: Record<string, unknown>): string {
+  const content = Array.isArray(payload.content) ? payload.content : [];
+  return content
+    .map((part) => typeof part === "object" && part && (part as Record<string, unknown>).type === "text"
+      ? String((part as Record<string, unknown>).text ?? "")
+      : "")
+    .join(" ")
+    .trim();
 }
 
 function parseProviderJson(raw?: string): ProviderDefinition[] {
@@ -101,12 +115,46 @@ export function providersFromEnv(env: NodeJS.ProcessEnv = process.env): Provider
       code: "deepseek",
       displayName: "DeepSeek",
       baseUrl: env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
-      model: env.DEEPSEEK_MODEL || "deepseek-chat",
+      model: env.DEEPSEEK_MODEL || "deepseek-v4-flash",
       apiKeys: splitKeys(env.DEEPSEEK_API_KEYS),
       priority: 20,
       modulePriority: { highlight: 20, title: 20, hook: 20, caption: 5, metadata: 5, default: 20 },
       inputUsdPerM: numberFromEnv(env.DEEPSEEK_INPUT_USD_PER_M),
       outputUsdPerM: numberFromEnv(env.DEEPSEEK_OUTPUT_USD_PER_M),
+      enabled: true,
+    },
+    {
+      code: "openai",
+      displayName: "OpenAI",
+      baseUrl: env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+      model: env.OPENAI_MODEL || "gpt-5-mini",
+      apiKeys: splitKeys(env.OPENAI_API_KEYS),
+      priority: 30,
+      inputUsdPerM: numberFromEnv(env.OPENAI_INPUT_USD_PER_M),
+      outputUsdPerM: numberFromEnv(env.OPENAI_OUTPUT_USD_PER_M),
+      enabled: true,
+    },
+    {
+      code: "qwen",
+      displayName: "Qwen",
+      baseUrl: env.QWEN_BASE_URL || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      model: env.QWEN_MODEL || "qwen3.7-plus",
+      apiKeys: splitKeys(env.QWEN_API_KEYS),
+      priority: 40,
+      inputUsdPerM: numberFromEnv(env.QWEN_INPUT_USD_PER_M),
+      outputUsdPerM: numberFromEnv(env.QWEN_OUTPUT_USD_PER_M),
+      enabled: true,
+    },
+    {
+      code: "claude",
+      displayName: "Claude",
+      baseUrl: env.CLAUDE_BASE_URL || "https://api.anthropic.com/v1",
+      model: env.CLAUDE_MODEL || "claude-sonnet-4-6",
+      apiKeys: splitKeys(env.CLAUDE_API_KEYS),
+      protocol: "anthropic-messages",
+      priority: 50,
+      inputUsdPerM: numberFromEnv(env.CLAUDE_INPUT_USD_PER_M),
+      outputUsdPerM: numberFromEnv(env.CLAUDE_OUTPUT_USD_PER_M),
       enabled: true,
     },
   ];
@@ -207,16 +255,37 @@ export class AiRouter {
     const timer = setTimeout(() => controller.abort(), provider.timeoutMs ?? 45000);
     const started = Date.now();
     try {
-      const response = await this.fetchImpl(normalizeEndpoint(provider.baseUrl), {
-        method: "POST",
-        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: this.allowModelOverride && request.model && request.model !== "auto" ? request.model : provider.model,
+      const protocol = provider.protocol ?? "openai-chat";
+      const maxTokens = Math.max(32, Math.min(this.moduleMaxTokens[module], Number(request.max_tokens ?? this.moduleMaxTokens[module])));
+      const model = this.allowModelOverride && request.model && request.model !== "auto" ? request.model : provider.model;
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      let body: Record<string, unknown>;
+      if (protocol === "anthropic-messages") {
+        headers["x-api-key"] = key;
+        headers["anthropic-version"] = "2023-06-01";
+        const system = request.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
+        body = {
+          model,
+          max_tokens: maxTokens,
+          messages: request.messages.filter((message) => message.role !== "system").map((message) => ({ role: message.role, content: message.content })),
+          temperature: request.temperature ?? 0.25,
+          stream: false,
+          ...(system ? { system } : {}),
+        };
+      } else {
+        headers.Authorization = `Bearer ${key}`;
+        body = {
+          model,
           messages: request.messages,
           temperature: request.temperature ?? 0.25,
-          max_tokens: Math.max(32, Math.min(this.moduleMaxTokens[module], Number(request.max_tokens ?? this.moduleMaxTokens[module]))),
+          max_tokens: maxTokens,
           stream: false,
-        }),
+        };
+      }
+      const response = await this.fetchImpl(normalizeEndpoint(provider.baseUrl, protocol), {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
       const rawText = await response.text();
@@ -231,7 +300,7 @@ export class AiRouter {
         const message = typeof error === "object" && error ? error.message : error;
         throw new Error(`HTTP ${response.status}: ${String(message ?? "request gagal")}`);
       }
-      const content = extractContent(payload);
+      const content = protocol === "anthropic-messages" ? extractAnthropicContent(payload) : extractContent(payload);
       if (!content) throw new Error("Provider mengembalikan content kosong.");
       provider.failures = Math.max(0, provider.failures - 1);
       provider.latencyMs = Date.now() - started;

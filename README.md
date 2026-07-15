@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Cliper AI Cloud
 
 Cloud control plane untuk Cliper Studio Plus: satu Cliper API key untuk desktop, routing multi-provider, lisensi, usage, biaya, dan margin.
@@ -100,3 +101,6 @@ pnpm qa
 ```
 
 Skrip kedua menguji register, key issuance, device activation, refresh rotation, heartbeat, HMAC request, signed AI response, worker Python, anti-replay, member usage, dan seluruh route utama. Password admin bersifat opsional dan harus diberikan sebagai parameter runtime, tidak disimpan di skrip.
+=======
+# cliperAiCloud
+>>>>>>> 874c747770b5c3134b7fe0b3d632fd47efe978ad
