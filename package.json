@@ -10,7 +10,7 @@
     "dev": "turbo dev --concurrency=12",
     "dev:web": "pnpm --filter @cliper/web dev",
     "dev:api": "pnpm --filter @cliper/api dev",
-    "build": "turbo build",
+    "build": "pnpm db:generate && turbo build",
     "typecheck": "turbo typecheck",
     "test": "turbo test",
     "lint": "turbo lint",

@@ -15,3 +15,4 @@ backups/
 .DS_Store
 Thumbs.db
 packages/database/generated/
+apps/api/src/generated/prisma/

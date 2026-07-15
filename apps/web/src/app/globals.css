@@ -244,6 +244,19 @@ td code { padding: 4px 6px; color: #32474f; background: #f1f5f6; border-radius: 
 .icon-button:disabled { cursor: not-allowed; opacity: 0.25; }
 .status-tag.danger-tag { color: #9f3440; background: #fae7e9; }
 .status-tag.muted-tag { color: #5f6d73; background: #e9eef0; }
+.billing-state { display: grid; justify-items: start; gap: 8px; }
+.billing-state span, .muted-cell { color: var(--muted); font-size: 11px; }
+.checkout-panel { border-top: 3px solid var(--accent); }
+.checkout-grid { display: grid; grid-template-columns: minmax(220px, .7fr) minmax(0, 1.3fr); gap: 22px; padding: 4px 0 18px; }
+.checkout-total, .checkout-code { display: grid; align-content: start; gap: 7px; }
+.checkout-total small, .checkout-code small { color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
+.checkout-total strong { font-size: clamp(26px, 4vw, 38px); }
+.checkout-total span { display: flex; align-items: center; gap: 6px; color: #91620e; font-size: 12px; font-weight: 750; }
+.checkout-code code { overflow-wrap: anywhere; padding: 13px; color: #15353c; background: #edf4f4; border: 1px solid var(--line); border-radius: 6px; font-size: 11px; }
+.checkout-code span { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.checkout-actions { display: flex; flex-wrap: wrap; gap: 9px; }
+.compact-button { min-height: 30px; padding: 6px 10px; font-size: 10px; }
+.danger-notice { border-color: #e8b5bb; background: #fff4f5; }
 .plan-chip { padding: 4px 7px; color: #31535a; background: #eaf3f4; border-radius: 4px; font-size: 9px; font-weight: 800; text-transform: capitalize; }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 60; display: grid; padding: 24px; place-items: center; background: rgba(9, 22, 27, 0.58); }
@@ -394,6 +407,7 @@ td code { padding: 4px 6px; color: #32474f; background: #f1f5f6; border-radius: 
   .routing-row > span:nth-child(3) { display: none; }
   .finance-grid { grid-template-columns: 1fr 1fr; }
   .plan-grid { grid-template-columns: 1fr; }
+  .checkout-grid { grid-template-columns: 1fr; }
   .provider-admin-row { grid-template-columns: 38px minmax(180px, 1.5fr) minmax(130px, 1fr) 95px auto; }
   .provider-admin-row > span:nth-child(4) { display: none; }
   .provider-v2-row { grid-template-columns: minmax(150px, 0.7fr) minmax(360px, 2fr); }

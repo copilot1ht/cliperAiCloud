@@ -3,18 +3,20 @@ import { AuthService, authStorageMode, type MemberPlan, type MemberStatus } from
 import { GatewayService } from "../gateway/gateway.service.js";
 import { AdminSessionGuard } from "../security/admin-session.guard.js";
 import { UsageService } from "../usage/usage.service.js";
-import { AdminStoreService, type AdminProviderInput, type PaymentRecord, type PricingPolicyInput, type RoutingRule } from "./admin-store.service.js";
+import { AdminStoreService, type AdminProviderInput, type PricingPolicyInput, type RoutingRule } from "./admin-store.service.js";
 import { RuntimeConfigService } from "../config/runtime-config.js";
 import { DesktopSessionService } from "../security/desktop-session.service.js";
 import { RateLimitService } from "../security/rate-limit.service.js";
 import { SecurityEventService } from "../security/security-event.service.js";
 import { listProviderCatalog } from "./provider-catalog.js";
 import { ProviderConnectionService, type ProviderConnectionInput } from "./provider-connection.service.js";
+import { PaymentService } from "../billing/payment.service.js";
+import { DatabaseService } from "../database/database.service.js";
 
 const plans = [
   { code: "free", name: "Free", priceIdr: 0, credits: 100, deviceLimit: 1, active: true },
-  { code: "starter", name: "Starter", priceIdr: 99_000, credits: 1_000, deviceLimit: 1, active: true },
-  { code: "pro", name: "Pro", priceIdr: 299_000, credits: 5_000, deviceLimit: 3, active: true },
+  { code: "starter", name: "Starter", priceIdr: 99_000, credits: 50_000, deviceLimit: 1, active: true },
+  { code: "pro", name: "Pro", priceIdr: 299_000, credits: 500_000, deviceLimit: 3, active: true },
   { code: "enterprise", name: "Enterprise", priceIdr: 0, credits: 0, deviceLimit: 10, active: true },
 ];
 
@@ -31,13 +33,15 @@ export class AdminController {
     private readonly rateLimits: RateLimitService,
     private readonly securityEvents: SecurityEventService,
     private readonly providerConnections: ProviderConnectionService,
+    private readonly paymentsService: PaymentService,
+    private readonly database: DatabaseService,
   ) {}
 
   @Get("overview")
-  overview() {
+  async overview() {
     const users = this.auth.listUsers();
     const providers = this.store.listProviders();
-    const payments = this.store.revenue();
+    const payments = await this.paymentsService.adminPayments();
     const usage = this.usage.summary();
     return {
       mode: authStorageMode(),
@@ -54,13 +58,13 @@ export class AdminController {
         items: this.gateway.providers(),
       },
       routing: { rules: this.store.listRoutes().length, enabled: this.store.listRoutes().filter((item) => item.enabled).length },
-      revenue: payments,
+      revenue: payments.summary,
       usage,
       pricing: this.store.pricingPolicy(),
       infrastructure: {
         databaseConfigured: Boolean(process.env.DATABASE_URL),
         redisConfigured: Boolean(process.env.REDIS_URL),
-        persistence: false,
+        persistence: this.database.configured(),
       },
     };
   }
@@ -183,8 +187,8 @@ export class AdminController {
   }
 
   @Get("revenue")
-  revenue() {
-    const payment = this.store.revenue();
+  async revenue() {
+    const payment = (await this.paymentsService.adminPayments()).summary;
     const usage = this.usage.summary();
     return {
       mode: authStorageMode(),
@@ -208,21 +212,11 @@ export class AdminController {
 
   @Get("payments")
   payments() {
-    return { mode: authStorageMode(), summary: this.store.revenue(), payments: this.store.listPayments() };
+    return this.paymentsService.adminPayments();
   }
 
-  @Post("payments")
-  createPayment(@Body() input: Partial<PaymentRecord>) {
-    return this.store.createPayment(input);
-  }
-
-  @Patch("payments/:id")
-  updatePayment(@Param("id") id: string, @Body() input: Partial<PaymentRecord>) {
-    return this.store.updatePayment(id, input);
-  }
-
-  @Delete("payments/:id")
-  deletePayment(@Param("id") id: string) {
-    return this.store.deletePayment(id);
+  @Post("payments/:id/refund")
+  refundPayment(@Param("id") id: string) {
+    return this.paymentsService.refund(id);
   }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { quoteUsageCost } from "./index.js";
+import { paymentEventPayload, paymentPayloadHash, quoteUsageCost, signPaymentWebhook, verifyPaymentWebhookSignature } from "./index.js";
 
 describe("quoteUsageCost", () => {
   it("applies a 50 percent markup without confusing it with margin rate", () => {
@@ -35,5 +35,28 @@ describe("quoteUsageCost", () => {
     expect(quote.serviceCostMicroUsd).toBe(100n);
     expect(quote.userChargeMicroUsd).toBe(150n);
     expect(quote.grossProfitMicroUsd).toBe(50n);
+  });
+});
+
+describe("payment webhook security", () => {
+  const secret = "sandbox-webhook-secret-32-characters";
+  const raw = Buffer.from(paymentEventPayload({
+    eventId: "evt-1",
+    externalId: "pay-1",
+    invoiceNumber: "INV-1",
+    amountIdr: 99_000,
+    status: "paid",
+    occurredAt: "2026-07-15T00:00:00.000Z",
+  }));
+
+  it("accepts a valid HMAC and rejects a tampered body", () => {
+    const signature = signPaymentWebhook(secret, raw);
+    expect(verifyPaymentWebhookSignature(secret, raw, signature)).toBe(true);
+    expect(verifyPaymentWebhookSignature(secret, Buffer.from(`${raw.toString()}x`), signature)).toBe(false);
+  });
+
+  it("creates a stable payload hash without exposing the payload", () => {
+    expect(paymentPayloadHash(raw)).toMatch(/^[a-f0-9]{64}$/);
+    expect(paymentPayloadHash(raw)).toBe(paymentPayloadHash(Buffer.from(raw)));
   });
 });

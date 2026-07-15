@@ -80,7 +80,7 @@ export interface PaymentRecord {
   customerEmail: string;
   amountIdr: number;
   method: string;
-  status: "paid" | "pending" | "failed" | "refunded";
+  status: "paid" | "pending" | "failed" | "expired" | "refunded";
   createdAt: string;
   updatedAt: string;
 }

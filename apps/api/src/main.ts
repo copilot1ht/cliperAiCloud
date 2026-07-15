@@ -7,14 +7,16 @@ import { randomUUID } from "node:crypto";
 import { AppModule } from "./app.module.js";
 import { RuntimeConfigService } from "./config/runtime-config.js";
 import { loadWorkspaceEnv } from "./config/load-env.js";
+import { PrismaExceptionFilter } from "./database/prisma-exception.filter.js";
 
 loadWorkspaceEnv();
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true, bodyParser: false });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true, rawBody: true });
   app.useBodyParser("json", { limit: process.env.MAX_BODY_SIZE || "256kb" });
   app.useBodyParser("urlencoded", { limit: process.env.MAX_BODY_SIZE || "256kb", extended: true });
   const runtimeConfig = app.get(RuntimeConfigService);
+  app.useGlobalFilters(new PrismaExceptionFilter());
   runtimeConfig.assertProductionSafe();
   for (const warning of runtimeConfig.report().warnings) console.warn(`[config] ${warning}`);
   const production = process.env.NODE_ENV === "production";

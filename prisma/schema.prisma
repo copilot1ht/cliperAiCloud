@@ -1,6 +1,6 @@
 generator client {
   provider = "prisma-client"
-  output   = "../packages/database/generated"
+  output   = "../apps/api/src/generated/prisma"
 }
 
 datasource db {
@@ -126,6 +126,7 @@ model Plan {
   monthlyCreditMicro BigInt
   deviceLimit        Int            @default(1)
   requestPriority    Int            @default(100)
+  durationDays       Int            @default(30)
   isActive           Boolean        @default(true)
   subscriptions      Subscription[]
   licenses           License[]
@@ -144,6 +145,7 @@ model Subscription {
   currentPeriodStart DateTime             @default(now())
   currentPeriodEnd   DateTime?
   cancelAtPeriodEnd  Boolean              @default(false)
+  autoRenew          Boolean              @default(false)
   user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   planDefinition     Plan                 @relation(fields: [planCode], references: [code], onDelete: Restrict)
   creditEntries      CreditLedger[]
@@ -360,6 +362,7 @@ model CreditLedger {
   subscriptionId    String?
   apiKeyId          String?
   usageId           String?
+  invoiceId         String?
   type              LedgerType
   amountMicro       BigInt
   balanceAfterMicro BigInt
@@ -370,11 +373,13 @@ model CreditLedger {
   subscription      Subscription?     @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
   apiKey            ApiKey?           @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
   usage             AiUsage?          @relation(fields: [usageId], references: [id], onDelete: SetNull)
+  invoice           Invoice?          @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
   createdAt         DateTime          @default(now())
 
   @@index([accountId, createdAt])
   @@index([subscriptionId, createdAt])
   @@index([apiKeyId, createdAt])
+  @@index([invoiceId, createdAt])
   @@map("credit_transactions")
 }
 
@@ -402,30 +407,59 @@ model PaymentTransaction {
 }
 
 model Invoice {
-  id             String              @id @default(cuid())
-  number         String              @unique
-  userId         String
-  subscriptionId String?
-  paymentId      String?             @unique
-  status         InvoiceStatus       @default(DRAFT)
-  currency       String              @default("IDR")
-  subtotalIdr    Int
-  taxIdr         Int                 @default(0)
-  totalIdr       Int
-  issuedAt       DateTime            @default(now())
-  dueAt          DateTime?
-  paidAt         DateTime?
-  metadata       Json?
-  user           User                @relation(fields: [userId], references: [id], onDelete: Restrict)
-  subscription   Subscription?       @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
-  payment        PaymentTransaction? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
-  items          InvoiceItem[]
-  createdAt      DateTime            @default(now())
-  updatedAt      DateTime            @updatedAt
+  id                String              @id @default(cuid())
+  number            String              @unique
+  userId            String
+  subscriptionId    String?
+  paymentId         String?             @unique
+  provider          String?
+  providerReference String?
+  paymentUrl        String?
+  qrString          String?
+  status            InvoiceStatus       @default(DRAFT)
+  currency          String              @default("IDR")
+  subtotalIdr       Int
+  taxIdr            Int                 @default(0)
+  totalIdr          Int
+  issuedAt          DateTime            @default(now())
+  dueAt             DateTime?
+  expiresAt         DateTime?
+  paidAt            DateTime?
+  metadata          Json?
+  user              User                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  subscription      Subscription?       @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  payment           PaymentTransaction? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  items             InvoiceItem[]
+  creditEntries     CreditLedger[]
+  paymentLogs       PaymentLog[]
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
 
+  @@unique([provider, providerReference])
   @@index([userId, createdAt])
   @@index([status, dueAt])
   @@map("invoices")
+}
+
+model PaymentLog {
+  id          String   @id @default(cuid())
+  provider    String
+  eventId     String
+  invoiceId   String?
+  eventType   String
+  payloadHash String
+  signature   String?
+  verified    Boolean  @default(false)
+  accepted    Boolean  @default(false)
+  reason      String?
+  safePayload Json?
+  invoice     Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+
+  @@unique([provider, eventId])
+  @@index([invoiceId, createdAt])
+  @@index([verified, accepted, createdAt])
+  @@map("payment_logs")
 }
 
 model InvoiceItem {

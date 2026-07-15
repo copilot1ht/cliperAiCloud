@@ -23,9 +23,13 @@ import { DesktopSessionGuard } from "./security/desktop-session.guard.js";
 import { RateLimitService } from "./security/rate-limit.service.js";
 import { SecurityEventService } from "./security/security-event.service.js";
 import { ProviderConnectionService } from "./admin/provider-connection.service.js";
+import { DatabaseService } from "./database/database.service.js";
+import { PaymentController } from "./billing/payment.controller.js";
+import { PaymentProviderService } from "./billing/payment-provider.service.js";
+import { PaymentService } from "./billing/payment.service.js";
 
 @Module({
-  controllers: [HealthController, GatewayController, LicenseController, DesktopAuthController, KeyController, AuthController, AdminController, MemberController],
-  providers: [AdminStoreService, ProviderConnectionService, PricingService, CreditAccountService, GatewayService, ApiKeyGuard, SessionGuard, AdminSessionGuard, LicenseService, UsageService, RuntimeConfigService, AuthService, DesktopSessionService, DesktopSessionGuard, RateLimitService, SecurityEventService],
+  controllers: [HealthController, GatewayController, LicenseController, DesktopAuthController, KeyController, AuthController, AdminController, MemberController, PaymentController],
+  providers: [AdminStoreService, ProviderConnectionService, PricingService, CreditAccountService, GatewayService, ApiKeyGuard, SessionGuard, AdminSessionGuard, LicenseService, UsageService, RuntimeConfigService, AuthService, DesktopSessionService, DesktopSessionGuard, RateLimitService, SecurityEventService, DatabaseService, PaymentProviderService, PaymentService],
 })
 export class AppModule {}

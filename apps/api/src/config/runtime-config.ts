@@ -91,7 +91,8 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Run
     warnings.push("Fixed development admin belum dikonfigurasi.");
   }
   if (!env.DATABASE_URL) {
-    warnings.push("DATABASE_URL belum dikonfigurasi; persistence database belum aktif.");
+    const message = "DATABASE_URL belum dikonfigurasi; Payment Engine dan persistence database tidak dapat berjalan.";
+    production ? errors.push(message) : warnings.push(message);
   }
   if (!env.REDIS_URL) {
     warnings.push("REDIS_URL belum dikonfigurasi; distributed cache belum aktif.");
@@ -99,6 +100,14 @@ export function validateRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Run
   const origins = String(env.WEB_ORIGIN || "");
   const secureOrigins = Boolean(origins) && origins !== "*";
   if (production && !secureOrigins) errors.push("WEB_ORIGIN production wajib eksplisit dan tidak boleh '*'.");
+  const paymentProvider = String(env.PAYMENT_PROVIDER || "sandbox").toLowerCase();
+  const sandboxAllowed = String(env.ALLOW_SANDBOX_PAYMENTS || "false").toLowerCase() === "true";
+  if (production && paymentProvider === "sandbox" && !sandboxAllowed) {
+    warnings.push("Sandbox payment dinonaktifkan di production; billing akan menolak checkout sampai adapter QRIS resmi dikonfigurasi.");
+  }
+  if (production && paymentProvider === "sandbox" && sandboxAllowed && secretLength(env.PAYMENT_SANDBOX_WEBHOOK_SECRET) < 32) {
+    errors.push("PAYMENT_SANDBOX_WEBHOOK_SECRET wajib minimal 32 karakter ketika sandbox diizinkan pada production.");
+  }
 
   return {
     mode,

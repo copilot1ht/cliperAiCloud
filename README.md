@@ -8,6 +8,8 @@ Panduan Windows lengkap: [Local Setup](docs/LOCAL_SETUP_WINDOWS.md).
 
 Model billing dan database: [Billing and Data Model](docs/BILLING_AND_DATA_MODEL.md).
 
+Invoice, webhook, subscription, dan refund: [Payment Engine V1](docs/PAYMENT_ENGINE.md).
+
 Keamanan desktop dan operasi: [Security Hardening](docs/SECURITY_HARDENING.md).
 
 Hasil validasi terbaru: [Validation Report 2026-07-12](docs/VALIDATION_REPORT_2026-07-12.md).
@@ -52,9 +54,9 @@ Gunakan satu halaman login yang sama. Account dengan role `admin` otomatis diara
 
 Menu admin memakai route nyata, bukan anchor pada halaman overview. Link lama seperti `/admin/overview#providers` otomatis dialihkan ke route baru.
 
-Pada mode lokal, CRUD user, provider, routing, payment, credit ledger, license, dan usage masih disimpan di memory API. Perubahan aktif langsung pada gateway, tetapi akan reset saat API restart. Provider secret dan provider cost tidak pernah dikirim ke browser member atau desktop. Aktifkan PostgreSQL, secret encryption, Redis, dan persistent audit log sebelum deployment production.
+Pada mode lokal, CRUD user, provider, routing, license, dan usage masih memakai service memory MVP. Payment, invoice, subscription, payment log, dan credit grant sudah wajib memakai PostgreSQL dan tidak memiliki fallback memory. Provider secret dan provider cost tidak pernah dikirim ke browser member atau desktop. Migrasikan identity, license, AI usage, dan provider store sepenuhnya ke PostgreSQL/Redis sebelum public paid launch.
 
-Portal lokal tidak memerlukan database untuk uji alur. Request AI nyata memerlukan minimal satu provider yang aktif. Key yang dibuat member di halaman API Keys sudah diterima oleh License API dan AI Gateway, terikat pada account pemilik, serta tidak dapat dibaca atau dicabut oleh member lain.
+Login dan provider QA lokal masih dapat dibuka tanpa database, tetapi halaman checkout sengaja menolak operasi tanpa PostgreSQL. Request AI nyata memerlukan minimal satu provider yang aktif. Key yang dibuat member di halaman API Keys sudah diterima oleh License API dan AI Gateway, terikat pada account pemilik, serta tidak dapat dibaca atau dicabut oleh member lain.
 
 ## Integrasi desktop sekarang
 
@@ -86,7 +88,7 @@ Contoh service cost Rp100 dengan markup 50% menghasilkan harga user Rp150, profi
 
 ## Status database
 
-`prisma/schema.prisma` dan migration awal `prisma/migrations/20260714_initial_cloud` sudah mencakup users, plans, subscriptions, user credits, credit transactions, API keys, licenses, devices, providers, routes, usage, payments, invoices, audit logs, dan system logs. Schema dan Prisma Client sudah tervalidasi. Migration belum diaplikasikan ke PostgreSQL pada workstation ini karena Docker/PostgreSQL belum tersedia.
+`prisma/schema.prisma` beserta migration awal, Provider Manager V2, dan Payment Engine V1 mencakup users, plans, subscriptions, user credits, credit transactions, API keys, licenses, devices, providers, routes, usage, payments, invoices, sanitized payment logs, audit logs, dan system logs. Schema dan Prisma Client sudah tervalidasi. Migration payment belum diuji end-to-end pada workstation ini karena Docker/PostgreSQL lokal belum tersedia.
 
 ## Batas fase ini
 

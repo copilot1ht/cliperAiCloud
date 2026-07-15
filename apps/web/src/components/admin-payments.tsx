@@ -1,34 +1,49 @@
 "use client";
 
-import { CheckCircle2, Plus, ReceiptText, RefreshCw, Search, Trash2 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { RefreshCw, Search, ShieldCheck } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { adminFetch, formatDate, formatIdr, type PaymentRecord } from "@/lib/admin-api";
-import { AdminError, AdminLoading, AdminModal, EmptyState, LocalModeNotice } from "@/components/admin-ui";
+import { AdminError, AdminLoading, EmptyState } from "@/components/admin-ui";
 
-interface PaymentsPayload { mode: string; summary: { grossIdr: number; refundedIdr: number; netIdr: number; paidCount: number; pendingCount: number; failedCount: number }; payments: PaymentRecord[] }
-
-function PaymentForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [saving, setSaving] = useState(false); const [error, setError] = useState("");
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); setSaving(true); setError(""); const form = new FormData(event.currentTarget);
-    try { await adminFetch("/api/admin/payments", { method: "POST", body: JSON.stringify({ reference: form.get("reference"), customerEmail: form.get("customerEmail"), amountIdr: Number(form.get("amountIdr")), method: form.get("method"), status: form.get("status") }) }); onSaved(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Pembayaran tidak dapat dicatat."); } finally { setSaving(false); }
-  };
-  return <AdminModal title="Record incoming payment" detail="Untuk rekonsiliasi lokal. Ini bukan tombol pembelian admin." onClose={onClose}><form className="admin-form" onSubmit={submit}><div className="form-grid"><label className="field-label">Reference<input name="reference" placeholder="INV-2026-001" required /></label><label className="field-label">Customer email<input name="customerEmail" type="email" required /></label><label className="field-label">Amount (IDR)<input name="amountIdr" type="number" min={1} required /></label><label className="field-label">Method<select name="method"><option value="manual">Manual</option><option value="bank-transfer">Bank transfer</option><option value="payment-gateway">Payment gateway</option></select></label><label className="field-label">Status<select name="status"><option value="paid">Paid</option><option value="pending">Pending</option><option value="failed">Failed</option><option value="refunded">Refunded</option></select></label></div>{error && <p className="form-error">{error}</p>}<div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={saving}>{saving ? "Saving..." : "Record payment"}</button></div></form></AdminModal>;
+interface PaymentsPayload {
+  mode: "postgresql";
+  summary: { grossIdr: number; refundedIdr: number; netIdr: number; paidCount: number; pendingCount: number; failedCount: number; expiredCount: number; activeSubscriptions: number };
+  payments: PaymentRecord[];
 }
 
 export function AdminPayments() {
-  const [data, setData] = useState<PaymentsPayload | null>(null); const [error, setError] = useState(""); const [showForm, setShowForm] = useState(false); const [query, setQuery] = useState(""); const [status, setStatus] = useState("all");
-  const load = useCallback(() => { setError(""); adminFetch<PaymentsPayload>("/api/admin/payments").then(setData).catch((reason) => setError(reason.message)); }, []);
+  const [data, setData] = useState<PaymentsPayload | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState("");
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("all");
+  const load = useCallback(() => {
+    setError("");
+    adminFetch<PaymentsPayload>("/api/admin/payments").then(setData).catch((reason) => setError(reason.message));
+  }, []);
   useEffect(load, [load]);
-  const filtered = useMemo(() => (data?.payments || []).filter((item) => (`${item.reference} ${item.customerEmail}`.toLowerCase().includes(query.toLowerCase()) && (status === "all" || item.status === status))), [data, query, status]);
-  const update = async (payment: PaymentRecord, nextStatus?: PaymentRecord["status"]) => { try { if (nextStatus) await adminFetch(`/api/admin/payments/${payment.id}`, { method: "PATCH", body: JSON.stringify({ status: nextStatus }) }); else if (window.confirm(`Hapus catatan ${payment.reference}?`)) await adminFetch(`/api/admin/payments/${payment.id}`, { method: "DELETE" }); else return; load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Pembayaran tidak dapat diubah."); } };
-  if (error && !data) return <><LocalModeNotice /><AdminError message={error} retry={load} /></>;
+  const filtered = useMemo(() => (data?.payments || []).filter((item) => (
+    `${item.reference} ${item.customerEmail}`.toLowerCase().includes(query.toLowerCase()) && (status === "all" || item.status === status)
+  )), [data, query, status]);
+
+  const refund = async (payment: PaymentRecord) => {
+    if (!window.confirm(`Refund ${payment.reference}? Credit dan subscription terkait akan dibatalkan bila saldo masih tersedia.`)) return;
+    setBusy(payment.id); setError("");
+    try {
+      await adminFetch(`/api/admin/payments/${payment.id}/refund`, { method: "POST" });
+      load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Refund gagal diproses.");
+    } finally { setBusy(""); }
+  };
+
+  if (error && !data) return <AdminError message={error} retry={load} />;
   if (!data) return <AdminLoading />;
-  return <><LocalModeNotice />{error && <AdminError message={error} retry={load} />}
-    <div className="notice-line"><div><ReceiptText size={17} /><span><strong>Payments adalah uang masuk dari user.</strong> Admin memakai halaman ini untuk rekonsiliasi, update status, dan refund; admin tidak membeli paket.</span></div></div>
-    <div className="stats-grid compact-stats"><div className="metric-block"><small>Gross received</small><strong>{formatIdr(data.summary.grossIdr)}</strong><span>{data.summary.paidCount} paid</span></div><div className="metric-block"><small>Net revenue</small><strong>{formatIdr(data.summary.netIdr)}</strong><span>after refunds</span></div><div className="metric-block"><small>Pending</small><strong>{data.summary.pendingCount}</strong><span>need reconciliation</span></div><div className="metric-block"><small>Failed</small><strong>{data.summary.failedCount}</strong><span>not counted as revenue</span></div></div>
-    <section className="panel table-panel"><div className="panel-head admin-toolbar"><div><p className="section-kicker">Payment ledger</p><h2>Incoming payments and reconciliation</h2><p>Nanti webhook payment gateway akan mengisi tabel ini otomatis. Tombol record tersedia untuk uji lokal.</p></div><div className="toolbar-actions"><label className="search-box"><Search size={15} /><input aria-label="Cari pembayaran" placeholder="Reference or email..." value={query} onChange={(event) => setQuery(event.target.value)} /></label><select aria-label="Filter status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All status</option><option value="paid">Paid</option><option value="pending">Pending</option><option value="failed">Failed</option><option value="refunded">Refunded</option></select><button className="button button-primary" onClick={() => setShowForm(true)}><Plus size={15} /> Record payment</button></div></div>
-      {filtered.length ? <div className="table-scroll"><table><thead><tr><th>Reference</th><th>Customer</th><th>Amount</th><th>Method</th><th>Status</th><th>Recorded</th><th>Actions</th></tr></thead><tbody>{filtered.map((payment) => <tr key={payment.id}><td><strong>{payment.reference}</strong></td><td>{payment.customerEmail}</td><td>{formatIdr(payment.amountIdr)}</td><td>{payment.method}</td><td><span className={payment.status === "paid" ? "status-tag healthy" : payment.status === "failed" ? "status-tag danger-tag" : "status-tag fallback"}>{payment.status}</span></td><td>{formatDate(payment.createdAt)}</td><td><div className="row-actions">{payment.status !== "paid" && <button className="icon-button" title="Mark paid" onClick={() => update(payment, "paid")}><CheckCircle2 size={15} /></button>}{payment.status === "paid" && <button className="icon-button" title="Mark refunded" onClick={() => update(payment, "refunded")}><RefreshCw size={15} /></button>}<button className="icon-button danger-icon" title="Delete record" onClick={() => update(payment)}><Trash2 size={15} /></button></div></td></tr>)}</tbody></table></div> : <EmptyState title="No payments recorded" detail="Belum ada payment nyata pada sesi lokal ini. Gunakan Record payment untuk menguji alur rekonsiliasi." />}
-    </section>{showForm && <PaymentForm onClose={() => setShowForm(false)} onSaved={() => { setShowForm(false); load(); }} />}</>;
+  return <>{error && <AdminError message={error} retry={load} />}
+    <div className="notice-line"><div><ShieldCheck size={17} /><span><strong>Webhook is the payment authority.</strong> Admin tidak dapat membuat, menghapus, atau menandai transaksi sebagai paid secara manual.</span></div></div>
+    <div className="stats-grid compact-stats"><div className="metric-block"><small>Gross received</small><strong>{formatIdr(data.summary.grossIdr)}</strong><span>{data.summary.paidCount} verified payments</span></div><div className="metric-block"><small>Net revenue</small><strong>{formatIdr(data.summary.netIdr)}</strong><span>{formatIdr(data.summary.refundedIdr)} refunded</span></div><div className="metric-block"><small>Pending</small><strong>{data.summary.pendingCount}</strong><span>{data.summary.expiredCount} expired</span></div><div className="metric-block"><small>Subscriptions</small><strong>{data.summary.activeSubscriptions}</strong><span>currently active</span></div></div>
+    <section className="panel table-panel"><div className="panel-head admin-toolbar"><div><p className="section-kicker">Immutable payment ledger</p><h2>Provider transactions</h2><p>Paid status hanya berasal dari callback bertanda tangan dan diproses idempotent di PostgreSQL.</p></div><div className="toolbar-actions"><label className="search-box"><Search size={15} /><input aria-label="Cari pembayaran" placeholder="Reference or email..." value={query} onChange={(event) => setQuery(event.target.value)} /></label><select aria-label="Filter status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All status</option><option value="paid">Paid</option><option value="pending">Pending</option><option value="failed">Failed</option><option value="expired">Expired</option><option value="refunded">Refunded</option></select><button className="button button-secondary" onClick={load}><RefreshCw size={15} /> Refresh</button></div></div>
+      {filtered.length ? <div className="table-scroll"><table><thead><tr><th>Reference</th><th>Customer</th><th>Amount</th><th>Provider</th><th>Status</th><th>Recorded</th><th>Action</th></tr></thead><tbody>{filtered.map((payment) => <tr key={payment.id}><td><strong>{payment.reference}</strong></td><td>{payment.customerEmail}</td><td>{formatIdr(payment.amountIdr)}</td><td>{payment.method}</td><td><span className={payment.status === "paid" ? "status-tag healthy" : payment.status === "failed" || payment.status === "refunded" ? "status-tag danger-tag" : "status-tag fallback"}>{payment.status}</span></td><td>{formatDate(payment.createdAt)}</td><td>{payment.status === "paid" ? <button className="button button-secondary compact-button" disabled={busy === payment.id} onClick={() => void refund(payment)}>{busy === payment.id ? "Processing..." : "Refund"}</button> : <span className="muted-cell">No manual action</span>}</td></tr>)}</tbody></table></div> : <EmptyState title="No provider payments" detail="Belum ada invoice yang diproses oleh Payment Engine PostgreSQL." />}
+    </section>
+  </>;
 }

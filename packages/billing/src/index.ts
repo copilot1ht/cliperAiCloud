@@ -53,3 +53,74 @@ export function quoteUsageCost(input: UsageCostInput): UsageCostQuote {
     grossMarginBps,
   };
 }
+
+export type PaymentProviderStatus = "pending" | "paid" | "failed" | "expired" | "refunded";
+
+export interface CreateProviderPaymentInput {
+  invoiceNumber: string;
+  amountIdr: number;
+  expiresAt: string;
+  customer: { id: string; email: string; displayName: string };
+  description: string;
+}
+
+export interface CreateProviderPaymentResult {
+  provider: string;
+  externalId: string;
+  status: PaymentProviderStatus;
+  paymentUrl?: string;
+  qrString?: string;
+  safeMetadata?: Record<string, unknown>;
+}
+
+export interface PaymentWebhookEvent {
+  eventId: string;
+  externalId: string;
+  invoiceNumber: string;
+  amountIdr: number;
+  status: PaymentProviderStatus;
+  occurredAt: string;
+}
+
+export interface VerifiedPaymentWebhook {
+  verified: boolean;
+  reason?: string;
+  event?: PaymentWebhookEvent;
+  payloadHash: string;
+  signature?: string;
+}
+
+export interface PaymentProvider {
+  readonly code: string;
+  createPayment(input: CreateProviderPaymentInput): Promise<CreateProviderPaymentResult>;
+  verifyWebhook(rawBody: Buffer, headers: Record<string, string | string[] | undefined>): VerifiedPaymentWebhook;
+  refund?(externalId: string, amountIdr: number): Promise<{ ok: true; reference: string }>;
+}
+
+export function paymentEventPayload(event: PaymentWebhookEvent): string {
+  return JSON.stringify({
+    eventId: event.eventId,
+    externalId: event.externalId,
+    invoiceNumber: event.invoiceNumber,
+    amountIdr: event.amountIdr,
+    status: event.status,
+    occurredAt: event.occurredAt,
+  });
+}
+
+export function paymentPayloadHash(rawBody: Buffer | string): string {
+  return createHash("sha256").update(rawBody).digest("hex");
+}
+
+export function signPaymentWebhook(secret: string, rawBody: Buffer | string): string {
+  if (secret.length < 24) throw new Error("Webhook secret minimal 24 karakter.");
+  return createHmac("sha256", secret).update(rawBody).digest("hex");
+}
+
+export function verifyPaymentWebhookSignature(secret: string, rawBody: Buffer, signature: string): boolean {
+  if (!signature || !/^[a-f0-9]{64}$/i.test(signature)) return false;
+  const expected = Buffer.from(signPaymentWebhook(secret, rawBody), "hex");
+  const received = Buffer.from(signature, "hex");
+  return expected.length === received.length && timingSafeEqual(expected, received);
+}
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
