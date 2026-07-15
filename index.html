@@ -3,17 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Cliper YouTube AI Studio</title>
+    <title>Cliper Studio Plus</title>
+    <link rel="icon" href="./assets/icon.png" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark">C</div>
+          <div class="brand-mark"><img src="./assets/icon.png" alt="" /></div>
           <div>
             <strong>Cliper</strong>
-            <span>YouTube AI Studio</span>
+            <span>Studio Plus</span>
           </div>
         </div>
 
@@ -56,11 +57,12 @@
         <header class="topbar">
           <div>
             <p class="eyebrow">Project</p>
-            <h1>Cliper YouTube AI Studio</h1>
+          <h1>Cliper Studio Plus</h1>
           </div>
           <div class="status-row">
-            <span class="status-pill" id="apiStatus">API belum diset</span>
+            <span class="status-pill" id="apiStatus">Local heuristic active</span>
             <span class="status-pill" id="clipCounter">0 clip dipilih</span>
+            <span class="status-pill version-pill" id="appVersion">v1.7.0</span>
             <button class="icon-button" id="saveConfig" title="Simpan setting">
               <svg viewBox="0 0 24 24"><path d="M5 4h12l2 2v14H5V4Zm3 0v6h8V4M8 20v-6h8v6" /></svg>
             </button>
@@ -73,7 +75,7 @@
               <div class="panel-heading">
                 <div>
                   <p class="eyebrow">Input video</p>
-                  <h2>Auto cut setup</h2>
+                  <h2>Full AI Auto Mode</h2>
                 </div>
                 <button class="icon-button" id="resetButton" title="Reset form">
                   <svg viewBox="0 0 24 24"><path d="M4 4v6h6M20 20v-6h-6M6.5 17.5a7.5 7.5 0 0 0 11-10.1L20 10M4 14l2.5 2.6a7.5 7.5 0 0 0 11-10.1" /></svg>
@@ -89,36 +91,30 @@
               </label>
 
               <div class="form-grid">
-                <label class="field">
-                  <span>Jumlah clip</span>
+                <label class="field auto-advanced-field">
+                  <span>Maks output otomatis</span>
                   <input id="clipCount" type="number" min="1" max="20" value="6" />
                 </label>
-                <label class="field">
-                  <span>Durasi target</span>
-                  <select id="durationTarget">
-                    <option>20-35 detik</option>
-                    <option>35-50 detik</option>
-                    <option>50-65 detik</option>
-                    <option>Auto terbaik</option>
-                  </select>
-                </label>
-                <label class="field">
+                <label class="field auto-advanced-field">
                   <span>Bahasa subtitle</span>
                   <select id="subtitleLang">
-                    <option>id-ID auto</option>
-                    <option>en-US auto</option>
-                    <option>Transkrip fallback</option>
+                    <option value="">Paste YouTube URL untuk load subtitle</option>
                   </select>
                 </label>
-                <label class="field">
+                <label class="field auto-advanced-field">
                   <span>AI scoring</span>
                   <select id="scoreMode">
+                    <option>Random Viral Mix</option>
                     <option>Hook + retention</option>
                     <option>Edukasi paling jelas</option>
                     <option>Kontroversi ringan</option>
                     <option>Komedi / reaksi</option>
                   </select>
                 </label>
+                <div class="auto-duration-card">
+                  <strong>One-click AI editing</strong>
+                  <span>AI menentukan jumlah clip, durasi, hook, subtitle, crop, dan kamera otomatis.</span>
+                </div>
               </div>
 
               <div class="upload-strip">
@@ -136,7 +132,7 @@
                 <button class="secondary-action" id="scanSubtitles">Scan subtitle</button>
                 <button class="primary-action" id="findMoments">
                   <svg viewBox="0 0 24 24"><path d="m5 12 5 5L20 7" /></svg>
-                  Cari moment terbaik
+                  Generate otomatis
                 </button>
               </div>
             </section>
@@ -158,6 +154,45 @@
                   <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7L20 8m0-5v5h-5" /></svg>
                 </button>
               </div>
+              <section class="timeline-selector timeline-selector-compact">
+                <div class="timeline-top-row">
+                  <div>
+                    <p class="eyebrow">Processing timeframe</p>
+                    <strong>Area video yang dianalisa AI</strong>
+                  </div>
+                  <span class="status-pill" id="timelineRangeBadge">Full video</span>
+                </div>
+                <div class="timeline-options-row">
+                  <label class="field">
+                    <span>Mode</span>
+                    <select id="selectionMode">
+                      <option value="full">Full Video</option>
+                      <option value="range">Current Range</option>
+                      <option value="multiple">Multiple Range</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>Start</span>
+                    <input id="rangeStart" placeholder="00:00:00" />
+                  </label>
+                  <label class="field">
+                    <span>End</span>
+                    <input id="rangeEnd" placeholder="00:20:00" />
+                  </label>
+                </div>
+                <div class="analysis-seekbar">
+                  <input id="analysisStartRange" type="range" min="0" max="100" value="0" />
+                  <input id="analysisEndRange" type="range" min="0" max="100" value="100" />
+                </div>
+                <div class="analysis-time-row">
+                  <span id="analysisStartBadge">00:00</span>
+                  <span id="analysisEndBadge">End</span>
+                </div>
+                <label class="field multiple-ranges-compact" id="multipleRangesField">
+                  <span>Multiple range</span>
+                  <textarea id="multipleRanges" rows="2" placeholder="00:10:00-00:20:00&#10;00:40:00-00:50:00"></textarea>
+                </label>
+              </section>
             </section>
           </div>
 
@@ -176,38 +211,93 @@
               <h2>Moment terbaik</h2>
             </div>
             <div class="toolbar">
+              <span class="status-pill" id="aiPipelineStatus">AI Production Pipeline Active</span>
               <button class="secondary-action" id="selectAllButton">Pilih semua</button>
               <button class="primary-action compact-action" id="processSelected">Render pilihan</button>
             </div>
           </div>
-          <section class="panel pre-export-panel">
-            <div class="panel-heading">
-              <div>
-                <p class="eyebrow">Pre export pipeline</p>
-                <h2>Enhancement yang dipakai saat render</h2>
+          <div class="moment-controls" aria-label="Filter moment">
+            <label class="moment-search">
+              <span>Cari</span>
+              <input id="momentSearch" type="search" placeholder="Judul, transcript, atau topik" />
+            </label>
+            <label>
+              <span>Kualitas</span>
+              <select id="momentQualityFilter">
+                <option value="all">Semua</option>
+                <option value="excellent">Excellent 85+</option>
+                <option value="good">Good 70-84</option>
+                <option value="review">Review &lt;70</option>
+                <option value="selected">Dipilih</option>
+              </select>
+            </label>
+            <label>
+              <span>Urutkan</span>
+              <select id="momentSort">
+                <option value="score">Score tertinggi</option>
+                <option value="hook">Hook terbaik</option>
+                <option value="story">Story terbaik</option>
+                <option value="shortest">Durasi terpendek</option>
+                <option value="timeline">Urutan timeline</option>
+              </select>
+            </label>
+            <span class="moment-result-count" id="momentResultCount">0 kandidat</span>
+          </div>
+          <section class="moment-workbench">
+            <div class="moment-list" id="momentGrid"></div>
+            <section class="panel moment-review-panel" id="momentReviewPanel">
+              <div class="review-player-wrap">
+                <video id="momentPreviewVideo" controls preload="metadata"></video>
+                <div class="review-subtitle-preview" id="reviewSubtitlePreview">Subtitle preview akan tampil di sini</div>
               </div>
-              <span class="status-pill" id="pipelineEstimate">Estimasi: -</span>
-            </div>
-            <div class="enhancement-grid">
-              <label><input id="smartCropToggle" type="checkbox" checked /> Smart crop</label>
-              <label><input id="dynamicZoomToggle" type="checkbox" checked /> Dynamic zoom</label>
-              <label><input id="pipelineFaceTrack" type="checkbox" checked /> Face tracking</label>
-              <label><input id="pipelineCaption" type="checkbox" checked /> Auto caption</label>
-              <label><input id="pipelineBurnSubtitle" type="checkbox" checked /> Burn subtitle</label>
-              <label><input id="autoCut" type="checkbox" checked /> Auto cut</label>
-              <label><input id="pipelineHook" type="checkbox" checked /> Hook intro</label>
-              <label><input id="ttsHookToggle" type="checkbox" /> Hook TTS</label>
-              <label><input id="metadataToggle" type="checkbox" checked /> Judul & hashtag</label>
-              <label><input id="audioEnhanceToggle" type="checkbox" checked /> Audio enhancement</label>
-              <label><input id="colorEnhanceToggle" type="checkbox" checked /> Color enhancement</label>
-              <label><input id="creditTextToggle" type="checkbox" /> Credit text</label>
-              <label><input id="logoOverlayToggle" type="checkbox" /> Logo overlay</label>
-              <label><input id="pipelineWatermark" type="checkbox" /> Watermark</label>
-              <label><input id="thumbnailPreviewToggle" type="checkbox" checked /> Thumbnail preview</label>
-            </div>
-            <div class="pipeline-summary" id="pipelineSummary"></div>
+              <div class="review-editor">
+                <p class="eyebrow">Pre-render review</p>
+                <h3 id="reviewClipTitle">Pilih clip untuk preview</h3>
+                <div class="review-meta-row">
+                  <span id="reviewScore">Score -</span>
+                  <span id="reviewDuration">Duration -</span>
+                </div>
+                <div class="review-timeline">
+                  <span id="reviewRangeStartLabel">00:00</span>
+                  <div class="review-range-stack">
+                    <input id="reviewStartRange" type="range" min="0" max="100" value="0" />
+                    <input id="reviewEndRange" type="range" min="0" max="100" value="100" />
+                  </div>
+                  <span id="reviewRangeEndLabel">00:00</span>
+                </div>
+                <div class="timeline-range-grid">
+                  <label class="field">
+                    <span>Start</span>
+                    <input id="reviewStartInput" placeholder="00:00" />
+                  </label>
+                  <label class="field">
+                    <span>End</span>
+                    <input id="reviewEndInput" placeholder="01:00" />
+                  </label>
+                </div>
+                <div class="quick-adjust-grid compact">
+                  <button type="button" data-adjust-start="-5">Trim start -5s</button>
+                  <button type="button" data-adjust-start="5">Extend start +5s</button>
+                  <button type="button" data-adjust-end="-5">Trim end -5s</button>
+                  <button type="button" data-adjust-end="5">Extend end +5s</button>
+                  <button type="button" data-adjust-end="10">Extend end +10s</button>
+                  <button type="button" data-adjust-start="-10">Start -10s</button>
+                </div>
+                <div class="review-warning" id="reviewWarning">Pilih moment untuk melihat warning cerita.</div>
+                <div class="review-evidence" id="reviewEvidence"></div>
+                <p class="review-reason" id="reviewReason">Alasan pemilihan AI akan tampil di sini.</p>
+                <div class="review-transcript" id="reviewTranscript">Transcript moment akan tampil di sini.</div>
+                <div class="action-row review-actions">
+                  <button class="secondary-action" id="reviewPlayPause">Play/Pause</button>
+                  <button class="secondary-action" id="suggestBetterStart">Better Start</button>
+                  <button class="secondary-action" id="suggestBetterEnding">Better Ending</button>
+                  <button class="secondary-action" id="regenerateMoment">Regenerate</button>
+                  <button class="danger-action" id="rejectMoment">Reject</button>
+                  <button class="primary-action" id="acceptMoment">Accept</button>
+                </div>
+              </div>
+            </section>
           </section>
-          <div class="moment-grid" id="momentGrid"></div>
         </section>
 
         <section class="view" id="view-render">
@@ -216,10 +306,12 @@
               <div class="section-heading flush">
                 <div>
                   <p class="eyebrow">Worker</p>
-                  <h2>Render queue</h2>
+                  <h2 id="renderScreenTitle">Processing clips...</h2>
+                  <span class="muted-copy" id="renderScreenSubtitle">Processing clips with selected enhancements.</span>
                 </div>
               <button class="danger-action" id="cancelJob">Cancel</button>
               </div>
+              <div class="progress-label"><span>Progress</span><strong id="progressPercent">0%</strong></div>
               <div class="meter"><span id="progressBar"></span></div>
               <div class="render-stats-grid">
                 <article><span>Clip</span><strong id="renderClipStat">-</strong></article>
@@ -269,8 +361,14 @@
 
           <div class="settings-panel active" id="settings-api">
             <section class="panel">
-              <p class="eyebrow">AI provider</p>
-              <h2>AI Models</h2>
+              <p class="eyebrow">AI Enhancement (Optional)</p>
+              <h2 id="aiModeTitle">Local mode active ✓</h2>
+              <div class="ai-toggle-grid">
+                <label><input id="aiHighlightToggle" type="checkbox" checked /> Highlight Finder AI</label>
+                <label><input id="aiHookToggle" type="checkbox" checked /> Hook Maker AI</label>
+                <label><input id="aiCaptionToggle" type="checkbox" checked /> Caption Cleaner AI</label>
+                <label><input id="aiTitleToggle" type="checkbox" checked /> Title Generator AI</label>
+              </div>
               <div class="provider-list" id="providerList"></div>
             </section>
             <section class="panel settings-form">
@@ -279,12 +377,8 @@
               <label class="field">
                 <span>Provider Type</span>
                 <select id="providerType">
-                  <option value="ytclip">YTClip AI</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="gemini">Google Gemini</option>
-                  <option value="groq">Groq</option>
+                  <option value="cloud">Cliper Cloud Gateway</option>
                   <option value="custom">Custom / OpenAI Compatible</option>
-                  <option value="local">Local Heuristic</option>
                 </select>
               </label>
               <label class="field">
@@ -311,6 +405,11 @@
               <div class="provider-status-box" id="providerStatusBox">
                 <span>Status</span>
                 <strong id="providerStatusText">Belum dites</strong>
+              </div>
+              <div class="ai-usage-card">
+                <span>Today</span>
+                <strong id="aiTokenSummary">0 input / 0 output tokens</strong>
+                <em id="aiCostSummary">Estimated cost: Rp 0</em>
               </div>
               <div class="action-row">
                 <button class="secondary-action" id="loadModelsButtonSecondary" type="button">Load Models</button>
@@ -365,6 +464,15 @@
               <label class="toggle-row"><input id="createProjectFolder" type="checkbox" checked /> Create project folder</label>
               <label class="toggle-row"><input id="deleteTempAfterExport" type="checkbox" checked /> Delete temp files after export</label>
               <label class="field">
+                <span>Quality preset</span>
+                <select id="outputQualityProfile">
+                  <option value="balanced">Balanced 1080p</option>
+                  <option value="capcut_opus_2k">CapCut / Opus 2K 60fps</option>
+                  <option value="light_fast">Fast small file</option>
+                </select>
+              </label>
+              <button class="secondary-action" id="applyReferenceOutputPreset" type="button">Apply reference style</button>
+              <label class="field">
                 <span>Format</span>
                 <select id="formatProfile">
                   <option>9:16 YouTube Shorts</option>
@@ -380,15 +488,6 @@
                   <option>2K</option>
                   <option>4K</option>
                   <option>Same as source</option>
-                </select>
-              </label>
-              <label class="toggle-row"><input id="upscaleToggle" type="checkbox" checked /> Enable upscale</label>
-              <label class="field">
-                <span>Upscale method</span>
-                <select id="upscaleMethod">
-                  <option>FFmpeg Lanczos</option>
-                  <option>FFmpeg Bicubic</option>
-                  <option>Local AI optional</option>
                 </select>
               </label>
               <label class="field">
@@ -411,56 +510,163 @@
           </div>
 
           <div class="settings-panel" id="settings-subtitle">
-            <section class="panel settings-form">
+            <section class="panel settings-form visual-editor-panel">
               <p class="eyebrow">Subtitle & Hook</p>
-              <h2>Caption overlay</h2>
-              <label class="toggle-row"><input id="subtitleBurnToggle" type="checkbox" checked /> Burn subtitle to video</label>
-              <label class="toggle-row"><input id="hookOpeningToggle" type="checkbox" checked /> Show hook opening</label>
-              <label class="field">
-                <span>Caption style</span>
-                <select id="captionStyle">
-                  <option>Karaoke bold</option>
-                  <option>Clean subtitle</option>
-                  <option>TikTok style</option>
-                  <option>YouTube Shorts style</option>
-                  <option>Minimal lower third</option>
-                </select>
-              </label>
-              <label class="field">
-                <span>Hook duration</span>
-                <select id="hookDuration">
-                  <option>2 seconds</option>
-                  <option>3 seconds</option>
-                  <option>5 seconds</option>
-                </select>
-              </label>
+              <h2>Subtitle style editor</h2>
+              <label class="toggle-row"><input id="subtitleBurnToggle" type="checkbox" /> Burn subtitle to video</label>
+              <label class="toggle-row"><input id="hookOpeningToggle" type="checkbox" /> Show hook opening</label>
+              <label class="toggle-row"><input id="subtitleWordHighlightToggle" type="checkbox" checked /> Word highlight</label>
+              <div class="editor-grid">
+                <label class="field">
+                  <span>Caption preset</span>
+                  <select id="captionStyle">
+                    <option>Karaoke bold</option>
+                    <option>Clean subtitle</option>
+                    <option selected>TikTok style</option>
+                    <option>YouTube Shorts style</option>
+                    <option>Minimal lower third</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Hook duration</span>
+                  <select id="hookDuration">
+                    <option>2 seconds</option>
+                    <option>3 seconds</option>
+                    <option>5 seconds</option>
+                  </select>
+                </label>
+                <label class="field span-2">
+                  <span>Preview text</span>
+                  <input id="subtitlePreviewInput" value="TAPI GUE HERAN" />
+                </label>
+                <label class="field">
+                  <span>Font</span>
+                  <input id="subtitleFontFamily" value="Arial Black" />
+                </label>
+                <label class="field">
+                  <span>Upload TTF/OTF</span>
+                  <div class="input-action">
+                    <input id="subtitleFontPath" readonly placeholder="Belum ada font custom" />
+                    <button class="secondary-action" id="chooseSubtitleFont" type="button">Upload</button>
+                  </div>
+                </label>
+                <label class="range-field">
+                  <span>Font size</span>
+                  <input id="subtitleFontSize" type="range" min="32" max="96" value="60" />
+                </label>
+                <label class="field">
+                  <span>Animation</span>
+                  <select id="subtitleAnimation">
+                    <option>Pop</option>
+                    <option>Fade</option>
+                    <option selected>Scale</option>
+                    <option>Bounce</option>
+                    <option>Typewriter</option>
+                    <option>None</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Default subtitle color</span>
+                  <select id="subtitlePrimaryColor">
+                    <option value="#ffffff">Putih</option>
+                    <option value="#19ff47">Hijau</option>
+                    <option value="#ffe600">Kuning</option>
+                    <option value="#4da3ff">Biru</option>
+                    <option value="#ff4d4d">Merah</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Active word color</span>
+                  <select id="subtitleActiveColor">
+                    <option value="#19ff47">Hijau</option>
+                    <option value="#ffe600">Kuning</option>
+                    <option value="#4da3ff">Biru</option>
+                    <option value="#ff4d4d">Merah</option>
+                    <option value="#ffffff">Putih</option>
+                  </select>
+                </label>
+                <label class="color-field"><span>Stroke</span><input id="subtitleStrokeColor" type="color" value="#000000" /></label>
+                <label class="range-field"><span>Shadow</span><input id="subtitleShadow" type="range" min="0" max="8" value="4" /></label>
+              </div>
+              <div class="preset-row">
+                <button type="button" data-subtitle-preset="opus">Opus</button>
+                <button type="button" data-subtitle-preset="capcut">CapCut</button>
+                <button type="button" data-subtitle-preset="tiktok">TikTok</button>
+                <button type="button" data-subtitle-preset="news">News</button>
+                <button type="button" data-subtitle-preset="podcast">Podcast</button>
+                <button type="button" data-subtitle-preset="gaming">Gaming</button>
+              </div>
+            </section>
+            <section class="panel preview-editor-panel">
+              <p class="eyebrow">Live preview</p>
+              <div class="phone-preview subtitle-phone-preview">
+                <div class="subtitle-preview-text" id="subtitlePreviewText">TAPI <span>GUE</span> HERAN</div>
+              </div>
             </section>
           </div>
 
           <div class="settings-panel" id="settings-watermark">
-            <section class="panel settings-form">
+            <section class="panel settings-form visual-editor-panel">
               <p class="eyebrow">Watermark</p>
-              <h2>Brand overlay</h2>
+              <h2>Brand overlay editor</h2>
               <label class="toggle-row"><input id="watermarkEnabled" type="checkbox" /> Enable watermark</label>
               <label class="toggle-row"><input id="watermarkInOutput" type="checkbox" /> Show watermark in output</label>
-              <label class="field">
-                <span>Text watermark</span>
-                <input id="watermarkText" placeholder="@channel atau brand" />
+              <label class="field span-2">
+                <span>Logo / media watermark</span>
+                <div class="input-action">
+                  <input id="logoAssetPath" readonly placeholder="Upload PNG/JPG/WEBP/GIF/WebM" />
+                  <button class="secondary-action" id="chooseLogoAsset" type="button">Upload</button>
+                </div>
               </label>
-              <label class="range-field">
-                <span>Watermark opacity</span>
-                <input id="watermarkOpacity" type="range" min="10" max="100" value="68" />
-              </label>
-              <label class="field">
-                <span>Position template</span>
-                <select id="watermarkPosition">
-                  <option>Top right</option>
-                  <option>Top left</option>
-                  <option>Bottom right</option>
-                  <option>Bottom left</option>
-                  <option>Center</option>
-                </select>
-              </label>
+              <div class="editor-grid">
+                <label class="range-field"><span>Logo size</span><input id="logoScale" type="range" min="8" max="60" value="18" /></label>
+                <label class="range-field"><span>Logo opacity</span><input id="logoOpacity" type="range" min="10" max="100" value="90" /></label>
+                <label class="range-field"><span>Logo rotation</span><input id="logoRotation" type="range" min="-45" max="45" value="0" /></label>
+                <label class="field">
+                  <span>Text watermark</span>
+                  <input id="watermarkText" placeholder="@channel atau brand" />
+                </label>
+                <label class="field">
+                  <span>Text font</span>
+                  <input id="watermarkFontFamily" value="Arial Black" />
+                </label>
+                <label class="field">
+                  <span>Upload text font</span>
+                  <div class="input-action">
+                    <input id="watermarkFontPath" readonly placeholder="Opsional TTF/OTF" />
+                    <button class="secondary-action" id="chooseWatermarkFont" type="button">Upload</button>
+                  </div>
+                </label>
+                <label class="range-field"><span>Text size</span><input id="watermarkTextSize" type="range" min="16" max="72" value="28" /></label>
+                <label class="range-field"><span>Text opacity</span><input id="watermarkOpacity" type="range" min="10" max="100" value="68" /></label>
+                <label class="color-field"><span>Text color</span><input id="watermarkTextColor" type="color" value="#ffffff" /></label>
+                <label class="color-field"><span>Stroke</span><input id="watermarkTextStroke" type="color" value="#000000" /></label>
+                <label class="range-field"><span>Shadow</span><input id="watermarkTextShadow" type="range" min="0" max="8" value="2" /></label>
+              </div>
+              <div class="preset-grid">
+                <button type="button" data-brand-preset="top-left">Top Left</button>
+                <button type="button" data-brand-preset="top-center">Top Center</button>
+                <button type="button" data-brand-preset="top-right">Top Right</button>
+                <button type="button" data-brand-preset="middle-left">Middle Left</button>
+                <button type="button" data-brand-preset="center">Center</button>
+                <button type="button" data-brand-preset="middle-right">Middle Right</button>
+                <button type="button" data-brand-preset="bottom-left">Bottom Left</button>
+                <button type="button" data-brand-preset="bottom-center">Bottom Center</button>
+                <button type="button" data-brand-preset="bottom-right">Bottom Right</button>
+              </div>
+              <input id="logoX" type="hidden" value="82" />
+              <input id="logoY" type="hidden" value="8" />
+              <input id="watermarkTextX" type="hidden" value="78" />
+              <input id="watermarkTextY" type="hidden" value="16" />
+              <input id="watermarkPosition" type="hidden" value="Top right" />
+            </section>
+            <section class="panel preview-editor-panel">
+              <p class="eyebrow">Preview 9:16</p>
+              <div class="phone-preview brand-phone-preview" id="brandPreviewFrame">
+                <img id="brandPreviewLogo" alt="Logo preview" />
+                <div class="brand-preview-text" id="brandPreviewText">@cliperai</div>
+              </div>
+              <p class="muted-copy">Geser logo atau text langsung pada preview. Posisi tersimpan sebagai persentase frame 9:16.</p>
             </section>
           </div>
 

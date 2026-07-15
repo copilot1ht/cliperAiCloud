@@ -13,7 +13,11 @@ contextBridge.exposeInMainWorld("cliper", {
   cancel: () => ipcRenderer.invoke("cliper:cancel"),
   selectCookieFile: () => ipcRenderer.invoke("cliper:select-cookie-file"),
   selectOutputFolder: () => ipcRenderer.invoke("cliper:select-output-folder"),
+  selectLogoFile: () => ipcRenderer.invoke("cliper:select-logo-file"),
+  selectFontFile: () => ipcRenderer.invoke("cliper:select-font-file"),
+  openFolder: (folderPath) => ipcRenderer.invoke("cliper:open-folder", folderPath),
   testProvider: (payload) => ipcRenderer.invoke("cliper:test-provider", payload),
+  openUserGuide: () => ipcRenderer.invoke("cliper:open-user-guide"),
   openExternal: (url) => ipcRenderer.invoke("cliper:open-external", url),
   onWorkerEvent: (callback) => {
     const listener = (_event, data) => callback(data);

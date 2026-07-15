@@ -1,0 +1,7 @@
+# Runtime Python packages tested with Cliper Studio Plus 1.10.0-beta.3.
+# yt-dlp[default] includes the EJS support package used by current YouTube extraction.
+yt-dlp[default]==2026.3.17
+faster-whisper==1.2.1
+opencv-python==4.10.0.84
+mediapipe==0.10.35
+openai==2.41.1

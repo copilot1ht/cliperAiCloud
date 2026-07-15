@@ -1,18 +1,36 @@
-# Cliper YouTube AI Studio
+# Cliper Studio Plus
 
 Desktop app untuk menganalisa link YouTube, mencari moment terbaik, lalu merender clip pendek.
 
-## Test App
+## Panduan Pengguna
 
-Jalankan:
-
-
-cd "C:\Users\USER\Desktop\Cliper Ai Studio\dist"
-$env:ELECTRON_RUN_AS_NODE=""
-& ".\Cliper YouTube AI Studio.exe"
+Panduan instalasi, spesifikasi PC, Custom AI, cookies, subtitle, render, dan troubleshooting tersedia di:
 
 ```text
-dist/Cliper YouTube AI Studio.exe
+docs/PANDUAN_PENGGUNA.md
+```
+
+Persiapan runtime cepat:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-runtime.ps1 -InstallFFmpeg
+```
+
+Setelah selesai, buka aplikasi dan jalankan `Settings > Runtime > Check ulang`.
+
+## Test App
+
+Jalankan beta terbaru:
+
+```powershell
+cd "C:\Users\USER\Desktop\Cliper Ai Studio\dist-beta3"
+Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+& ".\Cliper-Studio-Plus-Portable.exe"
+```
+
+```text
+dist-beta3/Cliper-Studio-Plus-Portable.exe
+dist-beta3/Cliper-Studio-Plus-Setup.exe
 ```
 
 Development:
@@ -26,6 +44,25 @@ Build ulang:
 ```bash
 npm run build
 ```
+
+Release build:
+
+```bash
+npm run build
+```
+
+Artifact beta.3 tervalidasi tersedia di `dist-beta3\Cliper-Studio-Plus-Portable.exe`.
+Installer Windows beta.3 tersedia di `dist-beta3\Cliper-Studio-Plus-Setup.exe`.
+
+Build release memakai ASAR packaging. Source UI dan brand asset utama masuk ke `app.asar`; worker Python tetap di-unpack agar bisa dieksekusi lokal. Logo render dibuat sebagai runtime copy dari brand asset di ASAR ke folder userData saat aplikasi berjalan.
+
+## Release Notes
+
+- Versi pre-release: `v1.10.0-beta.3`
+- Fixed: AI selection no longer stops at one clip, long camera shots are split into short director decisions, and long subtitles are no longer capped at 32 events.
+- Added: evidence-gated score calibration, cached audio activity evidence, compact Moment AI grid with review drawer, and subtitle timeline validation before FFmpeg render.
+- Removed: Quick Editor offline page and its Electron file-picker IPC.
+- Tested: 51-minute highlight cache, real three-face camera analysis, 120-second subtitle coverage, local audio-first render, MP4 validation, and automated QA manifest.
 
 ## Status Real Pipeline
 
@@ -44,12 +81,29 @@ Yang sudah nyata:
 - Output utama user hanya MP4
 - File internal seperti SRT/JSON/session disimpan di `.cliper-internal`
 
-Dependency saat ini:
+## Arsitektur Local Opus-Like
 
-- Python: tersedia
-- `yt-dlp`: tersedia
-- OpenAI SDK: tersedia
-- FFmpeg/FFprobe: harus dipasang/ditambahkan ke PATH agar render MP4 berjalan
+Dokumen ekosistem local-first ada di:
+
+```text
+docs/OPUS_LIKE_LOCAL_ECOSYSTEM.md
+```
+
+Fokus utama V1.10.0 beta:
+
+- Moment AI anti-overlap
+- Story complete scoring
+- Local-first render
+- AI provider optional
+- Conversation-aware face crop untuk 2-4 orang
+- GPU auto detect dengan CPU fallback
+
+Dependency runtime pengguna:
+
+- Python x64 dan paket pada `requirements-runtime.txt`
+- FFmpeg/FFprobe full build di PATH
+- Node.js 22+ direkomendasikan untuk challenge YouTube
+- OpenAI SDK ikut dipasang untuk kompatibilitas, sedangkan Custom AI request utama menggunakan adapter HTTP internal
 
 ## Cara Pakai
 

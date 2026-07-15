@@ -9,6 +9,32 @@ from datetime import datetime
 from pathlib import Path
 
 
+def json_safe(value):
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [json_safe(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if hasattr(value, "item"):
+        try:
+            return json_safe(value.item())
+        except Exception:
+            pass
+    if hasattr(value, "tolist"):
+        try:
+            return json_safe(value.tolist())
+        except Exception:
+            pass
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)
+
+
+def json_dumps(value, **kwargs):
+    return json.dumps(json_safe(value), ensure_ascii=False, **kwargs)
+
+
 class RenderError(Exception):
     def __init__(self, code, message, details=None):
         super().__init__(message)
@@ -121,7 +147,7 @@ class FFmpegDetector:
 
 
 class GPUDetector:
-    PREFERRED = ["h264_amf", "h264_nvenc", "h264_qsv"]
+    PREFERRED = ["h264_nvenc", "h264_amf", "h264_qsv"]
 
     @staticmethod
     def recommend(encoders):
@@ -161,14 +187,22 @@ class FFmpegCommandBuilder:
             self.audio_filters.extend(filters)
         return self
 
-    def set_encoder(self, encoder, preset=None, crf=None):
+    def set_encoder(self, encoder, preset=None, crf=None, threads=None, video_bitrate=None, maxrate=None, bufsize=None):
         self.cmd.extend(["-c:v", encoder])
         if encoder == "libx264" and preset:
             self.cmd.extend(["-preset", preset])
         if encoder == "libx264" and crf is not None:
             self.cmd.extend(["-crf", str(crf)])
+        if encoder == "libx264" and threads:
+            self.cmd.extend(["-threads", str(threads)])
         if encoder != "libx264":
-            self.cmd.extend(["-quality", "balanced", "-b:v", "8M"])
+            self.cmd.extend(["-quality", "balanced", "-b:v", str(video_bitrate or "8M")])
+        elif video_bitrate:
+            self.cmd.extend(["-b:v", str(video_bitrate)])
+        if maxrate:
+            self.cmd.extend(["-maxrate", str(maxrate)])
+        if bufsize:
+            self.cmd.extend(["-bufsize", str(bufsize)])
         return self
 
     def set_audio(self, codec="aac", bitrate="160k"):
@@ -232,15 +266,24 @@ class RenderEngine:
             return GPUDetector.recommend(self.probe_result.get("encoders", []))
         return "libx264"
 
-    def builder(self, source, start, duration, output_path, encoder, fps_args=None, filters=None, audio_filters=None):
+    def builder(self, source, start, duration, output_path, encoder, fps_args=None, filters=None, audio_filters=None, crf=None, threads=None, video_bitrate=None, maxrate=None, bufsize=None, audio_bitrate=None):
         builder = FFmpegCommandBuilder(self.ffmpeg_path)
         builder.add_input(source)
         builder.cut(start, duration)
         builder.add_video_filters(filters or [])
         builder.add_audio_filters(audio_filters or [])
-        builder.set_encoder(encoder, preset="veryfast", crf=None)
-        builder.set_audio()
+        builder.set_encoder(encoder, preset="veryfast", crf=crf, threads=threads, video_bitrate=video_bitrate, maxrate=maxrate, bufsize=bufsize)
+        builder.set_audio(bitrate=audio_bitrate or "160k")
         builder.add_fps(fps_args or [])
+        builder.add_extra([
+            "-map", "0:v:0", "-map", "0:a?",
+            "-pix_fmt", "yuv420p",
+            "-colorspace", "bt709",
+            "-color_primaries", "bt709",
+            "-color_trc", "bt709",
+            "-color_range", "tv",
+            "-movflags", "+faststart",
+        ])
         builder.set_output(output_path)
         return builder
 
@@ -251,52 +294,112 @@ class RenderEngine:
         return folder
 
     def write_log(self, session_dir, manifest, metadata=None, errors=None, warnings=None):
-        log_path = Path(session_dir) / "render.log"
+        log_path = Path(session_dir) / "render-log.json"
+        requested = int(manifest.get("requested_clip_count") or 0)
+        valid = int(manifest.get("valid_mp4_count") or 0)
+        failed = int(manifest.get("failed_count") or max(0, requested - valid))
+        warnings = warnings or manifest.get("warnings") or []
+        errors = errors or []
+        status = manifest.get("status") or ("Completed" if failed == 0 and not errors else "Completed with Warning")
+        standard_outputs = []
+        for item in manifest.get("outputs") or []:
+            probe = item.get("ffprobe") or {}
+            standard_outputs.append(
+                {
+                    "title": item.get("title") or "",
+                    "mp4": item.get("video") or item.get("mp4") or "",
+                    "ass": item.get("subtitle") or item.get("ass") or "",
+                    "srt": item.get("subtitleSrt") or item.get("srt") or "",
+                    "json": item.get("metadata") or item.get("json") or "",
+                    "xml": item.get("xml") or "",
+                    "thumbnail": item.get("thumbnail") or "",
+                    "ffprobe": {
+                        "has_video": bool(probe.get("hasVideo", item.get("validated"))),
+                        "has_audio": bool(probe.get("hasAudio", item.get("hasAudio"))),
+                        "duration": float(probe.get("duration") or item.get("duration") or 0),
+                    },
+                }
+            )
         info = {
+            "session_id": Path(session_dir).name,
+            "requested_count": requested,
+            "candidate_count": int(manifest.get("candidate_count") or requested),
+            "rendered_count": int(manifest.get("rendered_count") or len(manifest.get("outputs") or [])),
+            "valid_mp4_count": valid,
+            "failed_count": failed,
+            "status": status,
+            "ai": {
+                "enabled": bool(manifest.get("ai_enabled")),
+                "provider": manifest.get("ai_provider") or "",
+                "model": (manifest.get("settings") or {}).get("model") or manifest.get("ai_model") or "",
+                "fallback_used": bool(manifest.get("fallback_used")),
+                "warnings": [item for item in warnings if "ai" in str(item).lower() or "fallback" in str(item).lower()],
+            },
+            "outputs": standard_outputs,
+            "warnings": warnings,
+            "errors": errors,
             "created_at": datetime.now().isoformat(),
             "manifest": manifest,
             "metadata": metadata or {},
-            "errors": errors or [],
-            "warnings": warnings or [],
         }
-        Path(log_path).write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
+        Path(log_path).write_text(json_dumps(info, indent=2), encoding="utf-8")
+        legacy_path = Path(session_dir) / "render.log"
+        try:
+            legacy_path.write_text(json_dumps(info, indent=2), encoding="utf-8")
+        except Exception:
+            pass
         return str(log_path)
 
-    def run_process(self, cmd, stage, clip_index, total_clips, duration, progress_start, progress_end):
+    def run_process(self, cmd, stage, clip_index, total_clips, duration, progress_start, progress_end, log_path=None):
         self.log(message="Running command: " + " ".join(cmd))
         started = time.time()
+        log_file = None
+        if log_path:
+            log_path = Path(log_path)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_file = log_path.open("a", encoding="utf-8", errors="replace")
+            log_file.write(f"\n[{datetime.now().isoformat()}] STAGE={stage}\n")
+            log_file.write("COMMAND=" + " ".join(cmd) + "\n")
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
         last_emit = 0
-        for raw in process.stdout:
-            line = raw.strip()
-            if not line:
-                continue
-            if "time=" in line:
-                current_match = re.search(r"time=(\d+:\d+:\d+(?:\.\d+)?)", line)
-                fps_match = re.search(r"fps=\s*([0-9.]+)", line)
-                speed_match = re.search(r"speed=\s*([0-9.]+x)", line)
-                current = self._parse_time(current_match.group(1)) if current_match else 0.0
-                ratio = max(0.0, min(1.0, current / max(float(duration), 1.0)))
-                now = time.time()
-                if now - last_emit > 0.8 or ratio >= 0.99:
-                    elapsed = now - started
-                    self.progress(
-                        stage=stage,
-                        progress=round(progress_start + (progress_end - progress_start) * ratio, 2),
-                        clipIndex=clip_index,
-                        totalClips=total_clips,
-                        elapsed=round(elapsed, 1),
-                        eta=round((elapsed / ratio - elapsed), 1) if ratio > 0.03 else None,
-                        fps=fps_match.group(1) if fps_match else None,
-                        speed=speed_match.group(1) if speed_match else None,
-                        message=f"Clip {clip_index}/{total_clips} {stage}",
-                    )
-                    last_emit = now
-            if "error" in line.lower():
-                self.log(stage=stage, message=line)
-        code = process.wait()
-        if code != 0:
-            raise RenderError("RENDER008", f"FFmpeg command gagal dengan kode {code}: {' '.join(cmd[:3])}")
+        try:
+            for raw in process.stdout:
+                line = raw.strip()
+                if log_file and line:
+                    log_file.write(line + "\n")
+                if not line:
+                    continue
+                if "time=" in line:
+                    current_match = re.search(r"time=(\d+:\d+:\d+(?:\.\d+)?)", line)
+                    fps_match = re.search(r"fps=\s*([0-9.]+)", line)
+                    speed_match = re.search(r"speed=\s*([0-9.]+x)", line)
+                    current = self._parse_time(current_match.group(1)) if current_match else 0.0
+                    ratio = max(0.0, min(1.0, current / max(float(duration), 1.0)))
+                    now = time.time()
+                    if now - last_emit > 0.8 or ratio >= 0.99:
+                        elapsed = now - started
+                        self.progress(
+                            stage=stage,
+                            progress=round(progress_start + (progress_end - progress_start) * ratio, 2),
+                            clipIndex=clip_index,
+                            totalClips=total_clips,
+                            elapsed=round(elapsed, 1),
+                            eta=round((elapsed / ratio - elapsed), 1) if ratio > 0.03 else None,
+                            fps=fps_match.group(1) if fps_match else None,
+                            speed=speed_match.group(1) if speed_match else None,
+                            message=f"Clip {clip_index}/{total_clips} {stage}",
+                        )
+                        last_emit = now
+                if "error" in line.lower():
+                    self.log(stage=stage, message=line)
+            code = process.wait()
+            if log_file:
+                log_file.write(f"EXIT_CODE={code}\n")
+            if code != 0:
+                raise RenderError("RENDER008", f"FFmpeg command gagal dengan kode {code}: {' '.join(cmd[:3])}")
+        finally:
+            if log_file:
+                log_file.close()
 
     @staticmethod
     def _parse_time(value):
@@ -308,4 +411,4 @@ class RenderEngine:
 
 def default_output_folder():
     home = Path.home()
-    return str(home / "Videos" / "Cliper YouTube AI Studio")
+    return str(home / "Videos" / "Cliper Studio Plus")

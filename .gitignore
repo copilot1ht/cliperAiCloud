@@ -1,13 +1,22 @@
 node_modules/
 
-dist/*
-!dist/Cliper YouTube AI Studio.exe
+dist/
+dist-beta3/
+.cache/
+
+# Local render fixtures and generated media are intentionally not versioned.
+qa-render-output*/
+qa-render-payload*.json
+
+# Cliper AI Cloud is maintained as its own nested Git repository.
+WEB PRODUCTION SAAS/
 
 *.log
 *.tmp
 *.pyc
 __pycache__/
 worker/__pycache__/
+worker/*_backup.py
 
 .env
 .env.local

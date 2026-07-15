@@ -10,63 +10,119 @@ const state = {
   dependencies: null,
   activeSettingsTab: "api",
   renderStartedAt: null,
+  jobMode: "idle",
+  renderStepStatus: {},
+  renderErrors: [],
   lastAnalysis: null,
+  lastTranscript: [],
+  activeMomentId: null,
+  videoDuration: 0,
   previewImageUrl: "",
+  momentSearch: "",
+  momentQualityFilter: "all",
+  momentSort: "score",
   apiLastTestedAt: "",
   apiLastLatencyMs: 0,
   apiLastResponse: "",
+  aiUsageToday: { date: "", inputTokens: 0, outputTokens: 0, estimatedCostRp: 0 },
   logLines: [
     "[ready] Menunggu link YouTube"
   ]
 };
 
+const APP_VERSION = "1.10.0-beta.3";
+
 let momentBank = [];
 
-const steps = [
-  "Validasi YouTube URL dan cookies",
-  "Ambil subtitle atau transkrip fallback",
-  "Skor hook, retention, dan clarity",
-  "Download segmen terpilih",
-  "Auto crop 9:16 dan face tracking",
-  "Burn-in caption, hook, watermark",
-  "Tulis metadata dan export MP4"
+const analysisSteps = [
+  { id: "subtitle", label: "Download subtitle" },
+  { id: "ai", label: "Find highlights with AI" }
+];
+
+const renderStepsConfig = [
+  { id: "download", label: "Download video sections" },
+  { id: "portrait", label: "Portrait conversion (9:16)" },
+  { id: "hook", label: "Hook generation" },
+  { id: "caption", label: "Caption generation" },
+  { id: "watermark", label: "Watermark overlay" }
 ];
 
 let sessions = [];
 
 const providerTasks = [
-  ["Highlight finder", "Hook, retention, virality"],
-  ["Caption maker", "Subtitle cleanup"],
-  ["Hook maker", "Opening text + TTS script"],
-  ["Title maker", "Title, hashtag, description"]
+  ["aiHighlightToggle", "Highlight finder", "Hook, retention, virality"],
+  ["aiCaptionToggle", "Caption cleaner", "Subtitle cleanup"],
+  ["aiHookToggle", "Hook maker", "Opening text"],
+  ["aiTitleToggle", "Title maker", "Title, hashtag, description"]
 ];
 
 const aiProviderDefaults = {
-  ytclip: { label: "YTClip AI", baseUrl: "https://ai-api.ytclip.org/v1", model: "ytclip-highlight-v1", requiresKey: true },
-  openai: { label: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-4.1-mini", requiresKey: true },
-  gemini: { label: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-2.5-flash", requiresKey: true },
-  groq: { label: "Groq", baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", requiresKey: true },
+  cloud: { label: "Cliper Cloud Gateway", baseUrl: "https://api.cliper.cloud/v1", model: "auto", requiresKey: true },
   custom: { label: "Custom / OpenAI Compatible", baseUrl: "", model: "", requiresKey: true },
   local: { label: "Local Heuristic", baseUrl: "", model: "local-heuristic", requiresKey: false }
 };
 
-const enhancementControls = [
-  ["smartCropToggle", "Smart crop"],
-  ["dynamicZoomToggle", "Dynamic zoom"],
-  ["pipelineFaceTrack", "Face tracking"],
-  ["pipelineCaption", "Auto caption"],
-  ["pipelineBurnSubtitle", "Burn subtitle"],
-  ["pipelineHook", "Hook intro"],
-  ["autoCut", "Auto cut"],
-  ["metadataToggle", "Judul & hashtag"],
-  ["ttsHookToggle", "Hook TTS"],
-  ["audioEnhanceToggle", "Audio enhancement"],
-  ["colorEnhanceToggle", "Color enhancement"],
-  ["creditTextToggle", "Credit text"],
-  ["logoOverlayToggle", "Logo overlay"],
-  ["pipelineWatermark", "Watermark"],
-  ["thumbnailPreviewToggle", "Thumbnail preview"]
-];
+const PRODUCTION_RENDER_PRESET = {
+  smartCrop: true,
+  dynamicZoom: true,
+  faceTrack: true,
+  addCaptions: true,
+  burnSubtitle: true,
+  autoCut: true,
+  addHook: true,
+  addTtsHook: false,
+  audioEnhance: true,
+  autoVideoEnhancement: true,
+  logoOverlay: false,
+  creditText: false,
+  exportThumbnailPreview: false,
+  writeMetadata: false,
+  metadataToggle: false
+};
+
+const OUTPUT_QUALITY_PRESETS = {
+  balanced: {
+    label: "Balanced 1080p",
+    formatProfile: "9:16 YouTube Shorts",
+    resolutionProfile: "1080p",
+    fpsProfile: "Same as source",
+    crfProfile: "23",
+    videoBitrate: "",
+    videoMaxrate: "",
+    videoBufsize: "",
+    audioBitrate: "160k"
+  },
+  capcut_opus_2k: {
+    label: "CapCut / Opus 2K 60fps",
+    formatProfile: "9:16 YouTube Shorts",
+    resolutionProfile: "2K",
+    fpsProfile: "60 FPS",
+    crfProfile: "18",
+    videoBitrate: "32M",
+    videoMaxrate: "35M",
+    videoBufsize: "64M",
+    audioBitrate: "192k"
+  },
+  light_fast: {
+    label: "Fast small file",
+    formatProfile: "9:16 YouTube Shorts",
+    resolutionProfile: "1080p",
+    fpsProfile: "30 FPS",
+    crfProfile: "24",
+    videoBitrate: "10M",
+    videoMaxrate: "14M",
+    videoBufsize: "20M",
+    audioBitrate: "160k"
+  }
+};
+
+function getProductionRenderPreset() {
+  return { ...PRODUCTION_RENDER_PRESET };
+}
+
+function getOutputQualityPreset(profile) {
+  return OUTPUT_QUALITY_PRESETS[profile] || OUTPUT_QUALITY_PRESETS.balanced;
+}
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
@@ -86,52 +142,404 @@ function setView(view) {
 }
 
 function selectedMoments() {
-  return momentBank.filter((item) => state.selectedMoments.has(item.id));
+  return momentBank.filter((item) => !item.rejected && item.renderEligible !== false && state.selectedMoments.has(item.id));
+}
+
+function parseTimeInput(value, fallback = 0) {
+  const raw = String(value ?? "").trim().replace(",", ".");
+  if (!raw) return fallback;
+  const parts = raw.split(":").map((part) => Number(part));
+  if (parts.some((part) => !Number.isFinite(part))) {
+    const numeric = Number(raw);
+    return Number.isFinite(numeric) ? Math.max(0, numeric) : fallback;
+  }
+  if (parts.length === 3) return Math.max(0, parts[0] * 3600 + parts[1] * 60 + parts[2]);
+  if (parts.length === 2) return Math.max(0, parts[0] * 60 + parts[1]);
+  return Math.max(0, parts[0]);
+}
+
+function activeMoment() {
+  return momentBank.find((item) => item.id === state.activeMomentId && !item.rejected) || momentBank.find((item) => !item.rejected) || null;
+}
+
+function videoDurationLimit() {
+  return Math.max(1, Number(state.lastAnalysis?.video?.duration || $("#momentPreviewVideo")?.duration || 0) || 1);
+}
+
+function normalizeMomentTiming(moment) {
+  const limit = videoDurationLimit();
+  moment.start = Math.max(0, Math.min(Number(moment.start || 0), Math.max(0, limit - 1)));
+  moment.end = Math.max(moment.start + 1, Math.min(Number(moment.end || moment.start + 1), limit));
+  moment.durationSeconds = Math.max(1, Math.round(moment.end - moment.start));
+  moment.duration = `${moment.durationSeconds}s`;
+  moment.time = `${formatDuration(moment.start)} - ${formatDuration(moment.end)}`;
+  moment.edited = Boolean(moment.edited);
+  return moment;
+}
+
+function setActiveMoment(id) {
+  const moment = momentBank.find((item) => item.id === Number(id) && !item.rejected);
+  if (!moment) return;
+  state.activeMomentId = moment.id;
+  renderMomentReview();
+  renderMoments();
+}
+
+function transcriptAt(second) {
+  const time = Number(second || 0);
+  const lead = 0.12;
+  const transcript = state.lastTranscript || [];
+  const exact = transcript.find((segment) => {
+    const start = Number(segment.start || 0);
+    const end = Number(segment.end || start);
+    return time >= start - lead && time <= end + lead;
+  });
+  if (exact) return exact;
+  return transcript.find((segment) => {
+    const start = Number(segment.start || 0);
+    const end = Number(segment.end || start);
+    return time >= start - 0.25 && time <= end + 0.25;
+  }) || null;
+}
+
+function normalizeTranscriptSegments(segments) {
+  if (!Array.isArray(segments)) return [];
+  const numericStarts = segments.map((s) => Number(s.start || 0));
+  const maxStart = Math.max(...numericStarts, 0);
+  const divisor = maxStart > 10000 ? 1000 : 1; // heuristic: milliseconds -> divide
+  return segments
+    .map((s) => ({
+      ...s,
+      start: Number(s.start || 0) / divisor,
+      end: Number(s.end || (s.start || 0)) / divisor,
+      text: s.text || s.content || ""
+    }))
+    .sort((a, b) => Number(a.start || 0) - Number(b.start || 0));
+}
+
+let _subtitleRaf = null;
+function cancelSubtitleSync() {
+  if (_subtitleRaf) cancelAnimationFrame(_subtitleRaf);
+  _subtitleRaf = null;
+}
+
+function startSubtitleSync() {
+  cancelSubtitleSync();
+  const video = $("#momentPreviewVideo");
+  if (!video) return;
+  const loop = () => {
+    const t = Number(video.currentTime || 0);
+    const segment = transcriptAt(t);
+    const subtitleNode = $("#reviewSubtitlePreview");
+    if (subtitleNode) {
+      const text = segment?.text || activeMoment()?.transcript || "Preview subtitle";
+      subtitleNode.textContent = String(text).trim();
+    }
+    _subtitleRaf = requestAnimationFrame(loop);
+  };
+  loop();
+}
+
+function transcriptNear(second, direction = 1, windowSeconds = 20) {
+  const time = Number(second || 0);
+  const low = direction < 0 ? time - windowSeconds : time;
+  const high = direction < 0 ? time : time + windowSeconds;
+  return (state.lastTranscript || []).filter((segment) => {
+    const start = Number(segment.start || 0);
+    const end = Number(segment.end || start);
+    return end >= low && start <= high;
+  });
+}
+
+function updateReviewSubtitle() {
+  const video = $("#momentPreviewVideo");
+  const subtitle = $("#reviewSubtitlePreview");
+  if (!video || !subtitle) return;
+  const t = Number(video.currentTime || 0);
+  const segment = transcriptAt(t);
+  const text = segment?.text || activeMoment()?.transcript || "Preview subtitle";
+  const words = cleanPreviewWords(text).slice(0, 12);
+  let activeIndex = 0;
+  if (segment && words.length > 1) {
+    const start = Number(segment.start || 0);
+    const end = Math.max(Number(segment.end || start), start + 0.25);
+    const progress = Math.min(1, Math.max(0, (t - start) / (end - start)));
+    activeIndex = Math.min(words.length - 1, Math.floor(progress * words.length));
+  }
+  subtitle.textContent = "";
+  const fragment = document.createDocumentFragment();
+  words.forEach((word, index) => {
+    const node = document.createElement("span");
+    node.textContent = word + (index < words.length - 1 ? " " : "");
+    if (index === activeIndex) node.classList.add("active-word");
+    fragment.appendChild(node);
+  });
+  subtitle.appendChild(fragment);
+}
+
+function cleanPreviewWords(text) {
+  return String(text || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean);
+}
+
+function reviewWarningFor(moment) {
+  const startSegment = transcriptAt(moment.start);
+  const endSegment = transcriptAt(Math.max(moment.start, moment.end - 0.15));
+  const warnings = [];
+  if (startSegment && Math.abs(Number(startSegment.start || 0) - moment.start) > 1.8) {
+    warnings.push("Pembukaan kemungkinan terpotong.");
+  }
+  if (endSegment && Math.abs(Number(endSegment.end || 0) - moment.end) > 1.8) {
+    warnings.push("Cerita kemungkinan belum selesai.");
+  }
+  return warnings;
+}
+
+function syncReviewFields(moment) {
+  const limit = videoDurationLimit();
+  setValue("#reviewStartInput", formatDuration(moment.start));
+  setValue("#reviewEndInput", formatDuration(moment.end));
+  setValue("#reviewStartRange", Math.round(moment.start * 10));
+  setValue("#reviewEndRange", Math.round(moment.end * 10));
+  const startRange = $("#reviewStartRange");
+  const endRange = $("#reviewEndRange");
+  if (startRange) startRange.max = String(Math.round(limit * 10));
+  if (endRange) endRange.max = String(Math.round(limit * 10));
+  setText("#reviewRangeStartLabel", formatDuration(moment.start));
+  setText("#reviewRangeEndLabel", formatDuration(moment.end));
+  setText("#reviewDuration", `Duration ${formatDuration(moment.end - moment.start)} (${Math.round(moment.end - moment.start)}s)`);
+  const warningNode = $("#reviewWarning");
+  const warnings = reviewWarningFor(moment);
+  if (warningNode) {
+    warningNode.textContent = warnings.length ? warnings.join(" ") : "✓ Start dan ending terlihat aman.";
+    warningNode.classList.toggle("warning", Boolean(warnings.length));
+    warningNode.classList.toggle("ok", !warnings.length);
+  }
+}
+
+function updateMomentTiming(id, start, end, options = {}) {
+  const moment = momentBank.find((item) => item.id === Number(id));
+  if (!moment) return;
+  const limit = videoDurationLimit();
+  const minDuration = 3;
+  let nextStart = Math.max(0, Math.min(Number(start), limit - minDuration));
+  let nextEnd = Math.max(nextStart + minDuration, Math.min(Number(end), limit));
+  if (nextEnd - nextStart < minDuration) nextEnd = Math.min(limit, nextStart + minDuration);
+  moment.start = Number(nextStart.toFixed(2));
+  moment.end = Number(nextEnd.toFixed(2));
+  moment.edited = true;
+  moment.approved = state.selectedMoments.has(moment.id);
+  normalizeMomentTiming(moment);
+  if (options.seek !== false) {
+    const video = $("#momentPreviewVideo");
+    if (video && state.activeMomentId === moment.id) video.currentTime = moment.start;
+  }
+  syncReviewFields(moment);
+  updateCounters();
+}
+
+function renderMomentReview() {
+  const moment = activeMoment();
+  const panel = $("#momentReviewPanel");
+  if (!panel) return;
+  if (!moment) {
+    setText("#reviewClipTitle", "Belum ada moment");
+    setText("#reviewScore", "Score -");
+    setText("#reviewDuration", "Duration -");
+    return;
+  }
+  normalizeMomentTiming(moment);
+  state.activeMomentId = moment.id;
+  const video = $("#momentPreviewVideo");
+  const sourcePath = moment.sourcePath || state.lastAnalysis?.video?.source_path || "";
+  if (video && sourcePath && video.dataset.sourcePath !== sourcePath) {
+    video.src = toFilePreviewSrc(sourcePath);
+    video.dataset.sourcePath = sourcePath;
+  }
+  if (video && sourcePath && Math.abs((video.currentTime || 0) - moment.start) > 1 && video.paused) {
+    video.currentTime = moment.start;
+  }
+  setText("#reviewClipTitle", `Clip ${moment.id}: ${moment.title}`);
+  setText("#reviewScore", `Score ${moment.score}/100`);
+  setText("#reviewReason", moment.reason || "Kandidat dipilih berdasarkan hook, story, payoff, dan retention evidence.");
+  setText("#reviewTranscript", moment.transcript || "Transcript tidak tersedia.");
+  const evidence = $("#reviewEvidence");
+  if (evidence) {
+    const metrics = moment.metrics || {};
+    const items = [
+      ["Hook", metrics.hook],
+      ["Story", metrics.story_complete || metrics.flow],
+      ["Payoff", metrics.payoff],
+      ["Retention", metrics.retention_predictor],
+      ["Emotion", metrics.emotion],
+      ["Conflict", metrics.conflict],
+    ];
+    evidence.innerHTML = items.map(([label, value]) => `<span><small>${label}</small><strong>${Number(value || 0) || "-"}</strong></span>`).join("");
+  }
+  syncReviewFields(moment);
+  updateReviewSubtitle();
+  // ensure transcript timing normalized for sync
+  if (Array.isArray(state.lastTranscript) && state.lastTranscript.length) {
+    state.lastTranscript = normalizeTranscriptSegments(state.lastTranscript);
+  }
+  startSubtitleSync();
+}
+
+function suggestBetterBoundary(type) {
+  const moment = activeMoment();
+  if (!moment) return;
+  if (type === "start") {
+    const nearby = transcriptNear(moment.start, -1, 20);
+    const first = nearby.find((segment) => Number(segment.end || 0) > moment.start - 18) || nearby[0];
+    if (first) {
+      updateMomentTiming(moment.id, Math.max(0, Number(first.start || moment.start)), moment.end);
+      toast("Start disesuaikan ke awal kalimat terdekat");
+    }
+    return;
+  }
+  const nearby = transcriptNear(moment.end, 1, 20);
+  const last = nearby.find((segment) => /[.!?…]$/.test(String(segment.text || "").trim())) || nearby[nearby.length - 1];
+  if (last) {
+    updateMomentTiming(moment.id, moment.start, Math.min(videoDurationLimit(), Number(last.end || moment.end)));
+    toast("Ending disesuaikan ke akhir kalimat terdekat");
+  }
+}
+
+function regenerateActiveMoment() {
+  const moment = activeMoment();
+  if (!moment) return;
+  const existing = momentBank.filter((item) => !item.rejected);
+  const duration = Math.max(20, Math.min(95, Number(moment.end - moment.start || 45)));
+  const offset = duration + 12;
+  const limit = videoDurationLimit();
+  let start = Math.min(Math.max(0, moment.end + 8), Math.max(0, limit - duration));
+  if (existing.some((item) => Math.abs(Number(item.start || 0) - start) < 6)) {
+    start = Math.max(0, moment.start - offset);
+  }
+  const end = Math.min(limit, start + duration);
+  const text = transcriptNear(start, 1, duration).map((segment) => segment.text).join(" ").trim() || moment.transcript;
+  const replacement = normalizeMomentForUi({
+    ...moment,
+    id: Date.now(),
+    start,
+    end,
+    transcript: text,
+    title: text ? text.split(/\s+/).slice(0, 10).join(" ") : `${moment.title} alternatif`,
+    titleSuggestion: text ? text.split(/\s+/).slice(0, 10).join(" ") : `${moment.title} alternatif`,
+    ai_selected: false,
+    segment_type: "Alternative",
+    reason: "Alternatif lokal dari area dekat moment sebelumnya.",
+    score: Math.max(60, Number(moment.score || 70) - 4),
+    edited: true
+  }, momentBank.length, state.lastAnalysis?.video || {});
+  moment.rejected = true;
+  momentBank.push(replacement);
+  state.selectedMoments.delete(moment.id);
+  state.selectedMoments.add(replacement.id);
+  state.activeMomentId = replacement.id;
+  renderMomentReview();
+  renderMoments();
+  toast("Alternatif moment dibuat");
 }
 
 function updateCounters() {
   const count = selectedMoments().length;
   $("#clipCounter").textContent = `${count} clip dipilih`;
   $("#previewDuration").textContent = state.lastAnalysis
-    ? `${$("#clipCount").value || 0} clip - ${$("#durationTarget").value}`
+    ? `${count} clip auto selected`
     : "Belum dianalisa";
   $("#captionMetric").textContent = state.lastAnalysis ? ($("#captionStyle") ? $("#captionStyle").value : "Caption aktif") : "Belum diproses";
+  updateProcessButtons();
+}
+
+function aiFeatureConfig() {
+  return {
+    highlight: Boolean($("#aiHighlightToggle")?.checked),
+    hook: Boolean($("#aiHookToggle")?.checked),
+    caption: Boolean($("#aiCaptionToggle")?.checked),
+    title: Boolean($("#aiTitleToggle")?.checked),
+    tts: Boolean($("#aiTtsToggle")?.checked)
+  };
+}
+
+function momentQuality(item) {
+  if (item.score >= 85) return { key: "excellent", label: "Excellent" };
+  if (item.score >= 70) return { key: "good", label: "Good" };
+  return { key: "review", label: "Review" };
+}
+
+function filteredMoments() {
+  const query = String(state.momentSearch || "").trim().toLowerCase();
+  const qualityFilter = state.momentQualityFilter || "all";
+  const items = momentBank.filter((item) => {
+    if (item.rejected) return false;
+    if (qualityFilter === "selected" && !state.selectedMoments.has(item.id)) return false;
+    if (!["all", "selected"].includes(qualityFilter) && momentQuality(item).key !== qualityFilter) return false;
+    if (!query) return true;
+    const haystack = `${item.title || ""} ${item.hook || ""} ${item.transcript || ""} ${item.topic || ""} ${item.category || ""}`.toLowerCase();
+    return haystack.includes(query);
+  });
+  const metric = (item, key, fallback = 0) => Number(item.metrics?.[key] ?? fallback);
+  return items.sort((left, right) => {
+    if (state.momentSort === "hook") return metric(right, "hook") - metric(left, "hook");
+    if (state.momentSort === "story") return metric(right, "story_complete", metric(right, "flow")) - metric(left, "story_complete", metric(left, "flow"));
+    if (state.momentSort === "shortest") return left.durationSeconds - right.durationSeconds;
+    if (state.momentSort === "timeline") return left.start - right.start;
+    return right.score - left.score;
+  });
 }
 
 function renderMoments() {
   const grid = $("#momentGrid");
-  if (momentBank.length === 0) {
+  const visibleMoments = filteredMoments();
+  setText("#momentResultCount", `${visibleMoments.length} kandidat`);
+  if (visibleMoments.length === 0) {
+    const analysisFinished = Boolean(state.lastAnalysis);
     grid.innerHTML = `
       <div class="empty-state wide">
-        <strong>Masukkan link YouTube untuk menganalisa moment terbaik.</strong>
-        <span>Moment AI hanya muncul dari metadata, subtitle, chapter, atau scoring real setelah proses analyze selesai.</span>
+        <strong>${analysisFinished ? "Belum ada moment yang lolos validasi." : "Masukkan link YouTube untuk menganalisa moment terbaik."}</strong>
+        <span>${analysisFinished ? "Kandidat tidak disembunyikan lagi. Jalankan analisa ulang untuk memuat kandidat Optional dengan score asli." : "Moment AI muncul setelah metadata, transcript, story, dan scoring selesai dianalisis."}</span>
       </div>
     `;
     updateCounters();
     return;
   }
-  grid.innerHTML = momentBank
+  grid.innerHTML = visibleMoments
     .map((item) => {
       const checked = state.selectedMoments.has(item.id);
+      const active = state.activeMomentId === item.id;
+      const disabled = item.renderEligible === false;
+      const quality = momentQuality(item);
+      const thumbnail = item.previewThumbnail ? toFilePreviewSrc(item.previewThumbnail) : "";
       return `
-        <article class="moment-card ${checked ? "selected" : ""}">
-          <div class="phone-thumb" ${item.previewThumbnail ? `style="background-image: linear-gradient(180deg, rgba(23,32,38,.1), rgba(23,32,38,.86)), url('${item.previewThumbnail}')"` : ""}>
-            <span>${item.type}</span>
-            <strong>${item.score}</strong>
-            <em>${item.duration}</em>
+        <article class="moment-card quality-${quality.key} ${checked ? "selected" : ""} ${active ? "active-review" : ""} ${disabled ? "low-quality" : ""}" data-moment-row="${item.id}" tabindex="0">
+          <div class="moment-thumbnail">
+            ${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : ""}
+            <span class="moment-source">${escapeHtml(item.type)}</span>
+            <span class="moment-score"><strong>${item.score}</strong><em>${quality.label}</em></span>
+            <span class="moment-time">${escapeHtml(item.time)}</span>
+            <label class="moment-select" title="Pilih untuk render">
+              <input type="checkbox" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} data-toggle-moment="${item.id}" />
+              <span>✓</span>
+            </label>
           </div>
           <div class="moment-body">
-            <div class="card-meta">
-              <span>${item.time}</span>
-              <span class="score">${item.score}/100</span>
+            <h3>${escapeHtml(item.title)}</h3>
+            <p class="moment-hook">${escapeHtml(item.hook || item.titleSuggestion || "")}</p>
+            ${item.metrics ? `
+              <div class="moment-metrics">
+                <span>Hook ${item.metrics.hook || "-"}</span>
+                <span>Story ${item.metrics.story_complete || item.metrics.flow || "-"}</span>
+                <span>Viral ${item.metrics.virality || item.metrics.trend || "-"}</span>
+              </div>
+            ` : ""}
+            <div class="moment-card-footer">
+              <span>${escapeHtml(item.category || "Insight")}</span>
+              <span>${item.duration}</span>
             </div>
-            <h3>${item.title}</h3>
-            <p>${item.transcript}</p>
-            <div class="suggestion">${item.titleSuggestion}</div>
-            <label class="toggle-row">
-              <input type="checkbox" ${checked ? "checked" : ""} data-toggle-moment="${item.id}" />
-              Pilih untuk render
-            </label>
           </div>
         </article>
       `;
@@ -140,50 +548,156 @@ function renderMoments() {
   updateCounters();
 }
 
-function collectPayload() {
+function normalizeMomentForUi(item, index, video = {}) {
+  const start = Number(item.start || 0);
+  const end = Number(item.end || 0);
+  const rawDuration = Number(item.duration || (end > start ? end - start : 0));
+  const durationSeconds = Math.max(0, Math.round(rawDuration));
+  const score = Math.max(0, Math.min(100, Math.round(Number(item.score || 0))));
+  const type = item.ai_selected ? (item.ai_source || "AI Provider") : (item.segment_type || item.type || "Local Heuristic");
+  const title = item.titleSuggestion || item.title || `Moment ${index + 1}`;
+  const metrics = item.metrics && typeof item.metrics === "object" ? item.metrics : null;
   return {
+    ...item,
+    id: item.id || index + 1,
+    start,
+    end,
+    score,
+    type,
+    title,
+    durationSeconds,
+    duration: `${durationSeconds}s`,
+    time: item.time || `${formatDuration(start)} - ${formatDuration(end)}`,
+    previewThumbnail: item.preview_thumbnail_path || video.thumbnail || "",
+    titleSuggestion: item.titleSuggestion || item.hook || title,
+    reason: item.reason || "",
+    category: item.category || item.segment_type || "Insight",
+    speaker: item.speaker || item.speaker_label || "Speaker auto",
+    sourcePath: item.source_path || item.sourcePath || video.source_path || "",
+    sourceInfo: item.source_info || item.sourceInfo || null,
+    transcriptSegments: Array.isArray(item.transcript_segments) ? item.transcript_segments : [],
+    metrics,
+    grade: item.grade || "",
+    priority: item.priority || (score >= 90 ? "A" : score >= 80 ? "B" : score >= 70 ? "C" : score >= 60 ? "LOW" : "REJECT"),
+    autoRender: item.auto_render === true && score >= 78,
+    manualReview: item.manual_review_candidate === true,
+    renderEligible: item.manual_review_candidate === true || (item.render_eligible !== false && score >= 65),
+    lowQuality: item.low_quality === true || score < 65
+  };
+}
+
+function collectPayload() {
+  const aiPayload = providerPayload();
+  const productionPreset = getProductionRenderPreset();
+  const outputQualityProfile = fieldValue("outputQualityProfile", "balanced");
+  const qualityPreset = getOutputQualityPreset(outputQualityProfile);
+  const creditTextEnabled = productionPreset.creditText;
+  const watermarkEnabled = Boolean(fieldValue("watermarkEnabled", false) && fieldValue("watermarkInOutput", false));
+  const logoPath = fieldValue("logoAssetPath", "").trim();
+  const logoOverlayEnabled = Boolean(watermarkEnabled && logoPath);
+  const sourceChannel = state.lastAnalysis?.video?.channel || "YouTube";
+  const watermarkText = $("#watermarkText")?.value?.trim() || (logoOverlayEnabled ? "Cliper Studio Plus" : "");
+  return {
+    sourceMode: "youtube",
     url: $("#youtubeUrl").value.trim(),
     clipCount: Number($("#clipCount").value || 5),
-    durationTarget: $("#durationTarget").value,
+    fullAutoMode: true,
+    autoClipCount: true,
+    autoRenderMinScore: 78,
     subtitleLang: $("#subtitleLang").value,
+    minDuration: Number(fieldValue("minDuration", 30)),
+    targetDuration: Number(fieldValue("targetDuration", 75)),
+    maxDuration: Number(fieldValue("maxDuration", 180)),
+    autoDuration: true,
+    selectionMode: fieldValue("selectionMode", "full"),
+    rangeStart: fieldValue("rangeStart", ""),
+    rangeEnd: fieldValue("rangeEnd", ""),
+    multipleRanges: fieldValue("multipleRanges", ""),
     scoreMode: $("#scoreMode").value,
     cookiesPath: state.cookiesPath,
     outputFolder: $("#outputFolder")?.value || "outputs/clips",
-    projectName: $("#projectName")?.value || "Cliper YouTube AI Studio",
+    projectName: $("#projectName")?.value || "Cliper Studio Plus",
     ffmpegPath: $("#ffmpegPath")?.value || "",
     ffprobePath: $("#ffprobePath")?.value || "",
+    outputQualityProfile,
+    renderVideoBitrate: qualityPreset.videoBitrate,
+    renderVideoMaxrate: qualityPreset.videoMaxrate,
+    renderVideoBufsize: qualityPreset.videoBufsize,
+    renderAudioBitrate: qualityPreset.audioBitrate,
     resolutionProfile: $("#resolutionProfile")?.value,
     crfProfile: $("#crfProfile")?.value,
     fpsProfile: $("#fpsProfile")?.value,
-    enableUpscale: $("#upscaleToggle")?.checked,
-    upscaleMethod: $("#upscaleMethod")?.value,
+    autoVideoEnhancement: true,
     gpuAcceleration: $("#gpuToggle")?.checked,
     activeEncoder: $("#activeEncoder")?.textContent,
-    smartCrop: $("#smartCropToggle")?.checked ?? true,
-    dynamicZoom: $("#dynamicZoomToggle")?.checked ?? false,
-    addCaptions: fieldValue("pipelineCaption", false),
-    burnSubtitle: fieldValue("pipelineBurnSubtitle", false),
-    autoCut: fieldValue("autoCut", false),
-    addHook: fieldValue("pipelineHook", false),
-    addTtsHook: $("#ttsHookToggle")?.checked ?? false,
+    productionPreset,
+    transformativeMode: false,
+    introContext: false,
+    editorialDisclaimer: true,
+    noReuploadMode: true,
+    smartCrop: true,
+    dynamicZoom: productionPreset.dynamicZoom,
+    addCaptions: productionPreset.addCaptions,
+    burnSubtitle: productionPreset.burnSubtitle,
+    autoCut: productionPreset.autoCut,
+    addHook: productionPreset.addHook,
+    addTtsHook: productionPreset.addTtsHook,
     hookDuration: $("#hookDuration")?.value,
-    faceTrack: fieldValue("pipelineFaceTrack", false),
-    audioEnhance: $("#audioEnhanceToggle")?.checked ?? false,
-    colorEnhance: $("#colorEnhanceToggle")?.checked ?? false,
-    creditText: $("#creditTextToggle")?.checked ?? false,
-    logoOverlay: $("#logoOverlayToggle")?.checked ?? false,
-    exportThumbnailPreview: $("#thumbnailPreviewToggle")?.checked ?? true,
-    addWatermark: fieldValue("pipelineWatermark", false),
-    watermarkText: $("#watermarkText")?.value,
+    contextDuration: 1.8,
+    faceTrack: productionPreset.faceTrack,
+    audioEnhance: productionPreset.audioEnhance,
+    autoVideoEnhancement: true,
+    creditText: creditTextEnabled,
+    sourceCreditText: `Source: ${sourceChannel}`,
+    logoOverlay: logoOverlayEnabled,
+    logoPath,
+    logoX: percentField("logoX", 82),
+    logoY: percentField("logoY", 8),
+    logoScale: numberField("logoScale", 18),
+    logoOpacity: numberField("logoOpacity", 90),
+    logoRotation: numberField("logoRotation", 0),
+    exportThumbnailPreview: productionPreset.exportThumbnailPreview,
+    addWatermark: watermarkEnabled,
+    watermarkText,
     watermarkOpacity: $("#watermarkOpacity")?.value,
     watermarkPosition: $("#watermarkPosition")?.value,
-    writeMetadata: fieldValue("metadataToggle", false),
-    metadataToggle: fieldValue("metadataToggle", false),
-    providerType: $("#providerType")?.value,
-    baseUrl: $("#baseUrl")?.value,
-    apiKey: $("#apiKey")?.value,
-    highlightModel: $("#highlightModel")?.value,
-    captionStyle: $("#captionStyle")?.value,
+    watermarkTextX: percentField("watermarkTextX", 78),
+    watermarkTextY: percentField("watermarkTextY", 16),
+    watermarkTextSize: numberField("watermarkTextSize", 28),
+    watermarkTextColor: fieldValue("watermarkTextColor", "#ffffff"),
+    watermarkTextStroke: fieldValue("watermarkTextStroke", "#000000"),
+    watermarkTextShadow: numberField("watermarkTextShadow", 2),
+    watermarkFontFamily: fieldValue("watermarkFontFamily", "Arial Black"),
+    watermarkFontPath: fieldValue("watermarkFontPath", ""),
+    writeMetadata: productionPreset.writeMetadata,
+    metadataToggle: productionPreset.metadataToggle,
+    providerType: aiPayload.providerType,
+    baseUrl: aiPayload.baseUrl,
+    apiKey: aiPayload.apiKey,
+    model: aiPayload.model,
+    highlightModel: aiPayload.model,
+    moduleModels: aiPayload.moduleModels,
+    maxTokensByModule: aiPayload.maxTokensByModule,
+    timeoutMsByModule: aiPayload.timeoutMsByModule,
+    aiRetryByModule: aiPayload.aiRetryByModule,
+    timeoutMs: aiPayload.timeoutMs,
+    aiFeatures: aiPayload.aiFeatures,
+    useHighlightAI: aiPayload.aiFeatures.highlight,
+    useHookAI: aiPayload.aiFeatures.hook,
+    useCaptionAI: aiPayload.aiFeatures.caption,
+    useTitleAI: aiPayload.aiFeatures.title,
+    useTtsAI: aiPayload.aiFeatures.tts,
+    captionStyle: $("#captionStyle")?.value || "TikTok style",
+    subtitlePreviewText: fieldValue("subtitlePreviewInput", "TAPI GUE HERAN"),
+    subtitleWordHighlight: fieldValue("subtitleWordHighlightToggle", true),
+    subtitleFontFamily: fieldValue("subtitleFontFamily", "Arial Black"),
+    subtitleFontPath: fieldValue("subtitleFontPath", ""),
+    subtitleFontSize: numberField("subtitleFontSize", 60),
+    subtitlePrimaryColor: fieldValue("subtitlePrimaryColor", "#ffffff"),
+    subtitleActiveColor: fieldValue("subtitleActiveColor", "#19ff47"),
+    subtitleStrokeColor: fieldValue("subtitleStrokeColor", "#000000"),
+    subtitleShadow: numberField("subtitleShadow", 4),
+    subtitleAnimation: fieldValue("subtitleAnimation", "Scale"),
     formatProfile: $("#formatProfile")?.value
   };
 }
@@ -194,24 +708,81 @@ function selectedMomentPayload() {
     title: item.title,
     start: item.start,
     end: item.end,
-    duration: Number(item.durationSeconds || String(item.duration || "").replace(/[^\d.]/g, "") || 30),
+    duration: Number(item.durationSeconds || Math.max(0, Math.round(Number(item.end || 0) - Number(item.start || 0))) || 30),
     time: item.time,
-    score: item.score,
+    score: Math.max(0, Math.min(100, Math.round(Number(item.score || 0)))),
     type: item.type,
     transcript: item.transcript,
-    titleSuggestion: item.titleSuggestion
+    titleSuggestion: item.titleSuggestion,
+    hook: item.hook,
+    reason: item.reason,
+    metrics: item.metrics,
+    grade: item.grade,
+    category: item.category,
+    speaker: item.speaker,
+    layout: item.layout,
+    source_path: item.sourcePath || "",
+    source_info: item.sourceInfo || null,
+    transcript_segments: item.transcriptSegments || [],
+    ai_selected: item.ai_selected,
+    approved: true,
+    edited: Boolean(item.edited)
   }));
 }
 
+function stepDefinitions() {
+  return state.jobMode === "analyze" ? analysisSteps : renderStepsConfig;
+}
+
+function normalizeStageId(stage = "") {
+  const value = String(stage).toLowerCase();
+  if (state.jobMode === "analyze") {
+    if (value.includes("subtitle") || value.includes("metadata")) return "subtitle";
+    if (value.includes("moment") || value.includes("ai") || value.includes("done")) return "ai";
+  }
+  if (value.includes("download") || value.includes("section") || value.includes("cache") || value.includes("metadata") || value.includes("prepare")) return "download";
+  if (value.includes("portrait") || value.includes("face") || value.includes("crop") || value.includes("encode")) return "portrait";
+  if (value.includes("hook")) return "hook";
+  if (value.includes("caption") || value.includes("subtitle")) return "caption";
+  if (value.includes("watermark") || value.includes("credit")) return "watermark";
+  return "";
+}
+
+function resetStepStatus(mode) {
+  state.jobMode = mode;
+  state.renderStepStatus = {};
+  stepDefinitions().forEach((step) => {
+    state.renderStepStatus[step.id] = "pending";
+  });
+}
+
+function setActiveStep(stage, status = "active") {
+  const id = normalizeStageId(stage);
+  if (!id) return;
+  const steps = stepDefinitions();
+  const index = steps.findIndex((step) => step.id === id);
+  steps.forEach((step, stepIndex) => {
+    if (stepIndex < index && state.renderStepStatus[step.id] !== "error") {
+      state.renderStepStatus[step.id] = "done";
+    }
+  });
+  state.renderStepStatus[id] = status;
+}
+
 function renderSteps() {
-  const current = Math.min(steps.length - 1, Math.floor(state.progress / (100 / steps.length)));
-  $("#stepList").innerHTML = steps
-    .map((step, index) => {
-      const className = state.progress >= 100 || index < current ? "done" : index === current ? "active" : "";
-      return `<li class="${className}"><span class="step-dot"></span><span>${step}</span></li>`;
+  const list = $("#stepList");
+  if (!list) return;
+  const steps = stepDefinitions();
+  list.innerHTML = steps
+    .map((step) => {
+      const status = state.renderStepStatus[step.id] || "pending";
+      const tag = status === "error" ? `<em class="step-tag error">Error</em>` : status === "done" ? `<em class="step-tag done">Done</em>` : "";
+      return `<li class="${status}"><span class="step-dot"></span><span>${step.label}</span>${tag}</li>`;
     })
     .join("");
-  $("#progressBar").style.width = `${state.progress}%`;
+  const progressBar = $("#progressBar");
+  if (progressBar) progressBar.style.width = `${state.progress}%`;
+  setText("#progressPercent", `${Math.round(state.progress)}%`);
 }
 
 function renderLogs() {
@@ -242,6 +813,264 @@ function fieldValue(id, fallback = "") {
   const node = $(`#${id}`);
   if (!node) return fallback;
   return node.type === "checkbox" ? node.checked : node.value;
+}
+
+function numberField(id, fallback = 0) {
+  const value = Number(fieldValue(id, fallback));
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function percentField(id, fallback = 50) {
+  return Math.max(0, Math.min(100, numberField(id, fallback)));
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function toFilePreviewSrc(value) {
+  const text = String(value || "").trim();
+  if (!text || /^(https?:|file:|data:|assets\/)/i.test(text)) return text;
+  return `file:///${text.replace(/\\/g, "/").replace(/^\/+/, "")}`;
+}
+
+function fileNameFromPath(value) {
+  return String(value || "").split(/[\\/]/).pop() || String(value || "");
+}
+
+function setSourceMode() {
+  setText("#modeBadge", "Local worker");
+}
+
+function updateTimelinePreview() {
+  const mode = fieldValue("selectionMode", "full");
+  const badge = $("#timelineRangeBadge");
+  const multipleField = $("#multipleRangesField");
+  if (multipleField) multipleField.style.display = mode === "multiple" ? "grid" : "none";
+  const duration = Math.max(0, Number(state.videoDuration || state.lastAnalysis?.video?.duration || 0));
+  const maxValue = Math.max(100, Math.round((duration || 100) * 10));
+  const startRange = $("#analysisStartRange");
+  const endRange = $("#analysisEndRange");
+  if (startRange) startRange.max = String(maxValue);
+  if (endRange) endRange.max = String(maxValue);
+
+  let start = parseTimeInput(fieldValue("rangeStart", "0"), 0);
+  let end = parseTimeInput(fieldValue("rangeEnd", ""), duration || maxValue / 10);
+  if (mode === "full") {
+    start = 0;
+    end = duration || maxValue / 10;
+  } else {
+    start = Math.max(0, Math.min(start, Math.max(0, (duration || maxValue / 10) - 1)));
+    end = Math.max(start + 1, Math.min(end || duration || start + 1, duration || maxValue / 10));
+  }
+  if (startRange) startRange.value = String(Math.round(start * 10));
+  if (endRange) endRange.value = String(Math.round(end * 10));
+  setText("#analysisStartBadge", formatDuration(start));
+  setText("#analysisEndBadge", mode === "full" && !duration ? "End" : formatDuration(end));
+
+  if (!badge) return;
+  if (mode === "range") {
+    badge.textContent = `${formatDuration(start)} - ${formatDuration(end)}`;
+  } else if (mode === "multiple") {
+    const count = (fieldValue("multipleRanges", "").split(/\n|,/).map((item) => item.trim()).filter(Boolean)).length;
+    badge.textContent = `${count || 0} range`;
+  } else {
+    badge.textContent = duration ? `Full video · ${formatDuration(duration)}` : "Full video";
+  }
+}
+
+function updateAnalysisRangeFromSeekbar(changedEdge = "end") {
+  const duration = Math.max(0, Number(state.videoDuration || state.lastAnalysis?.video?.duration || 0));
+  const startRange = $("#analysisStartRange");
+  const endRange = $("#analysisEndRange");
+  if (!startRange || !endRange) return;
+  const maxSeconds = duration || Math.max(Number(endRange.max || 100) / 10, 1);
+  let start = Math.max(0, Math.min(Number(startRange.value || 0) / 10, maxSeconds));
+  let end = Math.max(0, Math.min(Number(endRange.value || 0) / 10, maxSeconds));
+  if (end - start < 1) {
+    if (changedEdge === "start") start = Math.max(0, end - 1);
+    else end = Math.min(maxSeconds, start + 1);
+  }
+  setValue("#selectionMode", "range");
+  setValue("#rangeStart", formatDuration(start));
+  setValue("#rangeEnd", formatDuration(end));
+  updateTimelinePreview();
+}
+
+function setBrandPreset(preset) {
+  const positions = {
+    "top-left": [16, 8, 18, 16, "Top left"],
+    "top-center": [50, 8, 50, 16, "Top center"],
+    "top-right": [84, 8, 78, 16, "Top right"],
+    "middle-left": [16, 50, 18, 58, "Middle left"],
+    "center": [50, 42, 50, 52, "Center"],
+    "middle-right": [84, 50, 78, 58, "Middle right"],
+    "bottom-left": [16, 84, 18, 92, "Bottom left"],
+    "bottom-center": [50, 84, 50, 92, "Bottom center"],
+    "bottom-right": [84, 84, 78, 92, "Bottom right"]
+  };
+  const next = positions[preset] || positions["top-right"];
+  setValue("#logoX", next[0]);
+  setValue("#logoY", next[1]);
+  setValue("#watermarkTextX", next[2]);
+  setValue("#watermarkTextY", next[3]);
+  setValue("#watermarkPosition", next[4]);
+  updateBrandPreview();
+}
+
+function updateBrandPreview() {
+  const logo = $("#brandPreviewLogo");
+  const text = $("#brandPreviewText");
+  const logoPath = fieldValue("logoAssetPath", "");
+  if (logo) {
+    logo.src = toFilePreviewSrc(logoPath || "assets/icon-512.png");
+    logo.style.left = `${percentField("logoX", 82)}%`;
+    logo.style.top = `${percentField("logoY", 8)}%`;
+    logo.style.width = `${Math.max(8, Math.min(60, numberField("logoScale", 18)))}%`;
+    logo.style.opacity = `${Math.max(0.1, Math.min(1, numberField("logoOpacity", 90) / 100))}`;
+    logo.style.transform = `translate(-50%, -50%) rotate(${numberField("logoRotation", 0)}deg)`;
+  }
+  if (text) {
+    const value = fieldValue("watermarkText", "@cliperai") || "@cliperai";
+    text.textContent = value;
+    refreshWatermarkFontFace();
+    text.style.left = `${percentField("watermarkTextX", 78)}%`;
+    text.style.top = `${percentField("watermarkTextY", 16)}%`;
+    text.style.fontFamily = `"${fieldValue("watermarkFontFamily", "Arial Black")}", Arial, sans-serif`;
+    text.style.fontSize = `${Math.max(12, Math.min(72, numberField("watermarkTextSize", 28))) * 0.52}px`;
+    text.style.color = fieldValue("watermarkTextColor", "#ffffff");
+    text.style.opacity = `${Math.max(0.1, Math.min(1, numberField("watermarkOpacity", 68) / 100))}`;
+    const shadow = numberField("watermarkTextShadow", 2);
+    text.style.textShadow = shadow ? `0 ${shadow}px 0 ${fieldValue("watermarkTextStroke", "#000000")}, 0 0 ${shadow * 4}px rgba(0,0,0,.65)` : "none";
+  }
+}
+
+function refreshWatermarkFontFace() {
+  const fontPath = fieldValue("watermarkFontPath", "");
+  const fontFamily = fieldValue("watermarkFontFamily", "Arial Black");
+  let style = $("#watermarkCustomFontStyle");
+  if (!fontPath || !fontFamily) {
+    if (style) style.textContent = "";
+    return;
+  }
+  if (!style) {
+    style = document.createElement("style");
+    style.id = "watermarkCustomFontStyle";
+    document.head.appendChild(style);
+  }
+  style.textContent = `@font-face{font-family:"${fontFamily.replace(/"/g, "")}";src:url("${toFilePreviewSrc(fontPath)}");}`;
+}
+
+function applySubtitlePreset(preset) {
+  const presets = {
+    opus: ["Karaoke bold", "Arial Black", 58, "#ffffff", "#19ff47", "#000000", 3, "Pop"],
+    capcut: ["TikTok style", "Arial Black", 56, "#ffffff", "#19ff47", "#000000", 3, "Scale"],
+    tiktok: ["TikTok style", "Arial Black", 60, "#ffffff", "#24ff5a", "#000000", 4, "Bounce"],
+    news: ["Clean subtitle", "Arial", 46, "#ffffff", "#ffd54a", "#10202a", 1, "Fade"],
+    podcast: ["YouTube Shorts style", "Arial Black", 52, "#ffffff", "#20e070", "#000000", 2, "Pop"],
+    gaming: ["Karaoke bold", "Arial Black", 62, "#ffffff", "#ffdd00", "#000000", 4, "Bounce"]
+  };
+  const next = presets[preset] || presets.opus;
+  setValue("#captionStyle", next[0]);
+  setValue("#subtitleFontFamily", next[1]);
+  setValue("#subtitleFontSize", next[2]);
+  setValue("#subtitlePrimaryColor", next[3]);
+  setValue("#subtitleActiveColor", next[4]);
+  setValue("#subtitleStrokeColor", next[5]);
+  setValue("#subtitleShadow", next[6]);
+  setValue("#subtitleAnimation", next[7]);
+  updateSubtitlePreview();
+}
+
+function applyOutputQualityPreset(profile = fieldValue("outputQualityProfile", "balanced"), options = {}) {
+  const preset = getOutputQualityPreset(profile);
+  setValue("#outputQualityProfile", profile);
+  setValue("#formatProfile", preset.formatProfile);
+  setValue("#resolutionProfile", preset.resolutionProfile);
+  setValue("#fpsProfile", preset.fpsProfile);
+  setValue("#crfProfile", preset.crfProfile);
+
+  if (profile === "capcut_opus_2k") {
+    applySubtitlePreset("capcut");
+    setValue("#subtitleBurnToggle", true);
+    setValue("#hookOpeningToggle", true);
+    setValue("#audioEnhanceToggle", true);
+    setValue("#subtitleFontSize", "60");
+    setValue("#subtitleActiveColor", "#19ff47");
+    setValue("#subtitleShadow", "4");
+    updateSubtitlePreview();
+  }
+
+  renderPipelinePreview();
+  if (!options.silent) {
+    toast(profile === "capcut_opus_2k" ? "Preset referensi 2K 60fps diterapkan" : "Quality preset diterapkan");
+  }
+}
+
+function refreshSubtitleFontFace() {
+  const fontPath = fieldValue("subtitleFontPath", "");
+  const fontFamily = fieldValue("subtitleFontFamily", "Arial Black");
+  let style = $("#subtitleCustomFontStyle");
+  if (!fontPath || !fontFamily) {
+    if (style) style.textContent = "";
+    return;
+  }
+  if (!style) {
+    style = document.createElement("style");
+    style.id = "subtitleCustomFontStyle";
+    document.head.appendChild(style);
+  }
+  style.textContent = `@font-face{font-family:"${fontFamily.replace(/"/g, "")}";src:url("${toFilePreviewSrc(fontPath)}");}`;
+}
+
+function updateSubtitlePreview() {
+  const preview = $("#subtitlePreviewText");
+  if (!preview) return;
+  refreshSubtitleFontFace();
+  const words = (fieldValue("subtitlePreviewInput", "TAPI GUE HERAN") || "TAPI GUE HERAN").trim().split(/\s+/);
+  const activeIndex = words.length > 1 ? 1 : 0;
+  preview.innerHTML = words.map((word, index) => {
+    const safeWord = escapeHtml(word);
+    return index === activeIndex ? `<span>${safeWord}</span>` : safeWord;
+  }).join(" ");
+  preview.style.fontFamily = `"${fieldValue("subtitleFontFamily", "Arial Black")}", Arial, sans-serif`;
+  preview.style.fontSize = `${Math.max(28, Math.min(96, numberField("subtitleFontSize", 60))) * 0.52}px`;
+  preview.style.color = fieldValue("subtitlePrimaryColor", "#ffffff");
+  const active = preview.querySelector("span");
+  if (active) active.style.color = fieldValue("subtitleActiveColor", "#19ff47");
+  const shadow = numberField("subtitleShadow", 4);
+  preview.style.textShadow = shadow ? `0 ${shadow}px 0 ${fieldValue("subtitleStrokeColor", "#000000")}, 0 0 ${shadow * 4}px rgba(0,0,0,.75)` : "none";
+}
+
+function bindPreviewDrag(element, xId, yId) {
+  if (!element) return;
+  element.addEventListener("pointerdown", (event) => {
+    const frame = $("#brandPreviewFrame");
+    if (!frame) return;
+    event.preventDefault();
+    element.setPointerCapture(event.pointerId);
+    const move = (moveEvent) => {
+      const rect = frame.getBoundingClientRect();
+      const x = ((moveEvent.clientX - rect.left) / rect.width) * 100;
+      const y = ((moveEvent.clientY - rect.top) / rect.height) * 100;
+      setValue(`#${xId}`, Math.round(Math.max(0, Math.min(100, x))));
+      setValue(`#${yId}`, Math.round(Math.max(0, Math.min(100, y))));
+      updateBrandPreview();
+    };
+    const stop = () => {
+      element.removeEventListener("pointermove", move);
+      element.removeEventListener("pointerup", stop);
+      element.removeEventListener("pointercancel", stop);
+    };
+    element.addEventListener("pointermove", move);
+    element.addEventListener("pointerup", stop);
+    element.addEventListener("pointercancel", stop);
+  });
 }
 
 function formatBytes(bytes) {
@@ -275,17 +1104,28 @@ function cookieAgeText(value) {
 
 function formatDuration(seconds) {
   const value = Math.max(0, Math.round(Number(seconds || 0)));
+  const hours = Math.floor(value / 3600);
   const minutes = Math.floor(value / 60);
   const rest = value % 60;
+  if (hours > 0) {
+    const mins = Math.floor((value % 3600) / 60);
+    return `${hours}:${String(mins).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+  }
   return `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
 }
 
 function activeEnhancements() {
-  return enhancementControls.map(([id, label]) => ({
-    id,
-    label,
-    enabled: Boolean($(`#${id}`)?.checked)
-  }));
+  const settingsWatermark = Boolean(fieldValue("watermarkEnabled", false) && fieldValue("watermarkInOutput", false));
+  const preset = getProductionRenderPreset();
+  return [
+    ["smartCrop", "Smart crop", preset.smartCrop],
+    ["dynamicZoom", "Dynamic zoom", preset.dynamicZoom],
+    ["faceTrack", "Face tracking", preset.faceTrack],
+    ["addCaptions", "ASS caption", preset.addCaptions && preset.burnSubtitle],
+    ["autoCut", "Auto cut", preset.autoCut],
+    ["addHook", "Hook intro", preset.addHook],
+    ["addWatermark", "Watermark", settingsWatermark]
+  ].map(([id, label, enabled]) => ({ id, label, enabled: Boolean(enabled) }));
 }
 
 function estimateRenderSeconds() {
@@ -294,18 +1134,20 @@ function estimateRenderSeconds() {
     ? selectedMoments().reduce((total, item) => total + Number(item.durationSeconds || 35), 0) / selectedMoments().length
     : 40;
   let multiplier = 1.2;
-  if ($("#pipelineFaceTrack")?.checked) multiplier += 0.65;
-  if ($("#dynamicZoomToggle")?.checked) multiplier += 0.2;
-  if ($("#pipelineCaption")?.checked) multiplier += 0.35;
-  if ($("#audioEnhanceToggle")?.checked) multiplier += 0.15;
-  if ($("#colorEnhanceToggle")?.checked) multiplier += 0.15;
-  if ($("#pipelineHook")?.checked) multiplier += 0.1;
+  const preset = getProductionRenderPreset();
+  if (preset.faceTrack) multiplier += 0.65;
+  if (preset.dynamicZoom) multiplier += 0.2;
+  if (preset.addCaptions) multiplier += 0.35;
+  if (preset.addHook) multiplier += 0.1;
   return Math.ceil(clips * avgDuration * multiplier);
 }
 
 function renderPipelinePreview() {
   const summary = $("#pipelineSummary");
-  if (!summary) return;
+  if (!summary) {
+    setText("#pipelineEstimate", `Estimasi: ${formatDuration(estimateRenderSeconds())}`);
+    return;
+  }
   const items = activeEnhancements();
   const used = items.filter((item) => item.enabled);
   const skipped = items.filter((item) => !item.enabled);
@@ -333,6 +1175,26 @@ function updateRenderStats(event = {}) {
   setText("#renderEtaStat", eta === null ? "-" : formatDuration(eta));
   setText("#renderFpsStat", event.fps ? String(event.fps) : "-");
   setText("#renderSpeedStat", event.speed ? String(event.speed) : "-");
+}
+
+function selectedClipCountLabel() {
+  const count = selectedMoments().length;
+  return `${count} clip${count === 1 ? "" : "s"}`;
+}
+
+function updateProcessButtons() {
+  const count = selectedMoments().length;
+  setText("#processSelected", count ? `Render ${count} clip` : "Render pilihan");
+}
+
+function openProcessDialog() {
+  const clips = selectedMoments();
+  if (!clips.length) {
+    toast("Pilih minimal 1 highlight");
+    return;
+  }
+  updateProcessButtons();
+  startProcessing();
 }
 
 function normalizeCookiesInfo(config = {}) {
@@ -398,7 +1260,7 @@ function renderRuntimeList(deps = state.dependencies) {
     ["OpenCV face tracking", deps?.opencv?.ok ? deps.opencv.version : "Fallback crop", deps?.opencv?.ok],
     ["MediaPipe", deps?.mediapipe?.ok ? deps.mediapipe.version : "Opsional", deps?.mediapipe?.ok],
     ["GPU encoder", deps?.encoders?.available?.length ? deps.encoders.available.join(", ") : "CPU fallback", deps?.encoders?.available?.some((item) => item !== "libx264")],
-    ["Local AI Upscaler", deps?.upscaler?.ok ? "Ready" : "Opsional", deps?.upscaler?.ok]
+    ["Auto Video Enhancement", "Always active", true]
   ];
   list.innerHTML = items
     .map(([name, value, ok]) => `
@@ -428,6 +1290,25 @@ function isAiEnabled() {
 let metadataTimer = null;
 let metadataUrl = "";
 
+function populateSubtitleLanguages(video = {}) {
+  const select = $("#subtitleLang");
+  if (!select) return;
+  const options = Array.isArray(video.subtitle_language_options) ? video.subtitle_language_options : [];
+  if (!options.length) {
+    select.innerHTML = `
+      <option value="">No YouTube subtitle found</option>
+      <option value="local">Use local transcription if available</option>
+    `;
+    return;
+  }
+  select.innerHTML = options
+    .map((item) => `<option value="${item.value}">${item.label}</option>`)
+    .join("");
+  if (video.subtitle_language) {
+    select.value = video.subtitle_language;
+  }
+}
+
 async function fetchMetadata(url) {
   if (!window.cliper) {
     setText("#previewTitle", "Buka .exe untuk metadata nyata");
@@ -443,13 +1324,20 @@ async function fetchMetadata(url) {
   pushLog(`[metadata] fetching metadata for ${url}`);
   setText("#previewTitle", "Memuat metadata...");
   setText("#previewUrl", url);
+  setText("#subtitleMetric", "Loading subtitles...");
+  const subtitleSelect = $("#subtitleLang");
+  if (subtitleSelect) {
+    subtitleSelect.innerHTML = `<option value="">Loading subtitles...</option>`;
+  }
   try {
     const payload = {
       ...collectPayload(),
       useMomentAI: isAiEnabled(),
       metadataOnly: true,
       clipCount: 0,
-      durationTarget: "20-35 detik"
+      minDuration: 30,
+      targetDuration: 75,
+      maxDuration: 180
     };
     const result = await window.cliper.analyze(payload);
     if (result.type === "error") {
@@ -459,12 +1347,17 @@ async function fetchMetadata(url) {
       return;
     }
     const data = result.result;
+    state.videoDuration = Number(data.video?.duration || 0);
     setText("#previewTitle", data.video?.title || "Tidak ada judul");
     setText("#previewUrl", data.video?.webpage_url || url);
     setText("#subtitleMetric", data.video?.subtitle_language || "No subtitle");
+    populateSubtitleLanguages(data.video || {});
     state.previewImageUrl = data.video?.thumbnail || "";
     drawPreview();
     state.lastAnalysis = null;
+    state.lastTranscript = [];
+    state.activeMomentId = null;
+    updateTimelinePreview();
     pushLog(`[metadata] berhasil dimuat: ${data.video?.title || url}`);
   } catch (error) {
     setText("#previewTitle", "Metadata gagal");
@@ -501,7 +1394,7 @@ function renderSessions() {
   }
   $("#sessionList").innerHTML = sessions
     .map(
-      (session) => `
+      (session, index) => `
         <article class="session-card">
           <div class="session-thumb">
             <span>${session.clips}</span>
@@ -511,8 +1404,7 @@ function renderSessions() {
             <p>${session.clips} MP4 - ${session.date} - ${session.size}</p>
           </div>
           <span class="status-chip">${session.status}</span>
-          <button class="secondary-action">Buka folder</button>
-          <button class="secondary-action">Upload</button>
+          <button class="secondary-action" data-open-session="${index}">Buka folder</button>
         </article>
       `
     )
@@ -520,36 +1412,125 @@ function renderSessions() {
 }
 
 function renderProviders() {
-  const providerType = $("#providerType")?.value || "local";
-  const provider = aiProviderDefaults[providerType] || aiProviderDefaults.local;
-  const baseUrl = $("#baseUrl")?.value?.trim();
-  const model = $("#highlightModel")?.value?.trim();
-  const hasApiKey = Boolean($("#apiKey")?.value?.trim());
-  const ready = providerType === "local" || Boolean(baseUrl && (!provider.requiresKey || hasApiKey) && model);
-  $("#providerList").innerHTML = providerTasks
+  const providerList = $("#providerList");
+  if (!providerList) return;
+  const payload = providerPayload();
+  const provider = aiProviderDefaults[payload.providerType] || aiProviderDefaults.local;
+  const model = payload.model || "local-heuristic";
+  const ready = payload.providerType === "local" || Boolean(payload.baseUrl && payload.apiKey && model);
+  const statusText = $("#providerStatusText")?.textContent || "";
+  const features = payload.aiFeatures || aiFeatureConfig();
+  const activeFeatureCount = Object.values(features).filter(Boolean).length;
+  if (payload.providerType === "local") {
+    setText("#aiModeTitle", "Local mode active ✓");
+  } else if (/connected|valid|sukses|ready/i.test(statusText)) {
+    setText("#aiModeTitle", `${provider.label} active ✓ · ${activeFeatureCount} module ON`);
+  } else {
+    setText("#aiModeTitle", `${provider.label} configured · local fallback ready`);
+  }
+  providerList.innerHTML = providerTasks
     .map(
-      ([task, note]) => `
-        <article class="provider-item">
+      ([toggleId, task, note]) => {
+        const key = {
+          aiHighlightToggle: "highlight",
+          aiCaptionToggle: "caption",
+          aiHookToggle: "hook",
+          aiTitleToggle: "title",
+          aiTtsToggle: "tts"
+        }[toggleId];
+        const enabled = Boolean(features[key]);
+        const engine = enabled && ready && payload.providerType !== "local" ? `${provider.label} · ${model}` : "Local heuristic";
+        return `
+        <article class="provider-item ${enabled ? "" : "disabled"}">
           <div>
             <strong>${task}</strong>
-            <span>${note} · ${provider.label}</span>
+            <span>${note} · ${enabled ? "AI ON" : "AI OFF"}</span>
           </div>
-          <em>${ready ? model : "Belum dikonfigurasi"}</em>
+          <em>${engine}</em>
         </article>
-      `
+      `;
+      }
     )
     .join("");
 }
 
+async function openSessionFolder(index) {
+  const session = sessions[Number(index)];
+  const folder = session?.folder || session?.size;
+  if (!folder) {
+    toast("Folder output belum tersedia");
+    return;
+  }
+  if (!window.cliper?.openFolder) {
+    toast("Buka via .exe untuk membuka folder");
+    return;
+  }
+  const result = await window.cliper.openFolder(folder);
+  if (!result?.ok) {
+    pushLog(`[output] ${result?.message || "Folder tidak bisa dibuka"}: ${folder}`);
+    toast(result?.message || "Folder tidak bisa dibuka");
+    return;
+  }
+  pushLog(`[output] folder dibuka: ${folder}`);
+}
+
 function providerPayload() {
-  const providerType = $("#providerType")?.value || "local";
+  const providerType = $("#providerType")?.value || "custom";
+  const apiKey = $("#apiKey")?.value?.trim();
+  const hasApiKey = Boolean(apiKey);
   const modelValue = $("#highlightModel")?.value?.trim();
+  const activeProviderType = hasApiKey ? providerType : "local";
+  const features = activeProviderType === "local"
+    ? aiFeatureConfig()
+    : { highlight: true, hook: true, caption: true, title: true, tts: false };
+  const anyFeatureEnabled = Object.values(features).some(Boolean);
+  const effectiveProviderType = anyFeatureEnabled ? activeProviderType : "local";
+  let selectedModel = modelValue || (effectiveProviderType === "local" ? "local-heuristic" : (aiProviderDefaults[effectiveProviderType]?.model || ""));
+  const maxTokensByModule = {
+    test: 320,
+    highlight: 1600,
+    title: 480,
+    hook: 420,
+    caption: 700,
+    tts: 360
+  };
+  const timeoutMsByModule = {
+    test: 30000,
+    highlight: 90000,
+    title: 45000,
+    hook: 45000,
+    caption: 45000,
+    tts: 45000,
+    default: 45000
+  };
+  const aiRetryByModule = {
+    highlight: 3,
+    title: 2,
+    hook: 2,
+    caption: 2,
+    test: 2,
+    default: 2
+  };
+  let baseUrl = $("#baseUrl")?.value?.trim();
   return {
-    providerType,
-    baseUrl: $("#baseUrl")?.value?.trim(),
-    apiKey: $("#apiKey")?.value?.trim(),
-    model: modelValue || (providerType === "local" ? "local-heuristic" : "gpt-4.1-mini"),
-    timeoutMs: 15000
+    providerType: effectiveProviderType,
+    baseUrl,
+    apiKey,
+    model: selectedModel,
+    highlightModel: selectedModel,
+    moduleModels: {
+      highlight: selectedModel,
+      caption: selectedModel,
+      hook: selectedModel,
+      title: selectedModel,
+      tts: selectedModel,
+      test: selectedModel
+    },
+    maxTokensByModule,
+    timeoutMsByModule,
+    aiRetryByModule,
+    aiFeatures: features,
+    timeoutMs: 30000
   };
 }
 
@@ -566,12 +1547,65 @@ function setProviderStatus(message, ok = false) {
     box.classList.toggle("ok", ok);
     box.classList.toggle("warning", !ok && message !== "Belum dites");
   }
+  renderProviders();
+}
+
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function normalizeAiUsage(value = {}) {
+  const date = value.date === todayKey() ? value.date : todayKey();
+  return {
+    date,
+    inputTokens: value.date === date ? Number(value.inputTokens || 0) : 0,
+    outputTokens: value.date === date ? Number(value.outputTokens || 0) : 0,
+    estimatedCostRp: value.date === date ? Number(value.estimatedCostRp || 0) : 0
+  };
+}
+
+function addAiUsage(usage = {}) {
+  const total = usage.usage_total || usage;
+  const input = Number(total.input_tokens || total.prompt_tokens || total.inputTokens || 0);
+  const output = Number(total.output_tokens || total.completion_tokens || total.outputTokens || 0);
+  if (!input && !output) {
+    renderAiUsage();
+    return;
+  }
+  const current = normalizeAiUsage(state.aiUsageToday);
+  const estimateRp = Math.ceil((input + output) / 1000 * 8);
+  state.aiUsageToday = {
+    date: todayKey(),
+    inputTokens: current.inputTokens + input,
+    outputTokens: current.outputTokens + output,
+    estimatedCostRp: current.estimatedCostRp + estimateRp
+  };
+  renderAiUsage();
+}
+
+function renderAiUsage() {
+  const usage = normalizeAiUsage(state.aiUsageToday);
+  state.aiUsageToday = usage;
+  setText("#aiTokenSummary", `${usage.inputTokens.toLocaleString("id-ID")} input / ${usage.outputTokens.toLocaleString("id-ID")} output tokens`);
+  setText("#aiCostSummary", `Estimated cost: Rp ${usage.estimatedCostRp.toLocaleString("id-ID")}`);
 }
 
 function providerErrorMessage(status, payload) {
   const text = String(status || "Test API gagal");
   if (/invalid|unauthorized|401|forbidden|api key/i.test(text)) {
     return `Invalid API key - pastikan key cocok untuk ${aiProviderDefaults[payload.providerType]?.label || payload.providerType}`;
+  }
+  if (/rate limit|rate_limit|429|too many requests/i.test(text)) {
+    return "Rate Limited - tunggu sebentar atau gunakan provider lain";
+  }
+  if (/network|enotfound|econn|fetch failed|getaddrinfo|internet/i.test(text)) {
+    return "Network Error - cek internet atau endpoint provider";
+  }
+  if (/response kosong|empty response|tidak mengembalikan jawaban/i.test(text)) {
+    return "Connected but empty response - cek model, endpoint, atau format provider";
+  }
+  if (/model.*not found|model not found|not_found/i.test(text)) {
+    return "Model not found - klik Load Models atau isi model manual yang benar";
   }
   if (/timeout|timed out/i.test(text)) {
     return "Connection Timeout - cek koneksi atau Base URL";
@@ -586,8 +1620,8 @@ function setModelOptions(models = []) {
 }
 
 function applyProviderDefaults(force = false) {
-  const providerType = $("#providerType")?.value || "local";
-  const preset = aiProviderDefaults[providerType] || aiProviderDefaults.local;
+  const providerType = $("#providerType")?.value || "custom";
+  const preset = aiProviderDefaults[providerType] || aiProviderDefaults.custom;
   const base = $("#baseUrl");
   const key = $("#apiKey");
   const model = $("#highlightModel");
@@ -596,22 +1630,26 @@ function applyProviderDefaults(force = false) {
     base.value = preset.baseUrl;
   }
   if (model && (force || !model.value)) {
-    model.value = preset.model;
+    model.value = preset.model || "";
   }
   if (key) {
-    key.disabled = providerType === "local";
-    key.placeholder = providerType === "local" ? "Local heuristic tidak memakai API key" : "Masukkan API key";
+    key.disabled = false;
+    key.placeholder = providerType === "cloud" ? "clip_sk_xxxxxxxxx" : "Masukkan API key";
   }
   if (base) {
-    base.disabled = providerType === "local";
+    base.disabled = false;
   }
-  setProviderStatus(providerType === "local" ? "Local heuristic ready" : "Belum dites", providerType === "local");
+  const localMode = !key?.value?.trim();
+  setProviderStatus(localMode ? "Local mode active ✓ API optional" : "Belum dites", localMode);
+  if (localMode) {
+    setText("#apiStatus", "Local heuristic active");
+  }
   renderProviders();
 }
 
 async function loadProviderModels(options = {}) {
   const payload = providerPayload();
-  const preset = aiProviderDefaults[payload.providerType] || aiProviderDefaults.openai;
+  const preset = aiProviderDefaults[payload.providerType] || aiProviderDefaults.custom;
   if (payload.providerType === "local") {
     const models = ["local-heuristic", "local-transcript-score", "local-fast"];
     setModelOptions(models);
@@ -623,9 +1661,14 @@ async function loadProviderModels(options = {}) {
     return { ok: true, providerType: "local", models, suggestedModel: payload.model || "local-heuristic", status: "Local ready" };
   }
   if (preset.requiresKey && !payload.apiKey) {
-    setProviderStatus("API key kosong", false);
-    toast("API key belum diisi");
-    return null;
+    const models = ["local-heuristic"];
+    setModelOptions(models);
+    $("#highlightModel").value = "local-heuristic";
+    setProviderStatus("Local mode active ✓ API optional", true);
+    setText("#apiStatus", "Local heuristic active");
+    renderProviders();
+    if (!options.silent) toast("API kosong, fallback ke local heuristic");
+    return { ok: true, providerType: "local", models, suggestedModel: "local-heuristic", status: "Local heuristic active" };
   }
   if (!window.cliper?.loadModels) {
     const fallback = preset.model ? [preset.model] : [];
@@ -636,14 +1679,18 @@ async function loadProviderModels(options = {}) {
     return null;
   }
   setProviderStatus("Loading models...", true);
+  await saveConfig({ silent: true });
   const result = await window.cliper.loadModels(payload);
   if (!result?.ok) {
     const status = result?.status || "Load Models gagal";
-    setProviderStatus(status, false);
+    const manualModel = payload.model || preset.model || "gpt-4.1-mini";
+    setModelOptions([manualModel]);
+    $("#highlightModel").value = manualModel;
+    setProviderStatus(`Model list gagal, memakai model manual: ${manualModel}`, false);
     pushLog(`[ai] Load Models gagal: provider=${payload.providerType} baseUrl=${payload.baseUrl} model=${payload.model} status=${status}`);
-    toast(status);
+    toast("Model list gagal, model manual tetap dipakai");
     renderProviders();
-    return result;
+    return { ...(result || {}), ok: true, status: "Model list gagal, memakai model manual", models: [manualModel], suggestedModel: manualModel, warning: status };
   }
   const models = Array.isArray(result.models) ? result.models : [];
   setModelOptions(models);
@@ -661,7 +1708,7 @@ async function loadProviderModels(options = {}) {
 
 async function testProvider(options = {}) {
   const payload = providerPayload();
-  const preset = aiProviderDefaults[payload.providerType] || aiProviderDefaults.openai;
+  const preset = aiProviderDefaults[payload.providerType] || aiProviderDefaults.custom;
   if (payload.providerType === "local") {
     setProviderStatus("Local heuristic aktif", true);
     setText("#apiStatus", "Local heuristic active");
@@ -670,9 +1717,11 @@ async function testProvider(options = {}) {
     return { ok: true, status: "Local heuristic active", response: "OK", usage: {} };
   }
   if (preset.requiresKey && !payload.apiKey) {
-    setProviderStatus("API key kosong", false);
-    toast("API key belum diisi");
-    return null;
+    setProviderStatus("Local mode active ✓ API optional", true);
+    setText("#apiStatus", "Local heuristic active");
+    pushLog(`[ai] API kosong, fallback ke local heuristic`);
+    if (!options.silent) toast("API kosong, local heuristic aktif");
+    return { ok: true, status: "Local heuristic active", response: "OK", usage: {} };
   }
   if (!window.cliper?.testProvider) {
     setProviderStatus("Test API tersedia di .exe", false);
@@ -698,15 +1747,26 @@ async function testProvider(options = {}) {
   }
   const responseText = response.response || "OK";
   const usage = response.usage ? `usage=${JSON.stringify(response.usage)}` : "usage=unknown";
+  addAiUsage(response.usage_total || response.usage || {});
   setProviderStatus(`Connected ✓ ${payload.providerType}`, true);
   setText("#apiStatus", `Connected ✓ ${payload.providerType}`);
   pushLog(`[ai] Test API response received in ${duration}ms, ${usage}`);
   pushLog(`[ai] provider=${payload.providerType} model=${payload.model} response=${responseText}`);
+  if (payload.providerType === "cloud" && response.license) {
+    pushLog(`[cloud] plan=${response.license.plan || "-"} status=${response.license.status || "active"} credits=${response.license.credits || 0}`);
+  }
   state.apiLastLatencyMs = duration;
   state.apiLastResponse = responseText;
   if (!options.silent) toast("Test API sukses");
   await saveConfig({ silent: true });
   return { ...response, latencyMs: duration };
+}
+
+function aiProviderRequiresConnectedStatus() {
+  const payload = providerPayload();
+  if (payload.providerType === "local" || !payload.apiKey) return false;
+  const status = $("#providerStatusText")?.textContent || "";
+  return !/connected|valid|sukses|ready/i.test(status);
 }
 
 function drawPreview() {
@@ -744,7 +1804,7 @@ function drawPreview() {
 
   ctx.fillStyle = "#ffffff";
   ctx.font = "800 30px system-ui, sans-serif";
-  ctx.fillText("CLIPER YOUTUBE AI STUDIO", 64, 120);
+  ctx.fillText("CLIPER STUDIO PLUS", 64, 120);
   ctx.fillStyle = "#dce7ec";
   ctx.font = "500 20px system-ui, sans-serif";
   ctx.fillText("Masukkan link YouTube untuk memulai analisa real.", 64, 166);
@@ -774,6 +1834,7 @@ async function scanSubtitles() {
 }
 
 async function findMoments() {
+  setSourceMode("youtube");
   const target = Math.max(1, Math.min(20, Number($("#clipCount").value) || 6));
   if (!$("#youtubeUrl").value.trim()) {
     toast("Masukkan YouTube URL dulu");
@@ -788,8 +1849,13 @@ async function findMoments() {
 
   clearInterval(state.processingTimer);
   state.progress = 0;
+  resetStepStatus("analyze");
   $("#progressBar").style.width = "0%";
   $("#jobBadge").textContent = "Analyzing";
+  setText("#renderScreenTitle", "Finding highlights...");
+  setText("#renderScreenSubtitle", "Downloading subtitle and analyzing the transcript with AI.");
+  updateRenderStats({ progress: 0, stage: "Download subtitle", clipIndex: null, totalClips: null });
+  renderSteps();
   pushLog(`[analyze] mulai analisa nyata: ${$("#youtubeUrl").value}`);
   setView("render");
   const result = await window.cliper.analyze(collectPayload());
@@ -800,21 +1866,36 @@ async function findMoments() {
     return;
   }
 
-  const data = result.result;
+  const data = result.result || {};
+  addAiUsage(data.ai_usage || {});
+  const diagnostics = data.ai_diagnostics || {};
+  const aiStatus = diagnostics.ai_used
+    ? `AI ${diagnostics.provider || "Custom"} aktif · ${diagnostics.requests || 0} request · ${diagnostics.retry_count || 0} retry`
+    : `Fallback lokal${diagnostics.last_fallback_reason ? ` · ${diagnostics.last_fallback_reason}` : ""}`;
+  setText("#aiPipelineStatus", aiStatus);
+  pushLog(`[ai diagnostics] used=${Boolean(diagnostics.ai_used)} provider=${diagnostics.provider || "-"} model=${diagnostics.model || "-"} requests=${diagnostics.requests || 0} retries=${diagnostics.retry_count || 0} fallback=${diagnostics.fallback_events || 0}`);
+  if (diagnostics.last_fallback_reason) {
+    pushLog(`[ai fallback] ${diagnostics.last_fallback_reason}`);
+  }
+  if (data.ai_debug_path) {
+    pushLog(`[ai debug] ${data.ai_debug_path}`);
+  }
   state.lastAnalysis = data;
+  state.lastTranscript = Array.isArray(data.transcript) ? normalizeTranscriptSegments(data.transcript) : [];
+  state.videoDuration = Number(data.video?.duration || state.videoDuration || 0);
   if (data.video?.used_cookies) {
     await markCookiesUsed();
     pushLog("[cookies] digunakan otomatis setelah video meminta login/age verification");
   }
-  momentBank = (data.moments || []).map((item, index) => ({
-    ...item,
-    id: item.id || index + 1,
-    durationSeconds: Number(item.duration || 0),
-    duration: `${Math.round(Number(item.duration || 0))}s`,
-    previewThumbnail: item.preview_thumbnail_path || data.video?.thumbnail || "",
-    titleSuggestion: item.titleSuggestion || item.title
-  }));
-  state.selectedMoments = new Set(momentBank.map((item) => item.id));
+  if (data.video?.source_path) {
+    pushLog(`[cache] ${data.video.cache_status === "cached" ? "Using cached source" : "Source cached"}: ${data.video.source_path}`);
+  }
+  momentBank = (data.moments || []).map((item, index) => normalizeMomentForUi(item, index, data.video || {}));
+  if (!momentBank.length) {
+    pushLog("[highlight] worker selesai tanpa moment; empty-state ditampilkan dan UI tetap responsif");
+  }
+  state.selectedMoments = new Set(momentBank.filter((item) => item.autoRender && item.renderEligible !== false).map((item) => item.id));
+  state.activeMomentId = momentBank[0]?.id || null;
   $("#previewTitle").textContent = data.video?.title || "YouTube video";
   $("#previewUrl").textContent = data.video?.webpage_url || $("#youtubeUrl").value;
   $("#subtitleMetric").textContent = data.video?.subtitle_language || "No subtitle";
@@ -823,7 +1904,9 @@ async function findMoments() {
   drawPreview();
   $("#jobBadge").textContent = "Ready";
   renderMoments();
+  renderMomentReview();
   renderPipelinePreview();
+  updateTimelinePreview();
   setView("moments");
   toast("Moment nyata siap dipilih");
 }
@@ -834,12 +1917,25 @@ async function startProcessing() {
     toast("Pilih minimal 1 moment");
     return;
   }
+  const payload = collectPayload();
+  if (payload.providerType !== "local" && aiProviderRequiresConnectedStatus()) {
+    setView("settings");
+    setSettingsTab("api");
+    const message = "Test API dulu sampai Connected agar AI benar-benar dipakai.";
+    pushLog(`[ai] render diblokir: provider/API key ada tetapi status belum Connected`);
+    toast(message);
+    return;
+  }
 
   if (window.cliper) {
     clearInterval(state.processingTimer);
     state.progress = 0;
+    state.renderErrors = [];
+    resetStepStatus("render");
     state.renderStartedAt = Date.now();
-    updateRenderStats({ progress: 0, stage: "Starting", clipIndex: 1, totalClips: clips.length });
+    setText("#renderScreenTitle", "Processing clips...");
+    setText("#renderScreenSubtitle", `Processing ${clips.length} clips with automatic AI production pipeline.`);
+    updateRenderStats({ progress: 0, stage: "Download video sections", clipIndex: 1, totalClips: clips.length });
     renderPipelinePreview();
     renderSteps();
     $("#jobBadge").textContent = "Rendering";
@@ -856,18 +1952,30 @@ async function startProcessing() {
       await markCookiesUsed();
       pushLog("[cookies] render berhasil memakai cookies setelah retry otomatis");
     }
-    $("#jobBadge").textContent = "Complete";
-    const outputCount = result.result?.outputs?.length || clips.length;
+    if (result.result?.manifest?.source_path) {
+      pushLog(`[cache] render source: ${result.result.manifest.source_path}`);
+    }
+    const manifest = result.result?.manifest || {};
+    addAiUsage(manifest.ai_usage || {});
+    const requestedCount = Number(manifest.requested_clip_count || clips.length || 0);
+    const validCount = Number(manifest.valid_mp4_count || 0);
+    const shortage = requestedCount > validCount;
+    const warningCount = state.renderErrors.length + (manifest.warnings?.length || 0) + (shortage ? 1 : 0);
+    const outputs = result.result?.outputs || [];
+    const outputCount = outputs.length;
+    $("#jobBadge").textContent = outputCount ? "Complete" : "Error";
     sessions.unshift({
       name: result.result?.manifest?.title || "YouTube clip session",
       clips: outputCount,
       date: "Baru saja",
-      status: "Siap upload",
-      size: result.result?.sessionDir || "Lihat folder"
+      status: outputCount ? (warningCount ? `Selesai + warning (${validCount}/${requestedCount})` : "Selesai") : "Gagal",
+      size: result.result?.sessionDir || "Lihat folder",
+      folder: result.result?.sessionDir || ""
     });
     renderSessions();
     pushLog(`[done] output: ${result.result?.sessionDir || "-"}`);
-    toast("Render selesai");
+    pushLog(`[summary] requested=${requestedCount} valid=${validCount} failed=${Number(manifest.failed_count || 0)} ai=${manifest.ai_provider || "-"}`);
+    toast(outputCount ? (warningCount ? "Render selesai dengan warning" : "Render selesai") : "Render gagal");
     setView("outputs");
     return;
   }
@@ -877,51 +1985,78 @@ async function startProcessing() {
 
 function buildConfig() {
   const config = {
-    providerType: fieldValue("providerType", "local"),
+    providerType: fieldValue("providerType", "custom"),
     baseUrl: fieldValue("baseUrl", ""),
     apiKey: fieldValue("apiKey"),
     highlightModel: fieldValue("highlightModel", "local-heuristic"),
+    aiHighlightToggle: fieldValue("aiHighlightToggle", true),
+    aiHookToggle: fieldValue("aiHookToggle", true),
+    aiCaptionToggle: fieldValue("aiCaptionToggle", true),
+    aiTitleToggle: fieldValue("aiTitleToggle", true),
+    aiTtsToggle: fieldValue("aiTtsToggle", false),
     providerStatus: $("#providerStatusText")?.textContent || "Local heuristic ready",
     apiStatus: $("#apiStatus")?.textContent || "Local heuristic active",
     apiLastTestedAt: state.apiLastTestedAt || "",
     apiLastLatencyMs: state.apiLastLatencyMs || 0,
     apiLastResponse: state.apiLastResponse || "",
+    aiUsageToday: normalizeAiUsage(state.aiUsageToday),
+    clipCount: fieldValue("clipCount", "6"),
+    scoreMode: fieldValue("scoreMode", "Random Viral Mix"),
+    minDuration: fieldValue("minDuration", "30"),
+    targetDuration: fieldValue("targetDuration", "75"),
+    maxDuration: fieldValue("maxDuration", "180"),
+    selectionMode: fieldValue("selectionMode", "full"),
+    rangeStart: fieldValue("rangeStart", ""),
+    rangeEnd: fieldValue("rangeEnd", ""),
+    multipleRanges: fieldValue("multipleRanges", ""),
     outputFolder: fieldValue("outputFolder", "outputs/clips"),
-    projectName: fieldValue("projectName", "Cliper YouTube AI Studio"),
+    projectName: fieldValue("projectName", "Cliper Studio Plus"),
     ffmpegPath: fieldValue("ffmpegPath", ""),
     ffprobePath: fieldValue("ffprobePath", ""),
     overwriteExisting: fieldValue("overwriteExisting", false),
     autoRename: fieldValue("autoRename", true),
     createProjectFolder: fieldValue("createProjectFolder", true),
     deleteTempAfterExport: fieldValue("deleteTempAfterExport", true),
+    outputQualityProfile: fieldValue("outputQualityProfile", "balanced"),
     formatProfile: fieldValue("formatProfile", "9:16 YouTube Shorts"),
     resolutionProfile: fieldValue("resolutionProfile", "1080p"),
-    upscaleToggle: fieldValue("upscaleToggle", false),
-    upscaleMethod: fieldValue("upscaleMethod", "FFmpeg Lanczos"),
     crfProfile: fieldValue("crfProfile", "23"),
     fpsProfile: fieldValue("fpsProfile", "Same as source"),
-    captionStyle: fieldValue("captionStyle", "Karaoke bold"),
+    captionStyle: fieldValue("captionStyle", "TikTok style"),
     subtitleBurnToggle: fieldValue("subtitleBurnToggle", false),
     hookOpeningToggle: fieldValue("hookOpeningToggle", false),
     hookDuration: fieldValue("hookDuration", "3 seconds"),
-    smartCropToggle: fieldValue("smartCropToggle", true),
-    dynamicZoomToggle: fieldValue("dynamicZoomToggle", false),
-    pipelineFaceTrack: fieldValue("pipelineFaceTrack", false),
-    pipelineCaption: fieldValue("pipelineCaption", false),
-    pipelineBurnSubtitle: fieldValue("pipelineBurnSubtitle", false),
-    pipelineHook: fieldValue("pipelineHook", false),
+    subtitlePreviewInput: fieldValue("subtitlePreviewInput", "TAPI GUE HERAN"),
+    subtitleFontFamily: fieldValue("subtitleFontFamily", "Arial Black"),
+    subtitleFontPath: fieldValue("subtitleFontPath", ""),
+    subtitleFontSize: fieldValue("subtitleFontSize", "60"),
+    subtitlePrimaryColor: fieldValue("subtitlePrimaryColor", "#ffffff"),
+    subtitleActiveColor: fieldValue("subtitleActiveColor", "#19ff47"),
+    subtitleStrokeColor: fieldValue("subtitleStrokeColor", "#000000"),
+    subtitleShadow: fieldValue("subtitleShadow", "4"),
+    subtitleAnimation: fieldValue("subtitleAnimation", "Scale"),
     ttsHookToggle: fieldValue("ttsHookToggle", false),
-    audioEnhanceToggle: fieldValue("audioEnhanceToggle", false),
-    colorEnhanceToggle: fieldValue("colorEnhanceToggle", false),
-    creditTextToggle: fieldValue("creditTextToggle", false),
-    logoOverlayToggle: fieldValue("logoOverlayToggle", false),
-    pipelineWatermark: fieldValue("pipelineWatermark", false),
+    audioEnhanceToggle: fieldValue("audioEnhanceToggle", true),
     thumbnailPreviewToggle: fieldValue("thumbnailPreviewToggle", false),
     watermarkEnabled: fieldValue("watermarkEnabled", false),
     watermarkInOutput: fieldValue("watermarkInOutput", false),
+    logoAssetPath: fieldValue("logoAssetPath", ""),
+    logoX: fieldValue("logoX", "82"),
+    logoY: fieldValue("logoY", "8"),
+    logoScale: fieldValue("logoScale", "18"),
+    logoOpacity: fieldValue("logoOpacity", "90"),
+    logoRotation: fieldValue("logoRotation", "0"),
     watermarkText: fieldValue("watermarkText"),
     watermarkOpacity: fieldValue("watermarkOpacity", "68"),
     watermarkPosition: fieldValue("watermarkPosition", "Top right"),
+    watermarkTextX: fieldValue("watermarkTextX", "78"),
+    watermarkTextY: fieldValue("watermarkTextY", "16"),
+    watermarkTextSize: fieldValue("watermarkTextSize", "28"),
+    watermarkTextColor: fieldValue("watermarkTextColor", "#ffffff"),
+    watermarkTextStroke: fieldValue("watermarkTextStroke", "#000000"),
+    watermarkTextShadow: fieldValue("watermarkTextShadow", "2"),
+    watermarkFontFamily: fieldValue("watermarkFontFamily", "Arial Black"),
+    watermarkFontPath: fieldValue("watermarkFontPath", ""),
     gpuToggle: fieldValue("gpuToggle", false),
     cookies_path: state.cookiesPath || "",
     cookies_last_import: state.cookiesInfo?.importedAt || "",
@@ -937,45 +2072,75 @@ function buildConfig() {
 
 function applyConfig(config = {}) {
   state.config = config;
-  setValue("#providerType", config.providerType || "local");
+  const providerType = config.providerType === "local" ? "custom" : (config.providerType || "custom");
+  setValue("#providerType", providerType);
   setValue("#baseUrl", config.baseUrl || "");
   setValue("#apiKey", config.apiKey || "");
   setValue("#highlightModel", config.highlightModel || "local-heuristic");
+  applyProviderDefaults(false);
+  setValue("#aiHighlightToggle", config.aiHighlightToggle ?? true);
+  setValue("#aiHookToggle", config.aiHookToggle ?? true);
+  setValue("#aiCaptionToggle", config.aiCaptionToggle ?? true);
+  setValue("#aiTitleToggle", config.aiTitleToggle ?? true);
+  setValue("#aiTtsToggle", config.aiTtsToggle ?? false);
+  setValue("#clipCount", config.clipCount || "6");
+  setValue("#scoreMode", config.scoreMode || "Random Viral Mix");
+  setValue("#minDuration", config.minDuration || "30");
+  setValue("#targetDuration", config.targetDuration || "75");
+  setValue("#maxDuration", config.maxDuration || "180");
+  setValue("#selectionMode", config.selectionMode || "full");
+  setValue("#rangeStart", config.rangeStart || "");
+  setValue("#rangeEnd", config.rangeEnd || "");
+  setValue("#multipleRanges", config.multipleRanges || "");
   setValue("#outputFolder", config.outputFolder || "outputs/clips");
-  setValue("#projectName", config.projectName || "Cliper YouTube AI Studio");
+  setValue("#projectName", config.projectName || "Cliper Studio Plus");
   setValue("#ffmpegPath", config.ffmpegPath || "");
   setValue("#ffprobePath", config.ffprobePath || "");
+  setValue("#outputQualityProfile", config.outputQualityProfile || "balanced");
   setValue("#formatProfile", config.formatProfile || "9:16 YouTube Shorts");
   state.apiLastTestedAt = config.apiLastTestedAt || "";
   state.apiLastLatencyMs = config.apiLastLatencyMs || 0;
   state.apiLastResponse = config.apiLastResponse || "";
+  state.aiUsageToday = normalizeAiUsage(config.aiUsageToday || {});
   setValue("#resolutionProfile", config.resolutionProfile || "1080p");
-  setValue("#upscaleToggle", config.upscaleToggle ?? true);
-  setValue("#upscaleMethod", config.upscaleMethod || "FFmpeg Lanczos");
   setValue("#crfProfile", config.crfProfile || "23");
   setValue("#fpsProfile", config.fpsProfile || "Same as source");
-  setValue("#captionStyle", config.captionStyle || "Karaoke bold");
+  setValue("#captionStyle", config.captionStyle || "TikTok style");
   setValue("#subtitleBurnToggle", config.subtitleBurnToggle ?? false);
   setValue("#hookOpeningToggle", config.hookOpeningToggle ?? false);
   setValue("#hookDuration", config.hookDuration || "3 seconds");
-  setValue("#smartCropToggle", config.smartCropToggle ?? true);
-  setValue("#dynamicZoomToggle", config.dynamicZoomToggle ?? false);
-  setValue("#pipelineFaceTrack", config.pipelineFaceTrack ?? false);
-  setValue("#pipelineCaption", config.pipelineCaption ?? false);
-  setValue("#pipelineBurnSubtitle", config.pipelineBurnSubtitle ?? false);
-  setValue("#pipelineHook", config.pipelineHook ?? false);
+  setValue("#subtitlePreviewInput", config.subtitlePreviewInput || "TAPI GUE HERAN");
+  setValue("#subtitleWordHighlightToggle", config.subtitleWordHighlight ?? true);
+  setValue("#subtitleFontFamily", config.subtitleFontFamily || "Arial Black");
+  setValue("#subtitleFontPath", config.subtitleFontPath || "");
+  setValue("#subtitleFontSize", config.subtitleFontSize || "60");
+  setValue("#subtitlePrimaryColor", config.subtitlePrimaryColor || "#ffffff");
+  setValue("#subtitleActiveColor", !config.subtitleActiveColor || config.subtitleActiveColor === "#ffe600" ? "#19ff47" : config.subtitleActiveColor);
+  setValue("#subtitleStrokeColor", config.subtitleStrokeColor || "#000000");
+  setValue("#subtitleShadow", config.subtitleShadow || "4");
+  setValue("#subtitleAnimation", config.subtitleAnimation || "Scale");
   setValue("#ttsHookToggle", config.ttsHookToggle ?? false);
-  setValue("#audioEnhanceToggle", config.audioEnhanceToggle ?? false);
-  setValue("#colorEnhanceToggle", config.colorEnhanceToggle ?? false);
-  setValue("#creditTextToggle", config.creditTextToggle ?? false);
-  setValue("#logoOverlayToggle", config.logoOverlayToggle ?? false);
-  setValue("#pipelineWatermark", config.pipelineWatermark ?? false);
+  setValue("#audioEnhanceToggle", config.audioEnhanceToggle ?? true);
   setValue("#thumbnailPreviewToggle", config.thumbnailPreviewToggle ?? false);
   setValue("#watermarkEnabled", config.watermarkEnabled ?? false);
   setValue("#watermarkInOutput", config.watermarkInOutput ?? false);
+  setValue("#logoAssetPath", config.logoAssetPath || "");
+  setValue("#logoX", config.logoX || "82");
+  setValue("#logoY", config.logoY || "8");
+  setValue("#logoScale", config.logoScale || "18");
+  setValue("#logoOpacity", config.logoOpacity || "90");
+  setValue("#logoRotation", config.logoRotation || "0");
   setValue("#watermarkText", config.watermarkText || "");
   setValue("#watermarkOpacity", config.watermarkOpacity || "68");
   setValue("#watermarkPosition", config.watermarkPosition || "Top right");
+  setValue("#watermarkTextX", config.watermarkTextX || "78");
+  setValue("#watermarkTextY", config.watermarkTextY || "16");
+  setValue("#watermarkTextSize", config.watermarkTextSize || "28");
+  setValue("#watermarkTextColor", config.watermarkTextColor || "#ffffff");
+  setValue("#watermarkTextStroke", config.watermarkTextStroke || "#000000");
+  setValue("#watermarkTextShadow", config.watermarkTextShadow || "2");
+  setValue("#watermarkFontFamily", config.watermarkFontFamily || "Arial Black");
+  setValue("#watermarkFontPath", config.watermarkFontPath || "");
   setValue("#gpuToggle", config.gpuToggle ?? false);
   setValue("#overwriteExisting", config.overwriteExisting ?? false);
   setValue("#autoRename", config.autoRename ?? true);
@@ -983,16 +2148,22 @@ function applyConfig(config = {}) {
   setValue("#deleteTempAfterExport", config.deleteTempAfterExport ?? true);
   state.cookiesInfo = normalizeCookiesInfo(config);
   state.cookiesPath = state.cookiesInfo?.path || "";
-  setText("#apiStatus", config.providerType === "local" ? "Local heuristic active" : config.apiKey ? "API tersimpan" : "API belum diset");
+  setText("#apiStatus", !config.apiKey ? "Local heuristic active" : "API tersimpan");
   applyProviderDefaults(false);
   renderProviders();
   renderCookiesManager();
+  updateTimelinePreview();
+  updateBrandPreview();
+  updateSubtitlePreview();
+  renderAiUsage();
 }
 
 async function saveConfig(options = {}) {
   const config = buildConfig();
   state.config = config;
-  localStorage.setItem("cliper-config", JSON.stringify(config));
+  const browserSafeConfig = { ...config };
+  delete browserSafeConfig.apiKey;
+  localStorage.setItem("cliper-config", JSON.stringify(browserSafeConfig));
   if (window.cliper?.saveConfig) {
     try {
       await window.cliper.saveConfig(config);
@@ -1001,6 +2172,9 @@ async function saveConfig(options = {}) {
     }
   }
   setText("#apiStatus", config.apiKey ? "API tersimpan" : "API belum diset");
+  if (!config.apiKey) {
+    setText("#apiStatus", "Local heuristic active");
+  }
   renderProviders();
   renderCookiesManager();
   if (!options.silent) toast("Setting disimpan");
@@ -1032,6 +2206,12 @@ async function loadConfig() {
       } catch {}
       pushLog(`[config] gagal membaca config.json: ${error.message}`);
     }
+  }
+  const browserSafeConfig = { ...config };
+  delete browserSafeConfig.apiKey;
+  localStorage.setItem("cliper-config", JSON.stringify(browserSafeConfig));
+  if (config.providerType === "local") {
+    config.providerType = "custom";
   }
   applyConfig(config);
 }
@@ -1163,6 +2343,7 @@ function bindEvents() {
   $$(".settings-tab").forEach((button) => button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab)));
 
   $("#youtubeUrl").addEventListener("input", (event) => {
+    setSourceMode("youtube");
     const clean = event.target.value.replace(/^https?:\/\//, "");
     $("#previewUrl").textContent = clean || "Masukkan link YouTube";
     scheduleMetadataFetch();
@@ -1180,6 +2361,7 @@ function bindEvents() {
       return;
     }
     $("#youtubeUrl").value = text.trim();
+    setSourceMode("youtube");
     $("#previewUrl").textContent = text.trim();
     scheduleMetadataFetch();
     toast("URL ditempel");
@@ -1187,25 +2369,106 @@ function bindEvents() {
 
   $("#clipCount").addEventListener("input", updateCounters);
   $("#clipCount").addEventListener("input", renderPipelinePreview);
-  $("#durationTarget").addEventListener("change", updateCounters);
-  $("#durationTarget").addEventListener("change", renderPipelinePreview);
-  $("#captionStyle").addEventListener("change", updateCounters);
-  enhancementControls.forEach(([id]) => {
+  ["aiHighlightToggle", "aiHookToggle", "aiCaptionToggle", "aiTitleToggle", "aiTtsToggle"].forEach((id) => {
+    const node = $(`#${id}`);
+    if (node) {
+      node.addEventListener("change", () => {
+        renderProviders();
+        renderPipelinePreview();
+        saveConfig({ silent: true });
+      });
+    }
+  });
+  $("#captionStyle").addEventListener("change", () => {
+    updateCounters();
+    updateSubtitlePreview();
+  });
+  $("#outputQualityProfile")?.addEventListener("change", (event) => {
+    applyOutputQualityPreset(event.target.value);
+    saveConfig({ silent: true });
+  });
+  $("#applyReferenceOutputPreset")?.addEventListener("click", () => {
+    applyOutputQualityPreset("capcut_opus_2k");
+    saveConfig({ silent: true });
+  });
+  ["watermarkEnabled", "watermarkInOutput", "gpuToggle", "formatProfile", "resolutionProfile", "fpsProfile", "crfProfile"].forEach((id) => {
     const node = $(`#${id}`);
     if (node) node.addEventListener("change", renderPipelinePreview);
   });
-  [
-    ["subtitleBurnToggle", "pipelineBurnSubtitle"],
-    ["hookOpeningToggle", "pipelineHook"],
-    ["watermarkInOutput", "pipelineWatermark"]
-  ].forEach(([sourceId, targetId]) => {
-    const source = $(`#${sourceId}`);
-    const target = $(`#${targetId}`);
-    if (source && target) {
-      source.addEventListener("change", () => {
-        target.checked = source.checked;
-        renderPipelinePreview();
-      });
+  ["selectionMode", "rangeStart", "rangeEnd", "multipleRanges"].forEach((id) => {
+    const node = $(`#${id}`);
+    if (node) {
+      node.addEventListener("input", updateTimelinePreview);
+      node.addEventListener("change", updateTimelinePreview);
+    }
+  });
+  $("#analysisStartRange")?.addEventListener("input", () => updateAnalysisRangeFromSeekbar("start"));
+  $("#analysisEndRange")?.addEventListener("input", () => updateAnalysisRangeFromSeekbar("end"));
+  ["logoScale", "logoOpacity", "logoRotation", "watermarkText", "watermarkOpacity", "watermarkTextSize", "watermarkTextColor", "watermarkTextStroke", "watermarkTextShadow", "watermarkFontFamily", "watermarkFontPath"].forEach((id) => {
+    const node = $(`#${id}`);
+    if (node) {
+      node.addEventListener("input", updateBrandPreview);
+      node.addEventListener("change", updateBrandPreview);
+    }
+  });
+  ["subtitlePreviewInput", "subtitleFontFamily", "subtitleFontSize", "subtitlePrimaryColor", "subtitleActiveColor", "subtitleStrokeColor", "subtitleShadow", "subtitleAnimation"].forEach((id) => {
+    const node = $(`#${id}`);
+    if (node) {
+      node.addEventListener("input", updateSubtitlePreview);
+      node.addEventListener("change", updateSubtitlePreview);
+    }
+  });
+  $$("[data-brand-preset]").forEach((button) => {
+    button.addEventListener("click", () => setBrandPreset(button.dataset.brandPreset));
+  });
+  $$("[data-subtitle-preset]").forEach((button) => {
+    button.addEventListener("click", () => applySubtitlePreset(button.dataset.subtitlePreset));
+  });
+  bindPreviewDrag($("#brandPreviewLogo"), "logoX", "logoY");
+  bindPreviewDrag($("#brandPreviewText"), "watermarkTextX", "watermarkTextY");
+  $("#chooseLogoAsset")?.addEventListener("click", async () => {
+    if (!window.cliper?.selectLogoFile) {
+      toast("Upload logo tersedia saat dibuka lewat .exe");
+      return;
+    }
+    const filePath = await window.cliper.selectLogoFile();
+    if (filePath) {
+      setValue("#logoAssetPath", filePath);
+      setValue("#watermarkEnabled", true);
+      setValue("#watermarkInOutput", true);
+      updateBrandPreview();
+      await saveConfig({ silent: true });
+      toast("Logo watermark dipilih");
+    }
+  });
+  $("#chooseSubtitleFont")?.addEventListener("click", async () => {
+    if (!window.cliper?.selectFontFile) {
+      toast("Upload font tersedia saat dibuka lewat .exe");
+      return;
+    }
+    const filePath = await window.cliper.selectFontFile();
+    if (filePath) {
+      setValue("#subtitleFontPath", filePath);
+      const baseName = filePath.split(/[\\/]/).pop()?.replace(/\.(ttf|otf)$/i, "");
+      if (baseName) setValue("#subtitleFontFamily", baseName);
+      updateSubtitlePreview();
+      await saveConfig({ silent: true });
+      toast("Font subtitle dipilih");
+    }
+  });
+  $("#chooseWatermarkFont")?.addEventListener("click", async () => {
+    if (!window.cliper?.selectFontFile) {
+      toast("Upload font tersedia saat dibuka lewat .exe");
+      return;
+    }
+    const filePath = await window.cliper.selectFontFile();
+    if (filePath) {
+      setValue("#watermarkFontPath", filePath);
+      const baseName = filePath.split(/[\\/]/).pop()?.replace(/\.(ttf|otf)$/i, "");
+      if (baseName) setValue("#watermarkFontFamily", baseName);
+      updateBrandPreview();
+      await saveConfig({ silent: true });
+      toast("Font watermark dipilih");
     }
   });
 
@@ -1227,24 +2490,277 @@ function bindEvents() {
 
   $("#scanSubtitles").addEventListener("click", scanSubtitles);
   $("#findMoments").addEventListener("click", findMoments);
-  $("#processSelected").addEventListener("click", startProcessing);
+  $("#momentSearch")?.addEventListener("input", (event) => {
+    state.momentSearch = event.target.value;
+    renderMoments();
+  });
+  $("#momentQualityFilter")?.addEventListener("change", (event) => {
+    state.momentQualityFilter = event.target.value;
+    renderMoments();
+  });
+  $("#momentSort")?.addEventListener("change", (event) => {
+    state.momentSort = event.target.value;
+    renderMoments();
+  });
+  $("#processSelected").addEventListener("click", openProcessDialog);
 
   $("#momentGrid").addEventListener("change", (event) => {
     const id = Number(event.target.dataset.toggleMoment);
     if (!id) return;
+    const item = momentBank.find((moment) => moment.id === id);
+    if (item?.renderEligible === false) {
+      event.target.checked = false;
+      state.selectedMoments.delete(id);
+      toast("Score di bawah 65 belum layak render otomatis");
+      renderMoments();
+      return;
+    }
     if (event.target.checked) {
       state.selectedMoments.add(id);
     } else {
       state.selectedMoments.delete(id);
     }
     renderMoments();
+    updateProcessButtons();
+  });
+  $("#momentGrid").addEventListener("input", (event) => {
+    const startId = Number(event.target.dataset.inlineStart || 0);
+    const endId = Number(event.target.dataset.inlineEnd || 0);
+    if (startId) {
+      const moment = momentBank.find((item) => item.id === startId);
+      if (!moment) return;
+      updateMomentTiming(startId, Number(event.target.value) / 10, moment.end);
+      renderMoments();
+      return;
+    }
+    if (endId) {
+      const moment = momentBank.find((item) => item.id === endId);
+      if (!moment) return;
+      updateMomentTiming(endId, moment.start, Number(event.target.value) / 10, { seek: false });
+      renderMoments();
+    }
+  });
+  $("#momentGrid").addEventListener("click", (event) => {
+    if (event.target.closest("input, button, a, select, textarea")) {
+      // Button-specific handlers below still run because they are checked first.
+    }
+    const rowButton = event.target.closest("[data-moment-row]");
+    const playButton = event.target.closest("[data-play-moment]");
+    const acceptButton = event.target.closest("[data-accept-moment]");
+    const rejectButton = event.target.closest("[data-reject-moment]");
+    const regenerateButton = event.target.closest("[data-regenerate-moment]");
+    const inlineAdjustStart = event.target.closest("[data-inline-adjust-start]");
+    const inlineAdjustEnd = event.target.closest("[data-inline-adjust-end]");
+    const inlineBetterStart = event.target.closest("[data-inline-better-start]");
+    const inlineBetterEnd = event.target.closest("[data-inline-better-end]");
+    const id = Number(
+      rowButton?.dataset.momentRow ||
+      playButton?.dataset.playMoment ||
+      acceptButton?.dataset.acceptMoment ||
+      rejectButton?.dataset.rejectMoment ||
+      regenerateButton?.dataset.regenerateMoment ||
+      inlineAdjustStart?.dataset.inlineAdjustStart ||
+      inlineAdjustEnd?.dataset.inlineAdjustEnd ||
+      inlineBetterStart?.dataset.inlineBetterStart ||
+      inlineBetterEnd?.dataset.inlineBetterEnd ||
+      0
+    );
+    if (!id) return;
+    if (inlineAdjustStart) {
+      const moment = momentBank.find((item) => item.id === id);
+      if (!moment) return;
+      updateMomentTiming(id, moment.start + Number(inlineAdjustStart.dataset.delta || 0), moment.end);
+      renderMoments();
+      return;
+    }
+    if (inlineAdjustEnd) {
+      const moment = momentBank.find((item) => item.id === id);
+      if (!moment) return;
+      updateMomentTiming(id, moment.start, moment.end + Number(inlineAdjustEnd.dataset.delta || 0), { seek: false });
+      renderMoments();
+      return;
+    }
+    if (inlineBetterStart) {
+      setActiveMoment(id);
+      suggestBetterBoundary("start");
+      renderMoments();
+      return;
+    }
+    if (inlineBetterEnd) {
+      setActiveMoment(id);
+      suggestBetterBoundary("end");
+      renderMoments();
+      return;
+    }
+    if (playButton) {
+      setActiveMoment(id);
+      const video = $(`[data-inline-video="${id}"]`) || $("#momentPreviewVideo");
+      if (video) {
+        video.currentTime = activeMoment()?.start || 0;
+        video.play().catch(() => toast("Preview video belum siap"));
+      }
+      return;
+    }
+    if (acceptButton) {
+      const item = momentBank.find((moment) => moment.id === id);
+      if (item?.renderEligible === false) {
+        toast("Score di bawah 65. Edit atau regenerate dulu sebelum render.");
+        return;
+      }
+      state.selectedMoments.add(id);
+      if (item) item.approved = true;
+      renderMoments();
+      updateProcessButtons();
+      toast("Clip accepted untuk render");
+      return;
+    }
+    if (rejectButton) {
+      const item = momentBank.find((moment) => moment.id === id);
+      if (item) item.rejected = true;
+      state.selectedMoments.delete(id);
+      if (state.activeMomentId === id) state.activeMomentId = activeMoment()?.id || null;
+      renderMomentReview();
+      renderMoments();
+      updateProcessButtons();
+      toast("Moment ditolak");
+      return;
+    }
+    if (regenerateButton) {
+      setActiveMoment(id);
+      regenerateActiveMoment();
+      return;
+    }
+    if (rowButton && !event.target.closest("input, button, a, select, textarea")) {
+      setActiveMoment(id);
+    }
+  });
+
+  $("#momentPreviewVideo")?.addEventListener("timeupdate", () => {
+    const moment = activeMoment();
+    const video = $("#momentPreviewVideo");
+    if (!moment || !video) return;
+    // keep subtitle in sync on time updates
+    updateReviewSubtitle();
+    if (video.currentTime > moment.end) {
+      video.pause();
+      video.currentTime = moment.end;
+    }
+  });
+  $("#momentPreviewVideo")?.addEventListener("play", () => startSubtitleSync());
+  $("#momentPreviewVideo")?.addEventListener("pause", () => cancelSubtitleSync());
+  $("#momentPreviewVideo")?.addEventListener("seeked", () => updateReviewSubtitle());
+  $("#momentPreviewVideo")?.addEventListener("loadedmetadata", renderMomentReview);
+  $("#reviewPlayPause")?.addEventListener("click", () => {
+    const video = $("#momentPreviewVideo");
+    if (!video) return;
+    if (video.paused) {
+      const moment = activeMoment();
+      if (moment && (video.currentTime < moment.start || video.currentTime >= moment.end)) {
+        video.currentTime = moment.start;
+      }
+      video.play().catch(() => toast("Preview video belum siap"));
+    } else {
+      video.pause();
+    }
+  });
+  $("#reviewStartRange")?.addEventListener("input", () => {
+    const moment = activeMoment();
+    if (!moment) return;
+    updateMomentTiming(moment.id, Number($("#reviewStartRange").value) / 10, moment.end);
+    renderMoments();
+  });
+  $("#reviewEndRange")?.addEventListener("input", () => {
+    const moment = activeMoment();
+    if (!moment) return;
+    updateMomentTiming(moment.id, moment.start, Number($("#reviewEndRange").value) / 10, { seek: false });
+    renderMoments();
+  });
+  $("#reviewStartInput")?.addEventListener("change", () => {
+    const moment = activeMoment();
+    if (!moment) return;
+    updateMomentTiming(moment.id, parseTimeInput($("#reviewStartInput").value, moment.start), moment.end);
+    renderMoments();
+  });
+  $("#reviewEndInput")?.addEventListener("change", () => {
+    const moment = activeMoment();
+    if (!moment) return;
+    updateMomentTiming(moment.id, moment.start, parseTimeInput($("#reviewEndInput").value, moment.end), { seek: false });
+    renderMoments();
+  });
+  $$("[data-adjust-start]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const moment = activeMoment();
+      if (!moment) return;
+      updateMomentTiming(moment.id, moment.start + Number(button.dataset.adjustStart), moment.end);
+      renderMoments();
+    });
+  });
+  $$("[data-adjust-end]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const moment = activeMoment();
+      if (!moment) return;
+      updateMomentTiming(moment.id, moment.start, moment.end + Number(button.dataset.adjustEnd), { seek: false });
+      renderMoments();
+    });
+  });
+  $("#suggestBetterStart")?.addEventListener("click", () => {
+    suggestBetterBoundary("start");
+    renderMoments();
+  });
+  $("#suggestBetterEnding")?.addEventListener("click", () => {
+    suggestBetterBoundary("end");
+    renderMoments();
+  });
+  $("#regenerateMoment")?.addEventListener("click", regenerateActiveMoment);
+  $("#rejectMoment")?.addEventListener("click", () => {
+    const moment = activeMoment();
+    if (!moment) return;
+    moment.rejected = true;
+    state.selectedMoments.delete(moment.id);
+    state.activeMomentId = activeMoment()?.id || null;
+    renderMomentReview();
+    renderMoments();
+    updateProcessButtons();
+  });
+  $("#acceptMoment")?.addEventListener("click", () => {
+    const moment = activeMoment();
+    if (!moment) return;
+    state.selectedMoments.add(moment.id);
+    moment.approved = true;
+    renderMoments();
+    updateProcessButtons();
+    toast("Clip accepted untuk render");
+  });
+  document.addEventListener("keydown", (event) => {
+    if (state.view !== "moments") return;
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(event.target?.tagName)) return;
+    const video = $("#momentPreviewVideo");
+    if (!video) return;
+    if (event.code === "Space") {
+      event.preventDefault();
+      $("#reviewPlayPause")?.click();
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      video.currentTime = Math.max(0, video.currentTime - (event.shiftKey ? 5 : 1));
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      video.currentTime = Math.min(videoDurationLimit(), video.currentTime + (event.shiftKey ? 5 : 1));
+    }
+  });
+
+  $("#sessionList").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-open-session]");
+    if (!button) return;
+    openSessionFolder(button.dataset.openSession);
   });
 
   $("#selectAllButton").addEventListener("click", () => {
-    const allSelected = state.selectedMoments.size === momentBank.length;
-    state.selectedMoments = new Set(allSelected ? [] : momentBank.map((item) => item.id));
+    const visibleMoments = momentBank.filter((item) => !item.rejected && item.renderEligible !== false);
+    const allSelected = visibleMoments.length > 0 && visibleMoments.every((item) => state.selectedMoments.has(item.id));
+    state.selectedMoments = new Set(allSelected ? [] : visibleMoments.map((item) => item.id));
     $("#selectAllButton").textContent = allSelected ? "Pilih semua" : "Kosongkan";
     renderMoments();
+    updateProcessButtons();
   });
 
   $("#cancelJob").addEventListener("click", async () => {
@@ -1265,6 +2781,7 @@ function bindEvents() {
   });
 
   $("#resetButton").addEventListener("click", () => {
+    setSourceMode("youtube");
     $("#youtubeUrl").value = "";
     $("#previewUrl").textContent = "Masukkan link YouTube";
     $("#previewTitle").textContent = "Belum ada video";
@@ -1272,6 +2789,8 @@ function bindEvents() {
     state.previewImageUrl = "";
     $("#clipCount").value = 6;
     state.lastAnalysis = null;
+    state.lastTranscript = [];
+    state.activeMomentId = null;
     state.selectedMoments = new Set();
     momentBank = [];
     updateCounters();
@@ -1302,7 +2821,14 @@ function bindEvents() {
     renderPipelinePreview();
   });
   $("#baseUrl").addEventListener("input", renderProviders);
-  $("#apiKey").addEventListener("input", renderProviders);
+  $("#apiKey").addEventListener("input", () => {
+    renderProviders();
+    const payload = providerPayload();
+    if (payload.providerType === "local") {
+      setProviderStatus("Local mode active ✓ API optional", true);
+      setText("#apiStatus", "Local heuristic active");
+    }
+  });
   $("#toggleApiKeyVisibility").addEventListener("click", () => {
     const input = $("#apiKey");
     const button = $("#toggleApiKeyVisibility");
@@ -1326,13 +2852,18 @@ function bindEvents() {
       window.open(url, "_blank", "noopener");
     }
   });
-  $("#openRuntimeGuide").addEventListener("click", () => {
-    const url = "https://github.com/yt-dlp/yt-dlp#dependencies";
-    if (window.cliper?.openExternal) {
-      window.cliper.openExternal(url);
-    } else {
-      window.open(url, "_blank", "noopener");
+  $("#openRuntimeGuide").addEventListener("click", async () => {
+    if (window.cliper?.openUserGuide) {
+      const result = await window.cliper.openUserGuide();
+      if (result?.ok) {
+        pushLog(`[guide] panduan pengguna dibuka: ${result.path}`);
+        return;
+      }
+      pushLog(`[guide] ${result?.message || "Panduan lokal tidak dapat dibuka"}`);
     }
+    const url = "https://github.com/yt-dlp/yt-dlp/wiki/Installation";
+    if (window.cliper?.openExternal) window.cliper.openExternal(url);
+    else window.open(url, "_blank", "noopener");
   });
   $("#cookiesDropZone").addEventListener("click", importCookies);
   $("#cookiesDropZone").addEventListener("dragover", (event) => {
@@ -1365,12 +2896,32 @@ function bindEvents() {
       if (event.type === "progress") {
         state.progress = Number(event.progress || state.progress || 0);
         $("#progressBar").style.width = `${state.progress}%`;
+        if (state.progress >= 100 || String(event.stage || "").toLowerCase() === "done") {
+          stepDefinitions().forEach((step) => {
+            if (state.renderStepStatus[step.id] !== "error") state.renderStepStatus[step.id] = "done";
+          });
+        } else {
+          setActiveStep(event.stage || event.message, "active");
+        }
         pushLog(`[${String(Math.round(state.progress)).padStart(3, "0")}%] ${event.message || event.stage}`);
         updateRenderStats(event);
         renderSteps();
       } else if (event.type === "log") {
         pushLog(event.message);
+      } else if (event.type === "clip_done") {
+        pushLog(`[done] Clip ${event.clipIndex}/${event.totalClips}: ${event.title || "selesai"}`);
+        setActiveStep("watermark", "done");
+        renderSteps();
+      } else if (event.type === "clip_error") {
+        state.renderErrors.push(event);
+        setActiveStep(event.stage || "portrait", "error");
+        pushLog(`[error] Clip ${event.clipIndex}/${event.totalClips}: ${event.message}`);
+        renderSteps();
       } else if (event.type === "error") {
+        if (state.jobMode === "render") {
+          setActiveStep($("#renderStageStat")?.textContent || "portrait", "error");
+          renderSteps();
+        }
         pushLog(`[error] ${event.message}`);
       }
     });
@@ -1388,6 +2939,7 @@ async function init() {
   renderCookiesManager();
   renderRuntimeList();
   renderPipelinePreview();
+  setText("#appVersion", `v${APP_VERSION}`);
   updateCounters();
   drawPreview();
 }

@@ -1,19 +1,25 @@
 {
-  "name": "cliper-youtube-ai-studio",
-  "version": "1.0.0",
-  "description": "Cliper YouTube AI Studio desktop prototype",
-  "author": "Cliper AI Studio",
+  "name": "cliper-studio-plus",
+  "version": "1.10.0-beta.3",
+  "description": "Local-first AI video clipping studio for YouTube Shorts, TikTok, Reels, Facebook and Podcasts.",
+  "author": "Cliper Studio Plus",
   "main": "electron/main.js",
   "private": true,
   "scripts": {
     "start": "set ELECTRON_RUN_AS_NODE=& electron .",
-    "build": "electron-builder --win portable"
+    "build": "electron-builder --win",
+    "test": "python -m pytest tests -q",
+    "qa:syntax": "node --check app.js && node --check electron/main.js && node --check electron/preload.js",
+    "qa:production": "node scripts/qa-production-check.js"
   },
   "build": {
-    "appId": "com.cliper.youtubeaistudio",
-    "productName": "Cliper YouTube AI Studio",
-    "artifactName": "Cliper YouTube AI Studio.exe",
-    "asar": false,
+    "appId": "com.cliperstudio.plus",
+    "productName": "Cliper Studio Plus",
+    "asar": true,
+    "asarUnpack": [
+      "worker/**/*"
+    ],
+    "copyright": "Copyright © 2026 Cliper Studio Plus",
     "directories": {
       "output": "dist"
     },
@@ -21,20 +27,47 @@
       "index.html",
       "styles.css",
       "app.js",
+      "assets/**/*",
       "electron/**/*",
       "worker/**/*",
+      "scripts/**/*",
       "README.md"
     ],
+    "extraResources": [
+      {
+        "from": "docs/PANDUAN_PENGGUNA.md",
+        "to": "docs/PANDUAN_PENGGUNA.md"
+      },
+      {
+        "from": "requirements-runtime.txt",
+        "to": "requirements-runtime.txt"
+      },
+      {
+        "from": "scripts/install-runtime.ps1",
+        "to": "runtime/install-runtime.ps1"
+      }
+    ],
     "win": {
+      "icon": "assets/icon.ico",
       "target": [
-        "portable"
+        "portable",
+        "nsis"
       ],
-      "signAndEditExecutable": false,
+      "signAndEditExecutable": true,
       "forceCodeSigning": false
+    },
+    "portable": {
+      "artifactName": "Cliper-Studio-Plus-Portable.${ext}"
+    },
+    "nsis": {
+      "artifactName": "Cliper-Studio-Plus-Setup.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
     }
   },
   "devDependencies": {
-    "electron": "^32.3.3",
-    "electron-builder": "^25.1.8"
+    "electron": "^42.5.0",
+    "electron-builder": "^26.15.3"
   }
 }
