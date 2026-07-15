@@ -1,0 +1,487 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../packages/database/generated"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  SUPPORT
+  MEMBER
+}
+
+enum PlanCode {
+  FREE
+  STARTER
+  PRO
+  TEAM
+  ENTERPRISE
+}
+
+enum KeyStatus {
+  ACTIVE
+  SUSPENDED
+  REVOKED
+  EXPIRED
+}
+
+enum ProviderStatus {
+  HEALTHY
+  DEGRADED
+  OFFLINE
+  DISABLED
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  EXPIRED
+}
+
+enum LedgerType {
+  GRANT
+  RESERVE
+  SETTLE
+  REFUND
+  ADJUSTMENT
+  EXPIRE
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  EXPIRED
+  REFUNDED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  OPEN
+  PAID
+  VOID
+  OVERDUE
+  REFUNDED
+}
+
+enum SystemLogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+  FATAL
+}
+
+model User {
+  id              String               @id @default(cuid())
+  email           String               @unique
+  passwordHash    String
+  displayName     String
+  role            UserRole             @default(MEMBER)
+  isActive        Boolean              @default(true)
+  memberships     Subscription[]
+  apiKeys         ApiKey[]
+  devices         Device[]
+  sessions        Session[]
+  payments        PaymentTransaction[]
+  invoices        Invoice[]
+  licenses        License[]
+  creditAccount   UserCreditAccount?
+  pricingPolicies PricingPolicy[]      @relation("PricingPolicyCreator")
+  auditLogs       AuditLog[]           @relation("AuditActor")
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  @@map("users")
+}
+
+model Session {
+  id               String    @id @default(cuid())
+  userId           String
+  tokenFamily      String
+  refreshTokenHash String    @unique
+  userAgent        String?
+  ipAddress        String?
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  replacedById     String?
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt        DateTime  @default(now())
+
+  @@index([userId, revokedAt])
+  @@index([tokenFamily])
+  @@map("sessions")
+}
+
+model Plan {
+  code               PlanCode       @id
+  name               String
+  priceIdr           Int
+  monthlyCreditMicro BigInt
+  deviceLimit        Int            @default(1)
+  requestPriority    Int            @default(100)
+  isActive           Boolean        @default(true)
+  subscriptions      Subscription[]
+  licenses           License[]
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@map("plans")
+}
+
+model Subscription {
+  id                 String               @id @default(cuid())
+  userId             String
+  planCode           PlanCode
+  status             SubscriptionStatus   @default(ACTIVE)
+  monthlyCreditMicro BigInt               @default(0)
+  currentPeriodStart DateTime             @default(now())
+  currentPeriodEnd   DateTime?
+  cancelAtPeriodEnd  Boolean              @default(false)
+  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planDefinition     Plan                 @relation(fields: [planCode], references: [code], onDelete: Restrict)
+  creditEntries      CreditLedger[]
+  creditAccount      UserCreditAccount?
+  payments           PaymentTransaction[]
+  invoices           Invoice[]
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  @@index([userId, status])
+  @@index([planCode, status])
+  @@map("subscriptions")
+}
+
+model ApiKey {
+  id            String         @id @default(cuid())
+  userId        String
+  name          String
+  prefix        String
+  secretHash    String         @unique
+  status        KeyStatus      @default(ACTIVE)
+  plan          PlanCode       @default(FREE)
+  deviceLimit   Int            @default(1)
+  expiresAt     DateTime?
+  lastUsedAt    DateTime?
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  usages        AiUsage[]
+  devices       Device[]
+  creditEntries CreditLedger[]
+  license       License?
+  createdAt     DateTime       @default(now())
+
+  @@index([userId, status])
+  @@map("api_keys")
+}
+
+model Device {
+  id          String    @id @default(cuid())
+  userId      String
+  apiKeyId    String?
+  licenseId   String?
+  fingerprint String
+  name        String
+  platform    String?
+  lastSeenAt  DateTime  @default(now())
+  revokedAt   DateTime?
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apiKey      ApiKey?   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  license     License?  @relation(fields: [licenseId], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+
+  @@unique([userId, fingerprint])
+  @@index([apiKeyId, revokedAt])
+  @@index([licenseId, revokedAt])
+  @@map("devices")
+}
+
+model License {
+  id          String    @id @default(cuid())
+  userId      String
+  apiKeyId    String    @unique
+  planCode    PlanCode
+  status      KeyStatus @default(ACTIVE)
+  deviceLimit Int       @default(1)
+  startsAt    DateTime  @default(now())
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  metadata    Json?
+  user        User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  apiKey      ApiKey    @relation(fields: [apiKeyId], references: [id], onDelete: Restrict)
+  plan        Plan      @relation(fields: [planCode], references: [code], onDelete: Restrict)
+  devices     Device[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId, status])
+  @@index([planCode, status])
+  @@map("licenses")
+}
+
+model UserCreditAccount {
+  id                   String         @id @default(cuid())
+  userId               String         @unique
+  subscriptionId       String?        @unique
+  balanceMicro         BigInt         @default(0)
+  reservedMicro        BigInt         @default(0)
+  lifetimeGrantedMicro BigInt         @default(0)
+  lifetimeSpentMicro   BigInt         @default(0)
+  user                 User           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  subscription         Subscription?  @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  transactions         CreditLedger[]
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  @@map("user_credits")
+}
+
+model AiProvider {
+  id                 String          @id @default(cuid())
+  code               String          @unique
+  displayName        String
+  baseUrl            String
+  encryptedKeyBundle String
+  defaultModel       String
+  status             ProviderStatus  @default(HEALTHY)
+  priority           Int             @default(100)
+  inputUsdPerM       Decimal         @default(0) @db.Decimal(12, 6)
+  outputUsdPerM      Decimal         @default(0) @db.Decimal(12, 6)
+  markupBpsOverride  Int?
+  lastHealthAt       DateTime?
+  lastLatencyMs      Int?
+  usages             AiUsage[]
+  logs               ProviderLog[]
+  priceHistory       ProviderPrice[]
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  @@map("providers")
+}
+
+model ProviderPrice {
+  id            String     @id @default(cuid())
+  providerId    String
+  model         String
+  inputUsdPerM  Decimal    @db.Decimal(12, 6)
+  outputUsdPerM Decimal    @db.Decimal(12, 6)
+  source        String?
+  effectiveFrom DateTime   @default(now())
+  effectiveTo   DateTime?
+  provider      AiProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  createdAt     DateTime   @default(now())
+
+  @@index([providerId, model, effectiveFrom])
+  @@map("provider_prices")
+}
+
+model PricingPolicy {
+  id                    String    @id @default(cuid())
+  name                  String
+  markupBps             Int       @default(5000)
+  computeCostMicroUsd   BigInt    @default(0)
+  paymentFeeBps         Int       @default(0)
+  reserveBps            Int       @default(0)
+  minimumChargeMicroUsd BigInt    @default(0)
+  microUsdPerCredit     BigInt    @default(100)
+  isDefault             Boolean   @default(false)
+  effectiveFrom         DateTime  @default(now())
+  effectiveTo           DateTime?
+  createdById           String?
+  createdBy             User?     @relation("PricingPolicyCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([isDefault, effectiveFrom])
+  @@map("pricing_policies")
+}
+
+model AiUsage {
+  id                String         @id @default(cuid())
+  apiKeyId          String
+  providerId        String?
+  module            String
+  model             String
+  requestId         String         @unique
+  inputTokens       Int            @default(0)
+  outputTokens      Int            @default(0)
+  providerCostMicro BigInt         @default(0)
+  serviceCostMicro  BigInt         @default(0)
+  billedCostMicro   BigInt         @default(0)
+  grossProfitMicro  BigInt         @default(0)
+  creditChargeMicro BigInt         @default(0)
+  markupBps         Int            @default(0)
+  pricingSnapshot   Json?
+  latencyMs         Int
+  success           Boolean
+  errorCode         String?
+  apiKey            ApiKey         @relation(fields: [apiKeyId], references: [id], onDelete: Restrict)
+  provider          AiProvider?    @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  creditEntries     CreditLedger[]
+  createdAt         DateTime       @default(now())
+
+  @@index([apiKeyId, createdAt])
+  @@index([providerId, createdAt])
+  @@index([module, createdAt])
+  @@map("provider_usage")
+}
+
+model ProviderLog {
+  id           String     @id @default(cuid())
+  providerId   String
+  requestId    String?
+  event        String
+  statusCode   Int?
+  latencyMs    Int?
+  errorCode    String?
+  safeMetadata Json?
+  provider     AiProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+
+  @@index([providerId, createdAt])
+  @@index([requestId])
+  @@map("provider_logs")
+}
+
+model CreditLedger {
+  id                String            @id @default(cuid())
+  accountId         String
+  subscriptionId    String?
+  apiKeyId          String?
+  usageId           String?
+  type              LedgerType
+  amountMicro       BigInt
+  balanceAfterMicro BigInt
+  idempotencyKey    String            @unique
+  description       String?
+  costSnapshot      Json?
+  account           UserCreditAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  subscription      Subscription?     @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  apiKey            ApiKey?           @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  usage             AiUsage?          @relation(fields: [usageId], references: [id], onDelete: SetNull)
+  createdAt         DateTime          @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([subscriptionId, createdAt])
+  @@index([apiKeyId, createdAt])
+  @@map("credit_transactions")
+}
+
+model PaymentTransaction {
+  id             String        @id @default(cuid())
+  userId         String
+  subscriptionId String?
+  provider       String
+  externalId     String
+  amountIdr      Int
+  status         PaymentStatus @default(PENDING)
+  idempotencyKey String        @unique
+  paidAt         DateTime?
+  metadata       Json?
+  user           User          @relation(fields: [userId], references: [id], onDelete: Restrict)
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  invoice        Invoice?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@unique([provider, externalId])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@map("payments")
+}
+
+model Invoice {
+  id             String              @id @default(cuid())
+  number         String              @unique
+  userId         String
+  subscriptionId String?
+  paymentId      String?             @unique
+  status         InvoiceStatus       @default(DRAFT)
+  currency       String              @default("IDR")
+  subtotalIdr    Int
+  taxIdr         Int                 @default(0)
+  totalIdr       Int
+  issuedAt       DateTime            @default(now())
+  dueAt          DateTime?
+  paidAt         DateTime?
+  metadata       Json?
+  user           User                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  subscription   Subscription?       @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  payment        PaymentTransaction? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  items          InvoiceItem[]
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([status, dueAt])
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id           String   @id @default(cuid())
+  invoiceId    String
+  description  String
+  quantity     Int      @default(1)
+  unitPriceIdr Int
+  amountIdr    Int
+  metadata     Json?
+  invoice      Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+
+  @@index([invoiceId])
+  @@map("invoice_items")
+}
+
+model RoutingRule {
+  id             String   @id @default(cuid())
+  module         String
+  planCode       PlanCode @default(FREE)
+  providerOrder  Json
+  modelOverrides Json?
+  maxRetries     Int      @default(2)
+  timeoutMs      Int      @default(45000)
+  enabled        Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([module, planCode])
+  @@index([planCode, enabled])
+  @@map("ai_routes")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String
+  entityType String
+  entityId   String?
+  metadata   Json?
+  ipAddress  String?
+  actor      User?    @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  createdAt  DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+model SystemLog {
+  id          String         @id @default(cuid())
+  level       SystemLogLevel @default(INFO)
+  service     String
+  event       String
+  requestId   String?
+  message     String
+  safeContext Json?
+  createdAt   DateTime       @default(now())
+
+  @@index([level, createdAt])
+  @@index([service, event, createdAt])
+  @@index([requestId])
+  @@map("system_logs")
+}

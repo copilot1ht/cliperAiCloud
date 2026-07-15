@@ -1,0 +1,34 @@
+import { Body, Controller, Headers, Post, Res } from "@nestjs/common";
+import type { Response } from "express";
+import { clearSessionCookie, sessionCookie, sessionToken } from "../security/session-cookie.js";
+import { AuthService } from "./auth.service.js";
+
+@Controller("api/auth")
+export class AuthController {
+  constructor(private readonly auth: AuthService) {}
+
+  @Post("register")
+  async register(@Body() input: { email?: string; password?: string; displayName?: string }, @Res({ passthrough: true }) response: Response) {
+    const result = await this.auth.register(input);
+    response.setHeader("Set-Cookie", sessionCookie(result.token, result.expiresAt));
+    return result;
+  }
+
+  @Post("login")
+  async login(@Body() input: { email?: string; password?: string }, @Res({ passthrough: true }) response: Response) {
+    const result = await this.auth.login(input);
+    response.setHeader("Set-Cookie", sessionCookie(result.token, result.expiresAt));
+    return result;
+  }
+
+  @Post("session")
+  session(@Headers("authorization") authorization?: string, @Headers("cookie") cookie?: string) {
+    return this.auth.session(sessionToken(authorization, cookie));
+  }
+
+  @Post("logout")
+  logout(@Res({ passthrough: true }) response: Response, @Headers("authorization") authorization?: string, @Headers("cookie") cookie?: string) {
+    response.setHeader("Set-Cookie", clearSessionCookie());
+    return this.auth.logout(sessionToken(authorization, cookie));
+  }
+}

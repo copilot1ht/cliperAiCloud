@@ -1,0 +1,17 @@
+node_modules/
+.turbo/
+.next/
+.vercel/
+dist/
+coverage/
+.logs/
+.run/
+backups/
+.env*
+!.env.example
+*.log
+*.dump
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+packages/database/generated/

@@ -1,0 +1,33 @@
+{
+  "name": "cliper-ai-cloud",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.5.0",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "dev": "turbo dev --concurrency=12",
+    "dev:web": "pnpm --filter @cliper/web dev",
+    "dev:api": "pnpm --filter @cliper/api dev",
+    "build": "turbo build",
+    "typecheck": "turbo typecheck",
+    "test": "turbo test",
+    "lint": "turbo lint",
+    "format": "prettier --write .",
+    "db:generate": "prisma generate",
+    "db:validate": "prisma validate",
+    "db:migrate": "prisma migrate dev",
+    "config:check": "pnpm --filter @cliper/api config:check",
+    "backup:postgres": "powershell -ExecutionPolicy Bypass -File scripts/backup-postgres.ps1",
+    "qa:signed-session": "powershell -ExecutionPolicy Bypass -File scripts/qa-signed-session.ps1",
+    "qa": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "dotenv": "^17.2.3",
+    "prettier": "^3.6.2",
+    "prisma": "^7.8.0",
+    "turbo": "^2.5.8",
+    "typescript": "^5.9.3"
+  }
+}
