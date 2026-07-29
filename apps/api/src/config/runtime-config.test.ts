@@ -13,6 +13,9 @@ const safeProduction = {
   BOOTSTRAP_ADMIN_EMAIL: "admin@cliper.test",
   BOOTSTRAP_ADMIN_PASSWORD_HASH: "argon-hash-placeholder",
   GEMINI_API_KEYS: "gemini-key",
+  GEMINI_INPUT_USD_PER_M: "0.1",
+  GEMINI_OUTPUT_USD_PER_M: "0.4",
+  ANALYSIS_BILLING_STORAGE: "postgres",
 };
 
 describe("validateRuntimeConfig", () => {

@@ -3,6 +3,7 @@ import type { Request } from "express";
 import { AuthService } from "../auth/auth.service.js";
 import { SessionGuard, type SessionAuthenticatedRequest } from "../security/session.guard.js";
 import { PaymentService } from "./payment.service.js";
+import { AccountWriteGuard } from "../security/account-write.guard.js";
 
 type WebhookRequest = Request & { rawBody?: Buffer };
 
@@ -25,10 +26,10 @@ export class PaymentController {
   }
 
   @Post("invoices")
-  @UseGuards(SessionGuard)
-  createInvoice(@Req() request: SessionAuthenticatedRequest, @Body() input: { plan?: string }) {
+  @UseGuards(SessionGuard, AccountWriteGuard)
+  async createInvoice(@Req() request: SessionAuthenticatedRequest, @Body() input: { plan?: string }) {
     const userId = request.cliperSession?.userId || "";
-    const user = this.auth.userById(userId);
+    const user = await this.auth.userById(userId);
     return this.payments.createInvoice({
       id: user.id,
       email: user.email,
@@ -37,10 +38,10 @@ export class PaymentController {
   }
 
   @Post("topups")
-  @UseGuards(SessionGuard)
-  createTopup(@Req() request: SessionAuthenticatedRequest, @Body() input: { amountIdr?: number }) {
+  @UseGuards(SessionGuard, AccountWriteGuard)
+  async createTopup(@Req() request: SessionAuthenticatedRequest, @Body() input: { amountIdr?: number }) {
     const userId = request.cliperSession?.userId || "";
-    const user = this.auth.userById(userId);
+    const user = await this.auth.userById(userId);
     return this.payments.createTopupInvoice({
       id: user.id,
       email: user.email,
@@ -55,13 +56,13 @@ export class PaymentController {
   }
 
   @Post("invoices/:number/sync")
-  @UseGuards(SessionGuard)
+  @UseGuards(SessionGuard, AccountWriteGuard)
   syncInvoice(@Req() request: SessionAuthenticatedRequest, @Param("number") number: string) {
     return this.payments.syncInvoiceStatus(request.cliperSession?.userId || "", number);
   }
 
   @Post("sandbox/:number/complete")
-  @UseGuards(SessionGuard)
+  @UseGuards(SessionGuard, AccountWriteGuard)
   completeSandbox(@Req() request: SessionAuthenticatedRequest, @Param("number") number: string) {
     return this.payments.completeSandboxInvoice(request.cliperSession?.userId || "", number);
   }

@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable } from "@nestjs/common";
+import { ForbiddenException, HttpException, HttpStatus, Injectable } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 
 export type CreditTransactionType = "reserve" | "settle" | "release" | "grant" | "adjustment";
@@ -14,17 +14,32 @@ export interface CreditTransactionRecord {
   createdAt: string;
 }
 
-interface CreditAccountState {
+export interface CreditAccountState {
   accountId: string;
   balanceMicro: number;
   reservedMicro: number;
 }
 
-interface CreditReservation {
+export interface CreditReservation {
   id: string;
   accountId: string;
   requestId: string;
   amountMicro: number;
+}
+
+export class InsufficientCreditsException extends HttpException {
+  constructor(availableMicro: number, requiredMicro: number, requestId?: string) {
+    super({
+      ok: false,
+      code: "INSUFFICIENT_CREDITS",
+      message: "Saldo Cliper Credits tidak mencukupi.",
+      availableCredits: Number((availableMicro / 1_000_000).toFixed(6)),
+      requiredCredits: Number((requiredMicro / 1_000_000).toFixed(6)),
+      minimumTopupIdr: Number(process.env.PAYMENT_MIN_TOPUP_IDR || 25_000),
+      topupUrl: String(process.env.CLIPER_TOPUP_URL || `${String(process.env.WEB_ORIGIN || "http://localhost:3000").replace(/\/$/, "")}/topup`),
+      requestId,
+    }, HttpStatus.PAYMENT_REQUIRED);
+  }
 }
 
 function safeMicro(value: unknown): number {
@@ -37,16 +52,22 @@ function safeMicro(value: unknown): number {
 export class CreditAccountService {
   private readonly accounts = new Map<string, CreditAccountState>();
   private readonly reservations = new Map<string, CreditReservation>();
+  private readonly reservationByRequest = new Map<string, string>();
   private readonly transactionsValue: CreditTransactionRecord[] = [];
 
   reserve(accountId: string, requestId: string, amountMicro: number): CreditReservation {
+    const requestKey = `${accountId}:${requestId}`;
+    const existingId = this.reservationByRequest.get(requestKey);
+    const existing = existingId ? this.reservations.get(existingId) : undefined;
+    if (existing) return { ...existing };
     const account = this.account(accountId);
     const amount = safeMicro(amountMicro);
     const available = account.balanceMicro - account.reservedMicro;
-    if (available < amount) throw new ForbiddenException("Cliper Credits tidak cukup untuk memproses request ini.");
+    if (available < amount) throw new InsufficientCreditsException(available, amount, requestId);
     const reservation = { id: randomUUID(), accountId, requestId, amountMicro: amount };
     account.reservedMicro += amount;
     this.reservations.set(reservation.id, reservation);
+    this.reservationByRequest.set(requestKey, reservation.id);
     this.record(account, requestId, "reserve", -amount);
     return { ...reservation };
   }
@@ -64,6 +85,9 @@ export class CreditAccountService {
     account.reservedMicro = reservedForOthers;
     account.balanceMicro -= actual;
     this.reservations.delete(reservationId);
+    this.reservationByRequest.delete(`${reservation.accountId}:${reservation.requestId}`);
+    const released = Math.max(0, reservation.amountMicro - actual);
+    if (released > 0) this.record(account, reservation.requestId, "release", released);
     this.record(account, reservation.requestId, "settle", -actual);
     return { ...account };
   }
@@ -88,6 +112,7 @@ export class CreditAccountService {
     const account = this.account(reservation.accountId);
     account.reservedMicro = Math.max(0, account.reservedMicro - reservation.amountMicro);
     this.reservations.delete(reservationId);
+    this.reservationByRequest.delete(`${reservation.accountId}:${reservation.requestId}`);
     this.record(account, reservation.requestId, "release", reservation.amountMicro);
     return { ...account };
   }

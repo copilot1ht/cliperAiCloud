@@ -46,7 +46,10 @@ PAYMENT_CREDITS_PER_IDR=1
 MINIMUM_MARGIN_BPS=5000
 MINIMUM_CLIP_CHARGE_MICRO_USD=5000
 PLATFORM_USD_TO_IDR=16000
-MAX_CLIPS_PER_JOB=20
+# 0 lets the desktop return every qualified, non-overlapping recommendation.
+# Use a positive value only as a temporary operator capacity guard.
+MAX_CLIPS_PER_JOB=0
+MAX_SETTLEMENT_CLIP_SCORES=1000
 ```
 
 Jangan set `CLIPER_DEV_API_KEY` atau `DEV_ADMIN_*` pada production.
@@ -59,7 +62,7 @@ PostgreSQL wajib untuk Payment Engine. Redis direkomendasikan dan dapat direfere
 REDIS_URL=${{Redis.REDIS_URL}}
 ```
 
-Untuk uji lokal gunakan Sandbox Access Keys. Midtrans Snap menyediakan hosted checkout; QRIS muncul apabila metode tersebut aktif pada akun merchant. Set `MIDTRANS_IS_PRODUCTION=true` hanya setelah Production Access Keys dan notification URL HTTPS siap. Jangan menaruh Server Key di GitHub, browser, atau log.
+Untuk uji lokal gunakan Sandbox Access Keys. API membuat QRIS melalui Midtrans Core API dan menampilkan gambar QR di web. Set `MIDTRANS_IS_PRODUCTION=true` hanya setelah Production Access Keys dan notification URL HTTPS siap. Jangan menaruh Server Key di GitHub, browser, atau log.
 
 Atur Payment Notification URL di Midtrans MAP ke `https://<API_DOMAIN>/api/payments/webhook/midtrans`. Endpoint ini harus dapat diakses publik melalui HTTPS. Redirect user ke `/invoices?invoice=<NUMBER>` tidak menggantikan notification URL: saldo hanya diberikan dari callback yang signature-nya valid.
 

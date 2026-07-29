@@ -25,6 +25,9 @@ export interface TokenUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  cached_input_tokens?: number;
+  reasoning_tokens?: number;
+  usage_source?: "provider" | "estimated";
 }
 
 export interface CliperChatResponse {
@@ -59,6 +62,10 @@ export interface CliperInternalChatResponse extends Omit<CliperChatResponse, "bi
     markup_bps: number;
     markup_percent: number;
   };
+  routing?: {
+    retry_count: number;
+    fallback_count: number;
+  };
 }
 
 export interface ProviderHealth {
@@ -85,6 +92,7 @@ export interface LicenseValidationResponse {
   expiresAt?: string;
   deviceSlots?: { used: number; limit: number };
   credits?: { remainingMicro: number; renewalAt?: string };
+  unlimited?: boolean;
   reason?: string;
 }
 
@@ -101,6 +109,7 @@ export interface DesktopSessionResponse {
   license: {
     plan: string;
     creditsRemainingMicro: number;
+    unlimited?: boolean;
     deviceSlots: { used: number; limit: number };
     expiresAt?: string;
   };
@@ -117,4 +126,5 @@ export interface DesktopHeartbeatResponse {
   accessExpiresAt: string;
   offlineGraceUntil: string;
   creditsRemainingMicro: number;
+  unlimited?: boolean;
 }

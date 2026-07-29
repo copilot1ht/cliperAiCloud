@@ -1,9 +1,13 @@
 import { Controller, Get, Inject } from "@nestjs/common";
+import { AdminStoreService } from "./admin/admin-store.service.js";
 import { RuntimeConfigService } from "./config/runtime-config.js";
 
 @Controller("health")
 export class HealthController {
-  constructor(@Inject(RuntimeConfigService) private readonly config: RuntimeConfigService) {}
+  constructor(
+    @Inject(RuntimeConfigService) private readonly config: RuntimeConfigService,
+    @Inject(AdminStoreService) private readonly adminStore: AdminStoreService,
+  ) {}
 
   @Get()
   getHealth() {
@@ -24,13 +28,30 @@ export class HealthController {
   async ready() {
     const report = this.config.report();
     const dependencies = await this.config.dependencies();
+    const storedProviders = this.adminStore.listProviders();
+    const healthyStoredProviders = storedProviders.filter(
+      (provider) => provider.enabled && provider.status === "healthy" && provider.pricingConfigured,
+    );
+    const providerReady = healthyStoredProviders.length > 0 || report.providers.some((provider) => provider.enabled);
+    const redisRequired = report.mode === "production";
     return {
-      ok: report.ready && dependencies.database && dependencies.redis,
+      // Redis is optional for the local single-process trial, but remains a
+      // production dependency. Provider readiness comes from the admin store
+      // because admin-managed keys are persisted in PostgreSQL, not .env.
+      ok: report.errors.length === 0
+        && dependencies.database
+        && providerReady
+        && (!redisRequired || dependencies.redis),
       mode: report.mode,
       providers: report.providers,
+      providerReadiness: {
+        ready: providerReady,
+        stored: storedProviders.length,
+        healthy: healthyStoredProviders.length,
+      },
       infrastructure: {
         database: { configured: report.infrastructure.database, reachable: dependencies.database },
-        redis: { configured: report.infrastructure.redis, reachable: dependencies.redis },
+        redis: { configured: report.infrastructure.redis, reachable: dependencies.redis, required: redisRequired },
         secureOrigins: report.infrastructure.secureOrigins,
       },
       warnings: report.warnings,

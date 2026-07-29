@@ -1,4 +1,4 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from "@nestjs/common";
+import { CanActivate, ExecutionContext, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import type { Request } from "express";
 import { bearerToken } from "./api-key.guard.js";
 import { DesktopSessionService, type DesktopSessionContext } from "./desktop-session.service.js";
@@ -7,7 +7,7 @@ export type DesktopAuthenticatedRequest = Request & { desktopSession?: DesktopSe
 
 @Injectable()
 export class DesktopSessionGuard implements CanActivate {
-  constructor(private readonly sessions: DesktopSessionService) {}
+  constructor(@Inject(DesktopSessionService) private readonly sessions: DesktopSessionService) {}
 
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<DesktopAuthenticatedRequest>();

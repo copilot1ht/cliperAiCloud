@@ -22,12 +22,12 @@ export class AuthController {
   }
 
   @Post("session")
-  session(@Headers("authorization") authorization?: string, @Headers("cookie") cookie?: string) {
+  async session(@Headers("authorization") authorization?: string, @Headers("cookie") cookie?: string) {
     return this.auth.session(sessionToken(authorization, cookie));
   }
 
   @Post("logout")
-  logout(@Res({ passthrough: true }) response: Response, @Headers("authorization") authorization?: string, @Headers("cookie") cookie?: string) {
+  async logout(@Res({ passthrough: true }) response: Response, @Headers("authorization") authorization?: string, @Headers("cookie") cookie?: string) {
     response.setHeader("Set-Cookie", clearSessionCookie());
     return this.auth.logout(sessionToken(authorization, cookie));
   }

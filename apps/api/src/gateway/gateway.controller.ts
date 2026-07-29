@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Post, Req, Res, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Inject, Post, Req, Res, UseGuards } from "@nestjs/common";
 import type { CliperChatRequest } from "@cliper/contracts";
 import type { Response } from "express";
 import { ApiKeyGuard, type CliperAuthenticatedRequest } from "../security/api-key.guard.js";
@@ -8,7 +8,10 @@ import { DesktopSessionService } from "../security/desktop-session.service.js";
 @Controller("v1")
 @UseGuards(ApiKeyGuard)
 export class GatewayController {
-  constructor(private readonly gateway: GatewayService, private readonly desktopSessions: DesktopSessionService) {}
+  constructor(
+    @Inject(GatewayService) private readonly gateway: GatewayService,
+    @Inject(DesktopSessionService) private readonly desktopSessions: DesktopSessionService,
+  ) {}
 
   @Get("providers")
   providers() {
@@ -40,7 +43,7 @@ export class GatewayController {
     const result = await this.gateway.chat({
       ...request,
       metadata: { ...(request.metadata ?? {}), plan: serverPlan },
-    }, httpRequest?.cliperAuth?.accountId || "development-account", serverPlan);
+    }, httpRequest?.cliperAuth?.accountId || "development-account", serverPlan, httpRequest?.cliperAuth?.apiKeyId);
     if (httpRequest?.cliperAuth?.mode === "desktop-session" && httpRequest.cliperAuth.sessionId) {
       result.integrity = this.desktopSessions.signResponse(httpRequest.cliperAuth.sessionId, "/v1/chat/completions", result);
       httpResponse.setHeader("X-Cliper-Response-Signed", "1");

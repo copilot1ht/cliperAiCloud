@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Copy, Eye, EyeOff, RefreshCw } from "lucide-react";
+import { Check, Copy, Eye, EyeOff } from "lucide-react";
 import { useState } from "react";
 
 export interface LicenseKeySummary {
@@ -36,7 +36,16 @@ export function KeyManager({ keys, generatedKey, onGenerate, onRevoke, loading, 
 
   return (
     <section className="panel key-panel">
-      <div className="panel-head"><div><p className="section-kicker">Desktop access</p><h2>API key manager</h2><p>Generate and manage desktop API licenses from your local Cliper Cloud server.</p></div><button className="button button-primary" onClick={onGenerate} disabled={loading}>{loading ? "Generating..." : "Generate new key"}</button></div>
+      <div className="panel-head">
+        <div>
+          <p className="section-kicker">Desktop access</p>
+          <h2>API key manager</h2>
+          <p>Generate and manage desktop API licenses from your local Cliper Cloud server.</p>
+        </div>
+        <div className="key-actions">
+          <button className="button button-primary" onClick={onGenerate} disabled={loading}>{loading ? "Generating..." : "Generate new key"}</button>
+        </div>
+      </div>
       {generatedKey && (
         <div className="callout success-callout"><strong>Key baru dibuat.</strong><span>Salin key ini ke desktop segera. Raw key hanya ditampilkan sekali.</span><div className="key-field"><code>{visible ? generatedKey : "clip_sk_••••••••••••••••••••"}</code><button className="icon-button" onClick={() => setVisible(!visible)} aria-label={visible ? "Sembunyikan key" : "Tampilkan key"}>{visible ? <EyeOff size={18} /> : <Eye size={18} />}</button><button className="icon-button" onClick={copy} aria-label="Salin key">{copied ? <Check size={18} /> : <Copy size={18} />}</button></div></div>
       )}
@@ -44,14 +53,15 @@ export function KeyManager({ keys, generatedKey, onGenerate, onRevoke, loading, 
       <div className="table-scroll">
         <table>
           <thead>
-            <tr><th>Key</th><th>Plan</th><th>Status</th><th>Devices</th><th>Last used</th><th>Actions</th></tr>
+            <tr><th>Key</th><th>Gateway</th><th>Plan</th><th>Status</th><th>Devices</th><th>Last used</th><th>Actions</th></tr>
           </thead>
           <tbody>
             {keys.length === 0 ? (
-              <tr><td colSpan={6}><em>No API keys yet. Generate one to start.</em></td></tr>
+              <tr><td colSpan={7}><em>No API keys yet. Generate one to start.</em></td></tr>
             ) : keys.map((key) => (
               <tr key={key.id}>
                 <td><strong>{key.prefix}</strong></td>
+                <td>Cliper AI Cloud</td>
                 <td>{key.plan}</td>
                 <td><span className={`status-tag ${key.status === "active" ? "healthy" : "fallback"}`}>{key.status}</span></td>
                 <td>{key.deviceSlots.used} / {key.deviceSlots.limit}</td>

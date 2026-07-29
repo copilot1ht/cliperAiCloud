@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from pathlib import Path
 
 
@@ -29,4 +30,37 @@ result = cliper_worker.call_openai_compatible(
     },
     "Reply only MOCK_OK",
 )
-print(result["response"])
+
+# Cloud billing requests use the same desktop HMAC as chat requests. Integral
+# floats are deliberate: Python must normalize 352.0 to the Node JSON form
+# (352) before it hashes and signs the body.
+cloud_payload = {
+    "providerType": "cloud",
+    "baseUrl": os.environ["QA_CLOUD_API_BASE"],
+    "cloudAccessToken": os.environ["QA_CLOUD_ACCESS_TOKEN"],
+    "cloudSigningSecret": os.environ["QA_CLOUD_SIGNING_SECRET"],
+    "timeoutMs": 15,
+}
+job = cliper_worker.cloud_job_request(
+    cloud_payload,
+    "/jobs/start",
+    {
+        "requestId": f"signature-qa-{int(time.time() * 1000)}",
+        "sourceId": "signature-qa-source",
+        "sourceDurationSeconds": 352.0,
+        "requestedClipCount": 3,
+    },
+)
+completed = cliper_worker.cloud_job_request(
+    cloud_payload,
+    "/jobs/complete",
+    {
+        "jobId": job["id"],
+        "clipScores": [72.0, 88.0],
+        "usableResult": True,
+    },
+)
+if completed.get("status") != "completed":
+    raise SystemExit("Cloud analysis job signature QA did not complete.")
+
+print(f"{result['response']} JOB_OK")

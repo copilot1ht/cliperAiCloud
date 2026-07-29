@@ -53,6 +53,41 @@ describe("AiRouter", () => {
     expect(body.max_tokens).toBe(300);
   });
 
+  it("uses modern OpenAI token parameters and disables DeepSeek V4 thinking", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: body.thinking ? "deepseek result" : "openai result" } }],
+        usage: { prompt_tokens: 4, completion_tokens: 2 },
+      }), { status: 200 });
+    });
+    const router = new AiRouter({
+      retriesPerProvider: 1,
+      fetchImpl,
+      providers: [
+        { code: "openai", displayName: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-5-mini", apiKeys: ["openai-secret"] },
+      ],
+    });
+
+    await router.route({ messages: [{ role: "user", content: "test" }] });
+    const openAiBody = JSON.parse(String((fetchImpl.mock.calls[0]?.[1] as RequestInit).body));
+    expect(openAiBody.max_completion_tokens).toBeGreaterThan(0);
+    expect(openAiBody.max_tokens).toBeUndefined();
+    expect(openAiBody.temperature).toBeUndefined();
+    expect(openAiBody.reasoning_effort).toBe("minimal");
+
+    const deepseekRouter = new AiRouter({
+      retriesPerProvider: 1,
+      fetchImpl,
+      providers: [
+        { code: "deepseek", displayName: "DeepSeek", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-flash", apiKeys: ["deepseek-secret"] },
+      ],
+    });
+    await deepseekRouter.route({ messages: [{ role: "user", content: "test" }] });
+    const deepseekBody = JSON.parse(String((fetchImpl.mock.calls[1]?.[1] as RequestInit).body));
+    expect(deepseekBody.thinking).toEqual({ type: "disabled" });
+  });
+
   it("routes Starter and Pro through different provider priorities", async () => {
     const fetchImpl = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }));
     const router = new AiRouter({
@@ -98,5 +133,71 @@ describe("AiRouter", () => {
     const body = JSON.parse(String(init.body));
     expect(body.system).toBe("Buat judul.");
     expect(body.messages).toEqual([{ role: "user", content: "Transcript" }]);
+  });
+
+  it("preserves detailed provider usage and prices cached/reasoning tokens separately", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "usage_test",
+      model: "priced-model",
+      choices: [{ message: { content: "hasil" } }],
+      usage: {
+        prompt_tokens: 1_000,
+        completion_tokens: 200,
+        total_tokens: 1_200,
+        prompt_tokens_details: { cached_tokens: 400 },
+        completion_tokens_details: { reasoning_tokens: 50 },
+      },
+    }), { status: 200 }));
+    const router = new AiRouter({
+      fetchImpl,
+      providers: [{
+        code: "priced",
+        displayName: "Priced",
+        baseUrl: "https://priced.test/v1",
+        model: "priced-model",
+        apiKeys: ["secret"],
+        inputUsdPerM: 1,
+        cachedInputUsdPerM: 0.25,
+        outputUsdPerM: 2,
+        reasoningUsdPerM: 3,
+      }],
+    });
+
+    const result = await router.route({ messages: [{ role: "user", content: "uji usage" }] });
+
+    expect(result.usage).toMatchObject({
+      prompt_tokens: 1_000,
+      cached_input_tokens: 400,
+      completion_tokens: 200,
+      reasoning_tokens: 50,
+      total_tokens: 1_200,
+      usage_source: "provider",
+    });
+    expect(result.billing.provider_cost_usd).toBe(0.00125);
+    expect(result.routing).toEqual({ retry_count: 0, fallback_count: 0 });
+  });
+
+  it("marks estimated token usage when a provider omits usage", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: "hasil estimasi" } }],
+    }), { status: 200 }));
+    const router = new AiRouter({
+      fetchImpl,
+      providers: [{
+        code: "estimated",
+        displayName: "Estimated",
+        baseUrl: "https://estimated.test/v1",
+        model: "estimated-model",
+        apiKeys: ["secret"],
+        inputUsdPerM: 1,
+        outputUsdPerM: 2,
+      }],
+    });
+
+    const result = await router.route({ messages: [{ role: "user", content: "uji" }] });
+
+    expect(result.usage.usage_source).toBe("estimated");
+    expect(result.usage.prompt_tokens).toBeGreaterThan(0);
+    expect(result.usage.completion_tokens).toBeGreaterThan(0);
   });
 });

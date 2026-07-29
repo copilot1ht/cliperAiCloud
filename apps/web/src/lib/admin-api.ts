@@ -4,10 +4,11 @@ export interface AdminUser {
   id: string;
   email: string;
   displayName: string;
-  role: "admin" | "member";
+  role: "admin" | "investor" | "member";
   plan: PlanCode;
   status: "active" | "suspended";
   credits: number;
+  unlimitedCredits: boolean;
   deviceLimit: number;
   createdAt: string;
   lastActiveAt: string;
@@ -40,7 +41,10 @@ export interface AdminProvider {
   priority: number;
   timeoutMs: number;
   inputUsdPerM: number;
+  cachedInputUsdPerM: number;
   outputUsdPerM: number;
+  reasoningUsdPerM: number;
+  pricingConfigured: boolean;
   updatedAt: string;
   keyCount: number;
   configured: boolean;
@@ -95,6 +99,26 @@ export interface PricingPolicy {
   minimumClipChargeMicroUsd: number;
   microUsdPerCredit: number;
   usdToIdr: number;
+  creditValueIdr: number;
+  minimumGrossMarginBps: number;
+  targetGrossMarginBps: number;
+  baseAnalysisCredits: number;
+  optionalClipCredits: number;
+  goodClipCredits: number;
+  premiumClipCredits: number;
+  optionalScoreMin: number;
+  goodScoreMin: number;
+  premiumScoreMin: number;
+  minimumJobCredits: number;
+  maximumJobCredits: number;
+  infrastructureFeeIdr: number;
+  safetyBufferBps: number;
+  retryAllowanceBps: number;
+  paymentFeeAllocationBps: number;
+  targetProviderCostIdr: number;
+  warningProviderCostIdr: number;
+  hardProviderCostIdr: number;
+  lowBalanceWarningCredits: number;
   updatedAt: string;
 }
 

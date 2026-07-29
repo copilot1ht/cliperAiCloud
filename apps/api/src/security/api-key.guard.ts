@@ -1,4 +1,4 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from "@nestjs/common";
+import { CanActivate, ExecutionContext, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import type { Request } from "express";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { LicenseService } from "../license/license.service.js";
@@ -27,9 +27,12 @@ function safeEqual(left: string, right: string): boolean {
 
 @Injectable()
 export class ApiKeyGuard implements CanActivate {
-  constructor(private readonly licenses: LicenseService, private readonly desktopSessions: DesktopSessionService) {}
+  constructor(
+    @Inject(LicenseService) private readonly licenses: LicenseService,
+    @Inject(DesktopSessionService) private readonly desktopSessions: DesktopSessionService,
+  ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<CliperAuthenticatedRequest>();
     const token = bearerToken(request.headers.authorization);
     const configured = String(process.env.CLIPER_DEV_API_KEY || "").trim();
@@ -55,7 +58,7 @@ export class ApiKeyGuard implements CanActivate {
       };
       return true;
     }
-    const generated = this.licenses.authenticateGatewayKey(token);
+    const generated = await this.licenses.authenticateGatewayKey(token);
     if (!generated) throw new UnauthorizedException("Cliper API key tidak valid, kedaluwarsa, atau sudah dicabut.");
     request.cliperAuth = { ...generated, mode: "legacy-key" };
     return true;

@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { Activity, ArrowRight, BadgeDollarSign, Route, ServerCog, Users } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { Activity, ArrowRight, BadgeDollarSign, CircleCheck, Route, ServerCog, Users } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { adminFetch, formatDate, formatIdr, formatUsd } from "@/lib/admin-api";
 import { AdminError, AdminLoading, EmptyState, LocalModeNotice } from "@/components/admin-ui";
 import { StatCard } from "@/components/stat-card";
@@ -21,18 +21,57 @@ export function AdminOverview() {
   const [data, setData] = useState<OverviewData | null>(null);
   const [error, setError] = useState("");
   const [lastUpdated, setLastUpdated] = useState("");
-  const load = useCallback(() => {
+  const inFlight = useRef(false);
+  const activeRequest = useRef<AbortController | null>(null);
+  const load = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
     setError("");
-    adminFetch<OverviewData>("/api/admin/overview").then((next) => { setData(next); setLastUpdated(new Date().toISOString()); }).catch((reason) => setError(reason.message));
+    try {
+      const next = await adminFetch<OverviewData>("/api/admin/overview", { signal: controller.signal });
+      setData(next);
+      setLastUpdated(new Date().toISOString());
+    } catch (reason) {
+      if ((reason as { name?: string })?.name !== "AbortError") setError(reason instanceof Error ? reason.message : "Overview tidak dapat dimuat.");
+    } finally {
+      if (activeRequest.current === controller) activeRequest.current = null;
+      inFlight.current = false;
+    }
   }, []);
-  useEffect(() => { load(); const timer = window.setInterval(load, 15_000); return () => window.clearInterval(timer); }, [load]);
+  useEffect(() => {
+    void load();
+    const refresh = () => { if (document.visibilityState === "visible") void load(); };
+    const timer = window.setInterval(refresh, 15_000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+      activeRequest.current?.abort();
+    };
+  }, [load]);
 
-  if (error) return <><LocalModeNotice /><AdminError message={error} retry={load} /></>;
+  if (error && !data) return <><LocalModeNotice /><AdminError message={error} retry={() => void load()} /></>;
   if (!data) return <AdminLoading />;
   return (
     <>
-      <LocalModeNotice />
+      {data.mode.includes("memory") && <LocalModeNotice />}
+      {error && <AdminError message={error} retry={() => void load()} />}
       <div className="live-status"><i /> Live · diperbarui {lastUpdated ? formatDate(lastUpdated) : "..."}</div>
+      <section className="admin-command">
+        <div>
+          <p className="section-kicker">Operations snapshot</p>
+          <h2>Cloud control plane is responding.</h2>
+          <span>Monitor member access, provider readiness, routing, payment, dan margin dari data server aktual.</span>
+        </div>
+        <div className="admin-command-status">
+          <span><CircleCheck size={17} /><b>{data.users.active}</b><small>active members</small></span>
+          <span><ServerCog size={17} /><b>{data.providers.ready}</b><small>ready providers</small></span>
+          <span><Activity size={17} /><b>{data.routing.enabled}</b><small>active routes</small></span>
+        </div>
+      </section>
       <div className="stats-grid">
         <StatCard label="Active members" value={String(data.users.active)} detail={`${data.users.suspended} suspended`} icon={Users} tone="teal" />
         <StatCard label="Ready providers" value={`${data.providers.ready}/${data.providers.total}`} detail={`${data.providers.needsKey} need API key`} icon={ServerCog} tone="blue" />
@@ -48,11 +87,21 @@ export function AdminOverview() {
           </tbody></table></div> : <EmptyState title="Belum ada AI provider" detail="Tambahkan provider pertama di halaman Providers untuk mengaktifkan gateway." />}
         </section>
         <section className="panel">
-          <div className="panel-head"><div><p className="section-kicker">Local infrastructure</p><h2>Production dependencies</h2><p>Data admin belum persisten sampai PostgreSQL dan Redis aktif.</p></div></div>
+          <div className="panel-head">
+            <div>
+              <p className="section-kicker">Local infrastructure</p>
+              <h2>Production dependencies</h2>
+              <p>
+                {data.infrastructure.persistence
+                  ? "PostgreSQL aktif. Redis digunakan untuk cache, antrean, dan rate limiting saat tersedia."
+                  : "Data admin belum persisten sampai PostgreSQL aktif."}
+              </p>
+            </div>
+          </div>
           <div className="readiness-list">
             <span><i className="ready" /><strong>API gateway</strong><small>Active</small></span>
-            <span><i className={data.infrastructure.databaseConfigured ? "warning" : "warning"} /><strong>PostgreSQL</strong><small>{data.infrastructure.persistence ? "Connected" : "Not connected"}</small></span>
-            <span><i className={data.infrastructure.redisConfigured ? "warning" : "warning"} /><strong>Redis</strong><small>{data.infrastructure.redisConfigured ? "Configured" : "Not configured"}</small></span>
+            <span><i className={data.infrastructure.persistence ? "ready" : "warning"} /><strong>PostgreSQL</strong><small>{data.infrastructure.persistence ? "Connected" : "Not connected"}</small></span>
+            <span><i className={data.infrastructure.redisConfigured ? "ready" : "warning"} /><strong>Redis</strong><small>{data.infrastructure.redisConfigured ? "Configured" : "Not configured"}</small></span>
           </div>
         </section>
       </div>

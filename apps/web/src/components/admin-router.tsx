@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, Check, CircleHelp, Route, Save, ShieldCheck } from "lucide-react";
+import { ArrowRight, Check, CircleHelp, Play, Route, Save, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { adminFetch, type AdminProvider, type RoutingRule } from "@/lib/admin-api";
 import { AdminError, AdminLoading, EmptyState, LocalModeNotice } from "@/components/admin-ui";
@@ -13,6 +13,8 @@ export function AdminRouter() {
   const [error, setError] = useState("");
   const [saving, setSaving] = useState("");
   const [saved, setSaved] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState("");
   const load = useCallback(() => { setError(""); adminFetch<RouterPayload>("/api/admin/router").then(setData).catch((reason) => setError(reason.message)); }, []);
   useEffect(load, [load]);
   const rules = useMemo(() => data?.rules || [], [data]);
@@ -25,6 +27,14 @@ export function AdminRouter() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Aturan tidak dapat disimpan."); }
     finally { setSaving(""); }
   };
+  const testRouter = async () => {
+    setTesting(true); setTestResult(""); setError("");
+    try {
+      const result = await adminFetch<{ response: string; latencyMs: number; usage: { total_tokens?: number } }>("/api/admin/router/test", { method: "POST" });
+      setTestResult(`Connected · Auto route · ${result.latencyMs} ms · ${Number(result.usage?.total_tokens || 0)} tokens · ${result.response}`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "AI Router test gagal."); }
+    finally { setTesting(false); }
+  };
   if (error && !data) return <><LocalModeNotice /><AdminError message={error} retry={load} /></>;
   if (!data) return <AdminLoading />;
   const providerOptions = data.providers.filter((provider) => provider.enabled);
@@ -33,8 +43,9 @@ export function AdminRouter() {
     {error && <AdminError message={error} retry={load} />}
     <section className="router-explainer">
       <span className="explainer-icon"><Route size={23} /></span>
-      <div><p className="section-kicker">What is AI Router?</p><h2>Satu Cliper key, banyak AI provider</h2><p>AI Router adalah pengambil keputusan server. Setiap modul desktop dikirim ke provider utama; jika timeout atau gagal, request otomatis dialihkan ke fallback tanpa meminta user mengganti key.</p></div>
+      <div><p className="section-kicker">What is AI Router?</p><h2>Satu Cliper key, banyak AI provider</h2><p>AI Router adalah pengambil keputusan server. Setiap modul desktop dikirim ke provider utama; jika timeout atau gagal, request otomatis dialihkan ke fallback tanpa meminta user mengganti key.</p>{testResult && <small className="provider-health healthy">{testResult}</small>}</div>
       <div className="explainer-flow"><b>Desktop</b><ArrowRight size={15} /><b>Cliper Cloud</b><ArrowRight size={15} /><b>Primary / fallback</b></div>
+      <button className="button button-primary" type="button" onClick={testRouter} disabled={testing || !providerOptions.length}><Play size={15} />{testing ? "Testing..." : "Test auto route"}</button>
     </section>
     <section className="panel table-panel">
       <div className="panel-head admin-toolbar"><div><p className="section-kicker">Routing rules</p><h2>Provider priority per AI module</h2><p>Perubahan berlaku pada request gateway berikutnya. Primary dan fallback tidak boleh kosong.</p></div></div>

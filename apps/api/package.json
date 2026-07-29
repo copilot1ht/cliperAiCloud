@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.build.json",
     "config:check": "tsx src/config/check.ts",
     "hash:password": "tsx src/config/hash-password.ts",
+    "accounts:seed": "tsx src/config/seed-access-accounts.ts",
     "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
@@ -27,6 +28,7 @@
     "dotenv": "^17.4.2",
     "helmet": "^8.1.0",
     "pg": "^8.22.0",
+    "qrcode": "^1.5.4",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2"
   },
@@ -34,6 +36,7 @@
     "@types/express": "^5.0.5",
     "@types/node": "^24.10.0",
     "@types/pg": "^8.20.0",
+    "@types/qrcode": "^1.5.6",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"

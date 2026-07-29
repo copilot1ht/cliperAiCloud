@@ -1,16 +1,18 @@
-import { Injectable, UnauthorizedException } from "@nestjs/common";
+import { Inject, Injectable, Optional, UnauthorizedException } from "@nestjs/common";
 import type { DesktopActivateRequest, DesktopHeartbeatResponse, DesktopRefreshRequest, DesktopSessionResponse } from "@cliper/contracts";
 import { sha256Hex, signDesktopRequest, verifyDesktopRequestSignature } from "@cliper/security";
 import { randomBytes, randomUUID } from "node:crypto";
 import { CreditAccountService } from "../billing/credit-account.service.js";
 import { LicenseService } from "../license/license.service.js";
 import { SecurityEventService } from "./security-event.service.js";
+import { DatabaseService } from "../database/database.service.js";
 
 interface DesktopSessionRecord {
   id: string;
   apiKeyId: string;
   accountId: string;
   plan: string;
+  unlimited: boolean;
   deviceFingerprint: string;
   accessHash: string;
   refreshHash: string;
@@ -60,24 +62,25 @@ export class DesktopSessionService {
   private readonly refreshIndex = new Map<string, string>();
 
   constructor(
-    private readonly licenses: LicenseService,
-    private readonly credits: CreditAccountService,
-    private readonly securityEvents: SecurityEventService,
+    @Inject(LicenseService) private readonly licenses: LicenseService,
+    @Inject(CreditAccountService) private readonly credits: CreditAccountService,
+    @Inject(SecurityEventService) private readonly securityEvents: SecurityEventService,
+    @Optional() @Inject(DatabaseService) private readonly database?: DatabaseService,
   ) {}
 
-  activate(request: DesktopActivateRequest): DesktopSessionResponse {
-    const license = this.licenses.validate(request);
-    const identity = this.licenses.sessionContext(request.key);
+  async activate(request: DesktopActivateRequest): Promise<DesktopSessionResponse> {
+    const license = await this.licenses.validate(request);
+    const identity = await this.licenses.sessionContext(request.key);
     if (!license.valid || !identity) {
       this.securityEvents.record({ event: "desktop_activation_failed", severity: "warning", detail: license.reason || "License tidak valid." });
       throw new UnauthorizedException(license.reason || "License tidak valid.");
     }
-    const session = this.issue(identity, request.deviceFingerprint);
+    const session = this.issue(identity, request.deviceFingerprint, Boolean(license.unlimited));
     this.securityEvents.record({ event: "desktop_session_activated", severity: "info", accountId: identity.accountId, sessionId: session.record.id, detail: "Desktop session diterbitkan." });
     return this.response(session.record, session.accessToken, session.refreshToken, license);
   }
 
-  refresh(request: DesktopRefreshRequest): DesktopSessionResponse {
+  async refresh(request: DesktopRefreshRequest): Promise<DesktopSessionResponse> {
     const sessionId = this.refreshIndex.get(sha256Hex(request.refreshToken || ""));
     const current = sessionId ? this.sessions.get(sessionId) : undefined;
     if (!current || current.revokedAt || current.refreshExpiresAt <= Date.now() || current.deviceFingerprint !== request.deviceFingerprint) {
@@ -87,7 +90,7 @@ export class DesktopSessionService {
     this.accessIndex.delete(current.accessHash);
     this.refreshIndex.delete(current.refreshHash);
     const rotated = this.rotate(current);
-    const balance = this.credits.balance(current.accountId);
+    const creditsRemainingMicro = await this.currentCredits(current.accountId);
     this.securityEvents.record({ event: "desktop_session_refreshed", severity: "info", accountId: current.accountId, sessionId: current.id, detail: "Access dan refresh token dirotasi." });
     return {
       status: "active",
@@ -97,7 +100,7 @@ export class DesktopSessionService {
       accessExpiresAt: new Date(current.accessExpiresAt).toISOString(),
       refreshExpiresAt: new Date(current.refreshExpiresAt).toISOString(),
       offlineGraceUntil: new Date(current.offlineGraceUntil).toISOString(),
-      license: { plan: current.plan, creditsRemainingMicro: balance.availableMicro, deviceSlots: { used: 1, limit: 1 } },
+      license: { plan: current.plan, creditsRemainingMicro, unlimited: current.unlimited, deviceSlots: { used: 1, limit: 1 } },
     };
   }
 
@@ -109,17 +112,18 @@ export class DesktopSessionService {
     return this.context(session);
   }
 
-  heartbeat(context: DesktopSessionContext): DesktopHeartbeatResponse {
+  async heartbeat(context: DesktopSessionContext): Promise<DesktopHeartbeatResponse> {
     const session = this.sessions.get(context.sessionId);
     if (!session || session.revokedAt) throw new UnauthorizedException("Desktop session tidak aktif.");
     session.lastHeartbeatAt = Date.now();
-    const credits = this.credits.balance(session.accountId);
+    const creditsRemainingMicro = await this.currentCredits(session.accountId);
     return {
       status: "active",
       serverTime: new Date().toISOString(),
       accessExpiresAt: new Date(session.accessExpiresAt).toISOString(),
       offlineGraceUntil: new Date(session.offlineGraceUntil).toISOString(),
-      creditsRemainingMicro: credits.availableMicro,
+      creditsRemainingMicro,
+      unlimited: session.unlimited,
     };
   }
 
@@ -141,11 +145,12 @@ export class DesktopSessionService {
     };
   }
 
-  private issue(identity: { apiKeyId: string; accountId: string; plan: string }, deviceFingerprint: string) {
+  private issue(identity: { apiKeyId: string; accountId: string; plan: string }, deviceFingerprint: string, unlimited: boolean) {
     const now = Date.now();
     const record: DesktopSessionRecord = {
       id: randomUUID(),
       ...identity,
+      unlimited,
       deviceFingerprint,
       accessHash: "",
       refreshHash: "",
@@ -166,14 +171,19 @@ export class DesktopSessionService {
     const refreshToken = opaqueToken("clip_rt");
     session.accessHash = sha256Hex(accessToken);
     session.refreshHash = sha256Hex(refreshToken);
-    session.accessExpiresAt = Date.now() + milliseconds("DESKTOP_ACCESS_TOKEN_MS", 15 * 60_000);
+    // Video downloads, transcription, and FFmpeg renders can legitimately run
+    // longer than the former 15 minute browser-style access window. This token
+    // is still device-bound, HMAC-signed, replay-protected, and revocable; a
+    // four hour work lease avoids a mid-render provider failure while keeping
+    // the long-lived refresh credential inside Electron only.
+    session.accessExpiresAt = Date.now() + milliseconds("DESKTOP_ACCESS_TOKEN_MS", 4 * 60 * 60_000);
     session.refreshExpiresAt = Date.now() + milliseconds("DESKTOP_REFRESH_TOKEN_MS", 30 * 24 * 60 * 60_000);
     this.accessIndex.set(session.accessHash, session.id);
     this.refreshIndex.set(session.refreshHash, session.id);
     return { accessToken, refreshToken };
   }
 
-  private response(record: DesktopSessionRecord, accessToken: string, refreshToken: string, license: ReturnType<LicenseService["validate"]>): DesktopSessionResponse {
+  private response(record: DesktopSessionRecord, accessToken: string, refreshToken: string, license: Awaited<ReturnType<LicenseService["validate"]>>): DesktopSessionResponse {
     return {
       status: "active",
       accessToken,
@@ -185,6 +195,7 @@ export class DesktopSessionService {
       license: {
         plan: record.plan,
         creditsRemainingMicro: license.credits?.remainingMicro || 0,
+        unlimited: Boolean(license.unlimited),
         deviceSlots: license.deviceSlots || { used: 1, limit: 1 },
         expiresAt: license.expiresAt,
       },
@@ -224,5 +235,18 @@ export class DesktopSessionService {
 
   private context(session: DesktopSessionRecord): DesktopSessionContext {
     return { sessionId: session.id, apiKeyId: session.apiKeyId, accountId: session.accountId, plan: session.plan, accessExpiresAt: session.accessExpiresAt, offlineGraceUntil: session.offlineGraceUntil };
+  }
+
+  private async currentCredits(accountId: string): Promise<number> {
+    if (this.database?.configured() && accountId !== "development-account") {
+      const user = await this.database.client().user.findUnique({
+        where: { id: accountId },
+        select: { unlimitedCredits: true, creditAccount: { select: { balanceMicro: true, reservedMicro: true } } },
+      });
+      if (user?.unlimitedCredits) return Number.MAX_SAFE_INTEGER;
+      if (user?.creditAccount) return Number(user.creditAccount.balanceMicro - user.creditAccount.reservedMicro);
+      return 0;
+    }
+    return this.credits.balance(accountId).availableMicro;
   }
 }

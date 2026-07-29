@@ -1,5 +1,7 @@
 # Cliper AI Cloud
 
+Panduan uji Cloud lokal dengan Electron: [docs/LOCAL_CLOUD_ELECTRON_TRIAL.md](docs/LOCAL_CLOUD_ELECTRON_TRIAL.md)
+
 Cloud control plane untuk Cliper Studio Plus: satu Cliper API key untuk desktop, routing multi-provider, lisensi, usage, biaya, dan margin.
 
 Status: **private alpha / local pre-beta**. Lihat [development plan](docs/DEVELOPMENT_PLAN.md) dan [pre-beta hardening audit](docs/V1_PRE_BETA_HARDENING.md) sebelum menyiapkan public deployment.
@@ -35,6 +37,28 @@ pnpm config:check
 pnpm dev
 ```
 
+Untuk uji lokal tanpa PostgreSQL billing, gunakan:
+
+```env
+ANALYSIS_BILLING_STORAGE=memory
+```
+
+Untuk staging/production, wajib gunakan:
+
+```env
+ANALYSIS_BILLING_STORAGE=postgres
+```
+
+Lalu jalankan migration sebelum API dinyalakan:
+
+```powershell
+pnpm db:generate
+pnpm exec prisma migrate deploy
+pnpm config:check
+```
+
+Production akan menolak konfigurasi billing memory, provider rate nol, atau pricing job yang tidak menutup protected cost.
+
 - Web: `http://localhost:3000`
 - Login dan pendaftaran: `http://localhost:3000/login`
 - API: `http://localhost:4100/health`
@@ -54,7 +78,7 @@ Gunakan satu halaman login yang sama. Account dengan role `admin` otomatis diara
 
 Menu admin memakai route nyata, bukan anchor pada halaman overview. Link lama seperti `/admin/overview#providers` otomatis dialihkan ke route baru.
 
-Pada mode lokal, CRUD user, provider, routing, license, dan usage masih memakai service memory MVP. Payment, invoice, subscription, payment log, dan credit grant sudah wajib memakai PostgreSQL dan tidak memiliki fallback memory. Provider secret dan provider cost tidak pernah dikirim ke browser member atau desktop. Migrasikan identity, license, AI usage, dan provider store sepenuhnya ke PostgreSQL/Redis sebelum public paid launch.
+Pada mode lokal, CRUD user, provider, routing, dan license masih memakai service memory MVP. Analysis job dan AI usage dapat memakai memory untuk uji lokal atau PostgreSQL untuk staging. Payment, invoice, payment log, dan credit grant sudah wajib memakai PostgreSQL dan tidak memiliki fallback memory. Provider secret dan provider cost tidak pernah dikirim ke browser member atau desktop. Migrasikan identity, license, dan provider store sepenuhnya ke PostgreSQL/Redis sebelum public paid launch.
 
 Login dan provider QA lokal masih dapat dibuka tanpa database, tetapi halaman checkout sengaja menolak operasi tanpa PostgreSQL. Request AI nyata memerlukan minimal satu provider yang aktif. Key yang dibuat member di halaman API Keys sudah diterima oleh License API dan AI Gateway, terikat pada account pemilik, serta tidak dapat dibaca atau dicabut oleh member lain.
 
@@ -74,25 +98,43 @@ Admin menambahkan DeepSeek, Gemini, OpenAI, Qwen, atau Claude melalui **Provider
 
 Claude dirutekan menggunakan Anthropic Messages API native. Provider lain memakai endpoint OpenAI-compatible yang sudah ditetapkan dalam katalog backend. Base URL, timeout, priority, dan model tidak dapat diisi bebas dari browser. Untuk keamanan, raw provider key tidak pernah dikirim kembali setelah disimpan.
 
-## Billing cost-based
+## Billing per analysis job
 
-Admin mengatur target markup, bukan gross margin. Gateway menghitung biaya aktual per request:
+Desktop membuat satu reservation untuk satu link/video. Semua AI request di dalam job
+mencatat usage dan provider cost aktual, tetapi wallet user hanya diselesaikan sekali
+setelah clip final dinilai.
 
 ```text
-provider cost + compute + payment fee + reserve = service cost
-service cost × (1 + target markup)             = user charge
-user charge / credit value                     = Cliper Credits
+reserve maksimum job
+→ akumulasi provider cost aktual
+→ nilai clip final berdasarkan quality tier
+→ protected price = internal cost / (1 - target gross margin)
+→ satu settlement
+→ release sisa reservation
 ```
 
-Contoh service cost Rp100 dengan markup 50% menghasilkan harga user Rp150, profit Rp50, dan gross margin 33,33%. Semua nilai internal hanya tersedia pada admin Revenue.
+Default trial: 1 credit = Rp1, gross margin minimum 50%, target 60%, dan
+reservation maksimum 2.000 credits. Request duplikat memakai provider request ID
+sebagai idempotency key sehingga usage dan job cost tidak tercatat dua kali.
+Semua nilai internal hanya tersedia pada Admin Revenue.
 
 ## Status database
 
-`prisma/schema.prisma` beserta migration awal, Provider Manager V2, dan Payment Engine V1 mencakup users, plans, subscriptions, user credits, credit transactions, API keys, licenses, devices, providers, routes, usage, payments, invoices, sanitized payment logs, audit logs, dan system logs. Schema dan Prisma Client sudah tervalidasi. Migration payment belum diuji end-to-end pada workstation ini karena Docker/PostgreSQL lokal belum tersedia.
+`prisma/schema.prisma` beserta empat migration mencakup users, plans, subscriptions,
+user credits, immutable credit ledger, API keys, licenses, devices, providers,
+routes, provider usage, analysis jobs, payments, invoices, sanitized payment logs,
+audit logs, dan system logs. Seluruh migration sudah diterapkan pada PostgreSQL 17
+terisolasi dan trial reservation, settlement, usage persistence, serta idempotency
+berhasil. Lihat [Phase 1 Billing Trial](docs/V2_PHASE1_BILLING_TRIAL.md).
 
 ## Batas fase ini
 
-Fondasi dan vertical slice sudah dibuat untuk web, gateway, router, kontrak, SDK, signed desktop sessions, secure browser cookie, billing runtime, credit reservation/settlement, dan schema data. Sebelum public launch tetap diperlukan database-backed repository, Redis distributed controls, email/payment provider, deployment TLS, signed object storage, desktop updater, backup restore drill, serta load/security test.
+Fondasi dan vertical slice sudah dibuat untuk web, gateway, router, kontrak, SDK,
+signed desktop sessions, secure browser cookie, job billing, credit
+reservation/settlement, provider usage, dan schema data. Sebelum public launch tetap
+diperlukan identity/license/provider repository berbasis database, Redis distributed
+controls, satu provider AI nyata dengan rate resmi, concurrency test, deployment TLS,
+desktop updater, backup restore drill, serta load/security test.
 
 ## QA lokal
 

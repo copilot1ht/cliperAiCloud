@@ -31,9 +31,11 @@ describe("AuthService", () => {
   });
 
   it("resolves the configured fixed account as admin", async () => {
-    const result = await new AuthService().login({ email: "admin@test.local", password: "strong-admin-password" });
+    const auth = new AuthService();
+    const result = await auth.login({ email: "admin@test.local", password: "strong-admin-password" });
     expect(result.user.role).toBe("admin");
     expect(result.redirectTo).toBe("/admin/overview");
+    expect(await auth.userById(result.user.id)).toMatchObject({ role: "admin", plan: "enterprise", deviceLimit: 2, protected: true });
   });
 
   it("allows the separately configured bootstrap admin in production", async () => {
@@ -49,22 +51,30 @@ describe("AuthService", () => {
     await expect(new AuthService().register({ email: "admin@test.local", password: "strong-member-password", displayName: "Fake Admin" })).rejects.toThrow();
   });
 
+  it("creates an investor session that routes to monitoring instead of member pages", async () => {
+    const auth = new AuthService();
+    await auth.createManagedAccount({ email: "investor@test.local", password: "strong-investor-password", displayName: "Investor Test", role: "investor" });
+    const result = await auth.login({ email: "investor@test.local", password: "strong-investor-password" });
+    expect(result.user.role).toBe("investor");
+    expect(result.redirectTo).toBe("/admin/overview");
+  });
+
   it("verifies and revokes an opaque development session", async () => {
     const auth = new AuthService();
     const login = await auth.register({ email: "member2@test.local", password: "strong-member-password", displayName: "Second Member" });
-    expect(auth.session(login.token).role).toBe("member");
-    auth.logout(login.token);
-    expect(() => auth.session(login.token)).toThrow();
+    expect((await auth.session(login.token)).role).toBe("member");
+    await auth.logout(login.token);
+    await expect(auth.session(login.token)).rejects.toThrow();
   });
 
   it("lets admin management update and suspend a member without exposing password hashes", async () => {
     const auth = new AuthService();
     const member = await auth.createMember({ email: "managed@test.local", password: "strong-member-password", displayName: "Managed Member", plan: "starter" });
     expect(member).not.toHaveProperty("passwordHash");
-    const updated = auth.updateMember(member.id, { plan: "pro", credits: 5000, status: "suspended" });
+    const updated = await auth.updateMember(member.id, { plan: "pro", credits: 5000, status: "suspended" });
     expect(updated).toMatchObject({ plan: "pro", credits: 5000, status: "suspended" });
-    expect(auth.listUsers().find((item) => item.id === member.id)).toMatchObject({ plan: "pro", protected: false });
-    expect(auth.deleteMember(member.id)).toEqual({ ok: true });
+    expect((await auth.listUsers()).find((item) => item.id === member.id)).toMatchObject({ plan: "pro", protected: false });
+    expect(await auth.deleteMember(member.id)).toEqual({ ok: true });
   });
 
   it("temporarily throttles an account after repeated invalid login attempts", async () => {

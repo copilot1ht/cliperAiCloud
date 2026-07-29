@@ -1,33 +1,41 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, BadgeDollarSign, Bell, Boxes, ChevronDown, Cloud, CreditCard, Crown, Download, FileText, Gauge, Home, Key, Layers, LogOut, MessageCircle, Menu, Route, ScrollText, ServerCog, Settings, ShieldCheck, Sparkles, User, Users, Wallet, X, BarChart3 } from "lucide-react";
+import { BadgeDollarSign, BarChart3, Boxes, ChevronDown, CreditCard, Download, Home, Key, LogOut, Menu, Settings, ShieldCheck, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { apiBase } from "@/lib/api-base";
+import { adminMenu } from "@/lib/admin-menu";
 
 const mainNav = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
-  { href: "/projects", label: "Projects", icon: Boxes },
-  { href: "/keys", label: "API Keys", icon: Key },
   { href: "/usage", label: "Usage", icon: BarChart3 },
-  { href: "/billing", label: "Wallet", icon: BadgeDollarSign },
-  { href: "/invoices", label: "Invoices", icon: FileText },
-  { href: "/downloads", label: "Downloads", icon: Download },
-  { href: "/documentation", label: "Documentation", icon: FileText },
-  { href: "/profile", label: "Profile", icon: User },
-  { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/keys", label: "API Keys", icon: Key },
+  { href: "/topup", label: "Top up", icon: CreditCard },
+  { href: "/billing", label: "Billing", icon: BadgeDollarSign },
+  { href: "/downloads", label: "Download app", icon: Download },
 ];
 
-import { adminMenu } from "@/lib/admin-menu";
-
 const adminNav = adminMenu;
+
+interface AccountSession {
+  displayName: string;
+  email: string;
+  role: "admin" | "investor" | "member";
+}
+
+function accountInitials(displayName: string): string {
+  const words = displayName.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return "CL";
+  return `${words[0]?.[0] || ""}${words.length > 1 ? words[words.length - 1]?.[0] || "" : words[0]?.[1] || ""}`.toUpperCase();
+}
 
 export function AppShell({ children, title, eyebrow, actions, role = "member" }: { children: React.ReactNode; title: string; eyebrow: string; actions?: React.ReactNode; role?: "member" | "admin" }) {
   const pathname = usePathname() ?? "";
   const [open, setOpen] = useState(false);
   const [gatewayStatus, setGatewayStatus] = useState<"checking" | "ready" | "setup" | "offline">("checking");
-  const [authReady, setAuthReady] = useState(false);
+  const [account, setAccount] = useState<AccountSession | null>(null);
 
   useEffect(() => {
     if (role !== "admin" || pathname !== "/admin/overview") return;
@@ -53,25 +61,37 @@ export function AppShell({ children, title, eyebrow, actions, role = "member" }:
     const apiUrl = apiBase();
     const controller = new AbortController();
     fetch(`${apiUrl.replace(/\/$/, "")}/health/ready`, { cache: "no-store", signal: controller.signal })
-      .then((response) => response.json())
-      .then((payload) => setGatewayStatus(payload?.ok ? "ready" : "setup"))
-      .catch(() => setGatewayStatus("offline"));
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        setGatewayStatus(response.ok && payload?.ok ? "ready" : "setup");
+      })
+      .catch((reason) => {
+        if (reason?.name !== "AbortError") setGatewayStatus("offline");
+      });
     return () => controller.abort();
   }, []);
 
   useEffect(() => {
     const apiUrl = apiBase();
-    fetch(`${apiUrl}/api/auth/session`, { method: "POST", credentials: "include" })
+    const controller = new AbortController();
+    fetch(`${apiUrl}/api/auth/session`, { method: "POST", credentials: "include", signal: controller.signal })
       .then(async (response) => {
-        const session = await response.json();
-        if (!response.ok || session?.role !== role) throw new Error("role-mismatch");
-        setAuthReady(true);
+        const session = await response.json().catch(() => ({}));
+        if (!response.ok || !session?.role) throw new Error("invalid-session");
+        const matchesArea = role === "admin" ? session.role === "admin" || session.role === "investor" : session.role === "member";
+        if (!matchesArea) {
+          window.location.replace(session.role === "member" ? "/dashboard" : "/admin/overview");
+          return;
+        }
+        setAccount(session as AccountSession);
       })
-      .catch(() => {
+      .catch((reason) => {
+        if (reason?.name === "AbortError") return;
         sessionStorage.removeItem("cliper_role");
         sessionStorage.removeItem("cliper_user");
         window.location.replace("/login");
       });
+    return () => controller.abort();
   }, [role]);
 
   const signOut = async () => {
@@ -90,17 +110,20 @@ export function AppShell({ children, title, eyebrow, actions, role = "member" }:
     offline: "Gateway offline",
   }[gatewayStatus];
 
-  if (!authReady) {
-    return <main className="auth-loading"><span className="brand-mark"><Cloud size={21} /></span><strong>Cliper AI Cloud</strong><small>Memeriksa session...</small></main>;
+  if (!account) {
+    return <main className="auth-loading"><span className="brand-mark"><Image src="/cliper-logo-mark.png" alt="" width={40} height={40} priority aria-hidden="true" /></span><strong>Cliper AI Cloud</strong><small>Memeriksa session...</small></main>;
   }
 
+  const accountTarget = role === "admin" ? "/admin/security" : "/profile";
+  const readOnly = account.role === "investor";
+
   return (
-    <div className="app-frame">
+    <div className={`app-frame${readOnly ? " read-only" : ""}`}>
       <button className="mobile-menu" aria-label="Buka navigasi" onClick={() => setOpen(true)}><Menu size={20} /></button>
       {open && <button className="nav-scrim" aria-label="Tutup navigasi" onClick={() => setOpen(false)} />}
       <aside className={`sidebar ${open ? "sidebar-open" : ""} ${role}`}>
         <div className="brand-row">
-          <span className="brand-mark"><Cloud size={21} strokeWidth={2.4} /></span>
+          <span className="brand-mark"><Image src="/cliper-logo-mark.png" alt="Cliper" width={40} height={40} priority /></span>
           <span><strong>Cliper</strong><small>AI Cloud</small></span>
           <button className="mobile-close" aria-label="Tutup navigasi" onClick={() => setOpen(false)}><X size={19} /></button>
         </div>
@@ -114,7 +137,7 @@ export function AppShell({ children, title, eyebrow, actions, role = "member" }:
           {navigation.map((item) => <Link key={item.href} href={item.href} className={isActive(item.href) ? "nav-link active" : "nav-link"} onClick={() => setOpen(false)}><item.icon size={18} /><span>{item.label}</span></Link>)}
         </nav>
         <div className="sidebar-foot">
-          <Link href={role === "admin" ? "/admin/settings" : "/settings"} className={isActive(role === "admin" ? "/admin/settings" : "/settings") ? "nav-link active" : "nav-link"}><Settings size={18} /><span>Settings</span></Link>
+          {role === "admin" && <Link href="/admin/settings" className={isActive("/admin/settings") ? "nav-link active" : "nav-link"}><Settings size={18} /><span>Settings</span></Link>}
           <button className="nav-link nav-button" onClick={signOut}><LogOut size={18} /><span>Sign out</span></button>
         </div>
       </aside>
@@ -122,10 +145,10 @@ export function AppShell({ children, title, eyebrow, actions, role = "member" }:
         <header className="topbar">
           <div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1></div>
           <div className="topbar-actions">
-            <span className="status-pill alpha-pill">Private alpha</span>
+            <span className="status-pill alpha-pill">Local beta</span>
             <span className="status-pill"><span className={`status-dot ${gatewayStatus}`} /> {gatewayLabel}</span>
-            {actions}
-            <button className="avatar" aria-label="Account menu">AU</button>
+            {readOnly ? <span className="status-pill investor-pill">Investor · Read only</span> : actions}
+            <Link className="avatar" href={accountTarget} aria-label={`Buka akun ${account.displayName}`} title={`${account.displayName} · ${account.email}`}>{accountInitials(account.displayName)}</Link>
           </div>
         </header>
         <div className="page-content">{children}</div>

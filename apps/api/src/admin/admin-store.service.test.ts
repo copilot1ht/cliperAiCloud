@@ -27,6 +27,15 @@ describe("AdminStoreService", () => {
     expect(provider).not.toHaveProperty("apiKeys");
   });
 
+  it("keeps the control plane available when a stored provider envelope is invalid", () => {
+    const store = new AdminStoreService();
+    const decryptKeys = (
+      store as unknown as { decryptKeys: (keys: string[]) => string[] }
+    ).decryptKeys.bind(store);
+
+    expect(decryptKeys(["not-an-authenticated-envelope"])).toEqual([]);
+  });
+
   it("applies provider and route changes to router snapshots", () => {
     const store = new AdminStoreService();
     const provider = store.saveDetectedProvider({ provider: "openai", apiKey: "custom-secret" }, {
@@ -48,6 +57,29 @@ describe("AdminStoreService", () => {
     store.updateRoute(rule.id, { primary: rule.primary, fallback: rule.fallback });
     store.deleteProvider(provider.id);
     expect(store.listProviders().some((item) => item.code === "openai")).toBe(false);
+  });
+
+  it("uses OpenAI as the Pro/Enterprise reviewer while keeping DeepSeek for initial ranking", () => {
+    const store = new AdminStoreService();
+    store.saveDetectedProvider({ provider: "openai", apiKey: "reviewer-secret" }, {
+      provider: "openai",
+      displayName: "OpenAI",
+      baseUrl: "https://api.openai.com/v1",
+      protocol: "openai-chat",
+      models: ["gpt-5-mini"],
+      defaultModel: "gpt-5-mini",
+      latencyMs: 210,
+      health: "healthy",
+      checkedAt: new Date().toISOString(),
+      modelSource: "api",
+    });
+
+    store.repairRoutesForProviders();
+
+    expect(store.planRoutes().enterprise?.highlight?.[0]).toBe("deepseek");
+    expect(store.planRoutes().enterprise?.ranking?.[0]).toBe("openai");
+    expect(store.planRoutes().pro?.ranking?.[0]).toBe("openai");
+    expect(store.planRoutes().starter?.ranking?.[0]).toBe("deepseek");
   });
 
   it("appends validated keys and only accepts detected default models", () => {

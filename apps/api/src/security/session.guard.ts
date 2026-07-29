@@ -9,13 +9,13 @@ export type SessionAuthenticatedRequest = Request & { cliperSession?: Omit<Memor
 export class SessionGuard implements CanActivate {
   constructor(@Inject(AuthService) private readonly authService: AuthService) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<SessionAuthenticatedRequest>();
     const token = sessionToken(request.headers.authorization, request.headers.cookie);
     if (!token) {
       throw new UnauthorizedException("Authorization header tidak valid atau tidak diberikan.");
     }
-    const session = this.authService.session(token);
+    const session = await this.authService.session(token);
     if (!session || !session.role) {
       throw new UnauthorizedException("Session tidak valid.");
     }

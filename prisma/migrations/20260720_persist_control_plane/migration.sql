@@ -1,0 +1,5 @@
+ALTER TABLE "providers"
+ADD COLUMN "timeoutMs" INTEGER NOT NULL DEFAULT 45000;
+
+ALTER TABLE "pricing_policies"
+ADD COLUMN "minimumClipChargeMicroUsd" BIGINT NOT NULL DEFAULT 5000;

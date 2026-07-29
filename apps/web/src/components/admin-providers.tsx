@@ -33,6 +33,19 @@ function resultFromProvider(provider: AdminProvider): ProviderTestResult {
   };
 }
 
+const suggestedRates: Partial<Record<ProviderCatalogItem["code"], {
+  input: string;
+  cachedInput: string;
+  output: string;
+  reasoning: string;
+}>> = {
+  // Reference prices for the catalog defaults. Admin can edit these whenever
+  // the provider changes its billing page; they are never treated as hidden
+  // provider truth.
+  deepseek: { input: "0.14", cachedInput: "0.0028", output: "0.28", reasoning: "" },
+  openai: { input: "0.25", cachedInput: "0.025", output: "2", reasoning: "" },
+};
+
 function ProviderForm({
   provider,
   catalog,
@@ -47,10 +60,24 @@ function ProviderForm({
   const [code, setCode] = useState<ProviderCatalogItem["code"]>((provider?.code as ProviderCatalogItem["code"]) || catalog[0]?.code || "deepseek");
   const [apiKey, setApiKey] = useState("");
   const [enabled, setEnabled] = useState(provider?.enabled !== false);
+  const [inputRate, setInputRate] = useState(String(provider?.inputUsdPerM || ""));
+  const [cachedInputRate, setCachedInputRate] = useState(String(provider?.cachedInputUsdPerM || ""));
+  const [outputRate, setOutputRate] = useState(String(provider?.outputUsdPerM || ""));
+  const [reasoningRate, setReasoningRate] = useState(String(provider?.reasoningUsdPerM || ""));
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<ProviderTestResult | null>(null);
   const [error, setError] = useState("");
+
+  const applySuggestedRates = () => {
+    if (provider || [inputRate, cachedInputRate, outputRate, reasoningRate].some((value) => Number(value || 0) > 0)) return;
+    const rates = suggestedRates[code];
+    if (!rates) return;
+    setInputRate(rates.input);
+    setCachedInputRate(rates.cachedInput);
+    setOutputRate(rates.output);
+    setReasoningRate(rates.reasoning);
+  };
 
   const testConnection = async () => {
     if (!provider && !apiKey.trim()) {
@@ -65,10 +92,12 @@ function ProviderForm({
         const tested = await adminFetch<AdminProvider>(`/api/admin/providers/${provider.id}/test`, { method: "POST" });
         setResult(resultFromProvider(tested));
       } else {
-        setResult(await adminFetch<ProviderTestResult>("/api/admin/providers/test", {
+        const tested = await adminFetch<ProviderTestResult>("/api/admin/providers/test", {
           method: "POST",
           body: JSON.stringify({ provider: code, apiKey: apiKey.trim() }),
-        }));
+        });
+        setResult(tested);
+        applySuggestedRates();
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Koneksi provider gagal diuji.");
@@ -82,15 +111,24 @@ function ProviderForm({
     setSaving(true);
     setError("");
     try {
+      const rates = {
+        inputUsdPerM: Number(inputRate || 0),
+        cachedInputUsdPerM: Number(cachedInputRate || 0),
+        outputUsdPerM: Number(outputRate || 0),
+        reasoningUsdPerM: Number(reasoningRate || 0),
+      };
+      if (rates.inputUsdPerM <= 0 || rates.outputUsdPerM <= 0) {
+        throw new Error("Isi tarif Input dan Output per 1 juta token. Tanpa keduanya provider tidak disimpan agar biaya dan margin tidak palsu.");
+      }
       if (!provider || apiKey.trim()) {
         await adminFetch("/api/admin/providers", {
           method: "POST",
-          body: JSON.stringify({ provider: code, apiKey: apiKey.trim(), enabled }),
+          body: JSON.stringify({ provider: code, apiKey: apiKey.trim(), enabled, ...rates }),
         });
       } else {
         await adminFetch(`/api/admin/providers/${provider.id}`, {
           method: "PATCH",
-          body: JSON.stringify({ enabled }),
+          body: JSON.stringify({ enabled, ...rates }),
         });
       }
       onSaved();
@@ -109,7 +147,17 @@ function ProviderForm({
     >
       <form className="admin-form provider-simple-form" onSubmit={save}>
         <label className="field-label">Provider
-          <select value={code} disabled={Boolean(provider)} onChange={(event) => { setCode(event.target.value as ProviderCatalogItem["code"]); setResult(null); setError(""); }}>
+          <select value={code} disabled={Boolean(provider)} onChange={(event) => {
+            const nextCode = event.target.value as ProviderCatalogItem["code"];
+            const rates = suggestedRates[nextCode];
+            setCode(nextCode);
+            setInputRate(rates?.input || "");
+            setCachedInputRate(rates?.cachedInput || "");
+            setOutputRate(rates?.output || "");
+            setReasoningRate(rates?.reasoning || "");
+            setResult(null);
+            setError("");
+          }}>
             {catalog.map((item) => <option value={item.code} key={item.code}>{item.displayName}</option>)}
           </select>
         </label>
@@ -128,6 +176,17 @@ function ProviderForm({
         <label className="field-label checkbox-field">
           <input checked={enabled} onChange={(event) => setEnabled(event.target.checked)} type="checkbox" /> Aktifkan provider
         </label>
+
+        <fieldset className="provider-rate-fieldset">
+          <legend>Biaya provider (USD per 1 juta token)</legend>
+          <p>Tarif referensi akan terisi setelah Test API untuk DeepSeek/OpenAI. Verifikasi dengan halaman billing provider sebelum production. Nilai ini dipakai untuk usage, billing, dan margin nyata.</p>
+          <div className="provider-rate-grid">
+            <label className="field-label">Input<input type="number" min="0" step="0.000001" value={inputRate} onChange={(event) => setInputRate(event.target.value)} placeholder="0.00" /></label>
+            <label className="field-label">Cached input<input type="number" min="0" step="0.000001" value={cachedInputRate} onChange={(event) => setCachedInputRate(event.target.value)} placeholder="0.00" /></label>
+            <label className="field-label">Output<input type="number" min="0" step="0.000001" value={outputRate} onChange={(event) => setOutputRate(event.target.value)} placeholder="0.00" /></label>
+            <label className="field-label">Reasoning<input type="number" min="0" step="0.000001" value={reasoningRate} onChange={(event) => setReasoningRate(event.target.value)} placeholder="0.00" /></label>
+          </div>
+        </fieldset>
 
         <div className={`provider-test-state ${result ? "connected" : error ? "failed" : "idle"}`} aria-live="polite">
           {result ? <CheckCircle2 size={18} /> : <Gauge size={18} />}
@@ -232,6 +291,7 @@ export function AdminProviders() {
             </label>
             <span><small>Latency</small><strong>{provider.lastLatencyMs ? `${provider.lastLatencyMs} ms` : "-"}</strong></span>
             <span><small>API keys</small><strong>{provider.keyCount}</strong></span>
+            <span><small>Cost tracking</small><strong>{provider.pricingConfigured ? "Aktif" : "Perlu tarif"}</strong></span>
             <span><small>Last check</small><strong>{provider.lastHealthAt ? formatDate(provider.lastHealthAt) : "Belum pernah"}</strong></span>
           </div>
           {provider.lastError && <p className="provider-inline-error">{provider.lastError}</p>}

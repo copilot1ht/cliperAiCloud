@@ -20,7 +20,9 @@ Pricing policy menyimpan `markupBps`, `minimumMarginBps`, `computeCostMicroUsd`,
 
 Job `story`, `ranking`, dan `highlight` memakai `minimumClipChargeMicroUsd` sebagai lantai service per request, bukan per kandidat internal. Dengan demikian satu Find Highlight yang menghasilkan banyak kandidat tidak membayar biaya AI berulang untuk setiap kartu, tetapi provider cost aktual tetap dihitung dari token nyata. Angka Rp100-200 hanya estimasi minimum yang dapat berubah bila prompt, output, atau provider cost lebih tinggi; sistem tidak boleh memalsukan pemakaian token.
 
-`MAX_CLIPS_PER_JOB` membatasi jumlah clip yang diminta dalam satu request gateway. Batas ini mencegah satu request besar menghabiskan saldo tanpa kontrol; job panjang sebaiknya diproses dalam batch yang jelas, bukan dengan menyembunyikan atau mengubah angka pemakaian.
+`clipCount=0` adalah kontrak desktop untuk mode **semua rekomendasi layak**. Dalam mode ini jumlah output ditentukan oleh area video yang dipilih, batas durasi, quality gate, anti-overlap, dan diversity filter; bukan oleh angka UI tersembunyi. `MAX_CLIPS_PER_JOB=0` mempertahankan perilaku adaptif tersebut. Operator dapat mengisi nilai positif sementara bila infrastruktur memang perlu capacity guard.
+
+Settlement tidak mengabaikan output setelah angka produk tertentu. Seluruh score hasil normal diproses untuk quote analysis dan usage provider aktual tetap menjadi dasar biaya. `MAX_SETTLEMENT_CLIP_SCORES` hanyalah pagar teknis payload besar (default 1000), bukan batas rekomendasi yang ditampilkan ke creator.
 
 ## Request lifecycle
 

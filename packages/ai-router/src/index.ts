@@ -14,7 +14,9 @@ export interface ProviderDefinition {
   modulePriority?: Partial<Record<AiModule, number>>;
   timeoutMs?: number;
   inputUsdPerM?: number;
+  cachedInputUsdPerM?: number;
   outputUsdPerM?: number;
+  reasoningUsdPerM?: number;
   enabled?: boolean;
 }
 
@@ -63,6 +65,64 @@ function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
 }
 
+function finiteUsage(value: unknown, fallback = 0): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function normalizedUsage(
+  usageRaw: Record<string, unknown>,
+  estimatedInput: number,
+  estimatedOutput: number,
+) {
+  const hasProviderUsage = Object.keys(usageRaw).length > 0;
+  const promptDetails = objectValue(usageRaw.prompt_tokens_details);
+  const completionDetails = objectValue(usageRaw.completion_tokens_details);
+  const inputTokens = finiteUsage(
+    usageRaw.prompt_tokens
+    ?? usageRaw.input_tokens
+    ?? usageRaw.prompt_cache_miss_tokens,
+    estimatedInput,
+  );
+  const outputTokens = finiteUsage(
+    usageRaw.completion_tokens ?? usageRaw.output_tokens,
+    estimatedOutput,
+  );
+  const cachedInputTokens = Math.min(
+    inputTokens,
+    finiteUsage(
+      usageRaw.cached_input_tokens
+      ?? usageRaw.cached_tokens
+      ?? usageRaw.prompt_cache_hit_tokens
+      ?? usageRaw.cache_read_input_tokens
+      ?? promptDetails.cached_tokens,
+      0,
+    ),
+  );
+  const reasoningTokens = finiteUsage(
+    usageRaw.reasoning_tokens ?? completionDetails.reasoning_tokens,
+    0,
+  );
+  const totalTokens = finiteUsage(
+    usageRaw.total_tokens,
+    inputTokens + outputTokens,
+  );
+  return {
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    reasoningTokens,
+    totalTokens,
+    source: hasProviderUsage ? "provider" as const : "estimated" as const,
+  };
+}
+
 function extractContent(payload: Record<string, unknown>): string {
   const choices = Array.isArray(payload.choices) ? payload.choices : [];
   const first = choices[0] as Record<string, unknown> | undefined;
@@ -108,7 +168,9 @@ export function providersFromEnv(env: NodeJS.ProcessEnv = process.env): Provider
       priority: 10,
       modulePriority: { highlight: 5, title: 5, hook: 5, caption: 25, metadata: 20, default: 10 },
       inputUsdPerM: numberFromEnv(env.GEMINI_INPUT_USD_PER_M),
+      cachedInputUsdPerM: numberFromEnv(env.GEMINI_CACHED_INPUT_USD_PER_M),
       outputUsdPerM: numberFromEnv(env.GEMINI_OUTPUT_USD_PER_M),
+      reasoningUsdPerM: numberFromEnv(env.GEMINI_REASONING_USD_PER_M),
       enabled: true,
     },
     {
@@ -120,7 +182,9 @@ export function providersFromEnv(env: NodeJS.ProcessEnv = process.env): Provider
       priority: 20,
       modulePriority: { highlight: 20, title: 20, hook: 20, caption: 5, metadata: 5, default: 20 },
       inputUsdPerM: numberFromEnv(env.DEEPSEEK_INPUT_USD_PER_M),
+      cachedInputUsdPerM: numberFromEnv(env.DEEPSEEK_CACHED_INPUT_USD_PER_M),
       outputUsdPerM: numberFromEnv(env.DEEPSEEK_OUTPUT_USD_PER_M),
+      reasoningUsdPerM: numberFromEnv(env.DEEPSEEK_REASONING_USD_PER_M),
       enabled: true,
     },
     {
@@ -131,7 +195,9 @@ export function providersFromEnv(env: NodeJS.ProcessEnv = process.env): Provider
       apiKeys: splitKeys(env.OPENAI_API_KEYS),
       priority: 30,
       inputUsdPerM: numberFromEnv(env.OPENAI_INPUT_USD_PER_M),
+      cachedInputUsdPerM: numberFromEnv(env.OPENAI_CACHED_INPUT_USD_PER_M),
       outputUsdPerM: numberFromEnv(env.OPENAI_OUTPUT_USD_PER_M),
+      reasoningUsdPerM: numberFromEnv(env.OPENAI_REASONING_USD_PER_M),
       enabled: true,
     },
     {
@@ -142,7 +208,9 @@ export function providersFromEnv(env: NodeJS.ProcessEnv = process.env): Provider
       apiKeys: splitKeys(env.QWEN_API_KEYS),
       priority: 40,
       inputUsdPerM: numberFromEnv(env.QWEN_INPUT_USD_PER_M),
+      cachedInputUsdPerM: numberFromEnv(env.QWEN_CACHED_INPUT_USD_PER_M),
       outputUsdPerM: numberFromEnv(env.QWEN_OUTPUT_USD_PER_M),
+      reasoningUsdPerM: numberFromEnv(env.QWEN_REASONING_USD_PER_M),
       enabled: true,
     },
     {
@@ -154,7 +222,9 @@ export function providersFromEnv(env: NodeJS.ProcessEnv = process.env): Provider
       protocol: "anthropic-messages",
       priority: 50,
       inputUsdPerM: numberFromEnv(env.CLAUDE_INPUT_USD_PER_M),
+      cachedInputUsdPerM: numberFromEnv(env.CLAUDE_CACHED_INPUT_USD_PER_M),
       outputUsdPerM: numberFromEnv(env.CLAUDE_OUTPUT_USD_PER_M),
+      reasoningUsdPerM: numberFromEnv(env.CLAUDE_REASONING_USD_PER_M),
       enabled: true,
     },
   ];
@@ -234,11 +304,19 @@ export class AiRouter {
     if (!candidates.length) throw new Error("Tidak ada AI provider aktif. Tambahkan dan uji API key melalui Provider Manager.");
 
     const errors: string[] = [];
-    for (const provider of candidates) {
+    let failedAttempts = 0;
+    for (let providerIndex = 0; providerIndex < candidates.length; providerIndex += 1) {
+      const provider = candidates[providerIndex]!;
       for (let attempt = 0; attempt < this.retries; attempt += 1) {
         try {
-          return await this.callProvider(provider, request, module);
+          const response = await this.callProvider(provider, request, module);
+          response.routing = {
+            retry_count: failedAttempts,
+            fallback_count: providerIndex,
+          };
+          return response;
         } catch (error) {
+          failedAttempts += 1;
           provider.failures += 1;
           provider.lastError = error instanceof Error ? error.message : String(error);
           errors.push(`${provider.code}: ${provider.lastError}`);
@@ -274,13 +352,29 @@ export class AiRouter {
         };
       } else {
         headers.Authorization = `Bearer ${key}`;
+        const openAiReasoningModel = provider.code === "openai"
+          && (/^gpt-5(?:[.-]|$)/i.test(model) || /^o\d/i.test(model));
         body = {
           model,
           messages: request.messages,
-          temperature: request.temperature ?? 0.25,
-          max_tokens: maxTokens,
           stream: false,
+          ...(!openAiReasoningModel ? { temperature: request.temperature ?? 0.25 } : {}),
+          ...(provider.code === "openai" && /^gpt-5(?:[.-]|$)/i.test(model) ? { reasoning_effort: "minimal" } : {}),
+          ...(provider.code === "openai" && /^o\d/i.test(model) ? { reasoning_effort: "low" } : {}),
         };
+        // New OpenAI reasoning models reject legacy token parameters and
+        // non-default temperature values.
+        if (openAiReasoningModel) {
+          body.max_completion_tokens = maxTokens;
+        } else {
+          body.max_tokens = maxTokens;
+        }
+        // DeepSeek V4 may spend a short request entirely in thinking mode,
+        // leaving assistant.content empty. Cliper modules need the answer,
+        // so use the provider-supported non-thinking mode for these calls.
+        if (provider.code === "deepseek" && (/^deepseek-v4/i.test(model) || model === "deepseek-reasoner")) {
+          body.thinking = { type: "disabled" };
+        }
       }
       const response = await this.fetchImpl(normalizeEndpoint(provider.baseUrl, protocol), {
         method: "POST",
@@ -306,11 +400,28 @@ export class AiRouter {
       provider.latencyMs = Date.now() - started;
       provider.lastError = undefined;
 
-      const usageRaw = (payload.usage ?? {}) as Record<string, unknown>;
+      const usageRaw = objectValue(payload.usage);
       const inputText = request.messages.map((message) => message.content).join(" ");
-      const promptTokens = Number(usageRaw.prompt_tokens ?? usageRaw.input_tokens ?? estimateTokens(inputText));
-      const completionTokens = Number(usageRaw.completion_tokens ?? usageRaw.output_tokens ?? estimateTokens(content));
-      const providerCost = promptTokens / 1_000_000 * (provider.inputUsdPerM ?? 0) + completionTokens / 1_000_000 * (provider.outputUsdPerM ?? 0);
+      const usage = normalizedUsage(
+        usageRaw,
+        estimateTokens(inputText),
+        estimateTokens(content),
+      );
+      const uncachedInputTokens = Math.max(0, usage.inputTokens - usage.cachedInputTokens);
+      const inputRate = provider.inputUsdPerM ?? 0;
+      const cachedInputRate = provider.cachedInputUsdPerM && provider.cachedInputUsdPerM > 0
+        ? provider.cachedInputUsdPerM
+        : inputRate;
+      const outputRate = provider.outputUsdPerM ?? 0;
+      const reasoningRate = provider.reasoningUsdPerM && provider.reasoningUsdPerM > 0
+        ? provider.reasoningUsdPerM
+        : outputRate;
+      const providerCost = (
+        uncachedInputTokens / 1_000_000 * inputRate
+        + usage.cachedInputTokens / 1_000_000 * cachedInputRate
+        + usage.outputTokens / 1_000_000 * outputRate
+        + usage.reasoningTokens / 1_000_000 * reasoningRate
+      );
       return {
         id: String(payload.id ?? `cliper-${crypto.randomUUID()}`),
         object: "chat.completion",
@@ -318,7 +429,14 @@ export class AiRouter {
         model: String(payload.model ?? provider.model),
         provider: provider.code,
         choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
-        usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
+        usage: {
+          prompt_tokens: usage.inputTokens,
+          completion_tokens: usage.outputTokens,
+          total_tokens: usage.totalTokens,
+          cached_input_tokens: usage.cachedInputTokens,
+          reasoning_tokens: usage.reasoningTokens,
+          usage_source: usage.source,
+        },
         billing: {
           provider_cost_usd: Number(providerCost.toFixed(8)),
           service_cost_usd: Number(providerCost.toFixed(8)),

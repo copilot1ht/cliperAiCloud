@@ -11,19 +11,19 @@ afterEach(() => {
   else process.env.CLIPER_DEV_CREDIT_BALANCE_MICRO = previousBalance;
 });
 
-function setup() {
+async function setup() {
   process.env.CLIPER_DEV_CREDIT_BALANCE_MICRO = "100000000";
   const credits = new CreditAccountService();
   const licenses = new LicenseService(credits);
   const events = new SecurityEventService();
   const sessions = new DesktopSessionService(licenses, credits, events);
-  const generated = licenses.createKey({ ownerId: "desktop-owner", plan: "starter", deviceLimit: 1 });
+  const generated = await licenses.createKey({ ownerId: "desktop-owner", plan: "starter", deviceLimit: 1 });
   credits.initialize("desktop-owner", 100_000_000);
-  const activation = sessions.activate({ key: generated.rawKey, deviceFingerprint: "device-a", deviceName: "Desktop A" });
+  const activation = await sessions.activate({ key: generated.rawKey, deviceFingerprint: "device-a", deviceName: "Desktop A" });
   return { sessions, events, activation };
 }
 
-function signedRequest(activation: ReturnType<typeof setup>["activation"], body: unknown, nonce: string) {
+function signedRequest(activation: Awaited<ReturnType<typeof setup>>["activation"], body: unknown, nonce: string) {
   const timestamp = String(Date.now());
   const contentSha256 = sha256Hex(JSON.stringify(body));
   return {
@@ -40,8 +40,15 @@ function signedRequest(activation: ReturnType<typeof setup>["activation"], body:
 }
 
 describe("DesktopSessionService", () => {
-  it("accepts one signed request and rejects replay of the same nonce", () => {
-    const { sessions, events, activation } = setup();
+  it("issues a four-hour desktop work lease for long-running renders", async () => {
+    const { activation } = await setup();
+    const leaseMs = new Date(activation.accessExpiresAt).getTime() - Date.now();
+    expect(leaseMs).toBeGreaterThan(3.9 * 60 * 60 * 1000);
+    expect(leaseMs).toBeLessThan(4.1 * 60 * 60 * 1000);
+  });
+
+  it("accepts one signed request and rejects replay of the same nonce", async () => {
+    const { sessions, events, activation } = await setup();
     const body = { messages: [{ role: "user", content: "test" }] };
     const request = signedRequest(activation, body, "nonce-unique-value-001");
     expect(sessions.authenticateSigned(activation.accessToken, request)).toMatchObject({ accountId: "desktop-owner", plan: "starter" });
@@ -49,12 +56,12 @@ describe("DesktopSessionService", () => {
     expect(events.list().some((item) => item.event === "desktop_replay_blocked")).toBe(true);
   });
 
-  it("rejects body tampering and rotates refresh credentials", () => {
-    const { sessions, activation } = setup();
+  it("rejects body tampering and rotates refresh credentials", async () => {
+    const { sessions, activation } = await setup();
     const request = signedRequest(activation, { value: "original" }, "nonce-unique-value-002");
     expect(() => sessions.authenticateSigned(activation.accessToken, { ...request, body: { value: "tampered" } })).toThrow(/checksum/i);
-    const refreshed = sessions.refresh({ refreshToken: activation.refreshToken, deviceFingerprint: "device-a" });
+    const refreshed = await sessions.refresh({ refreshToken: activation.refreshToken, deviceFingerprint: "device-a" });
     expect(refreshed.accessToken).not.toBe(activation.accessToken);
-    expect(() => sessions.refresh({ refreshToken: activation.refreshToken, deviceFingerprint: "device-a" })).toThrow(/tidak valid/i);
+    await expect(sessions.refresh({ refreshToken: activation.refreshToken, deviceFingerprint: "device-a" })).rejects.toThrow(/tidak valid/i);
   });
 });

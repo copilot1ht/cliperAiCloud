@@ -10,14 +10,14 @@
 - Member checkout, invoice history, wallet balance, subscription status, and admin reconciliation UI.
 - Refund guard: refund is rejected when purchased credits have been spent or reserved.
 - Runtime credit/plan synchronization for the current desktop session after a verified payment.
-- Midtrans Snap adapter for flexible IDR top-ups and hosted checkout.
+- Midtrans Core API adapter for flexible IDR top-ups through QRIS.
 - Top-up range validation (default Rp25.000 to Rp10.000.000) and configurable credit conversion.
 - Midtrans signature validation using `SHA512(order_id + status_code + gross_amount + ServerKey)`.
 - Idempotent Midtrans callback handling; paid callbacks grant credits exactly once.
 
 ## Midtrans flow
 
-Member selects a nominal top-up in IDR, the API creates a Midtrans Snap transaction, and the browser is redirected to Midtrans. The checkout can show QRIS and any payment method enabled for the merchant account. The browser redirect is only a navigation aid; credits are granted only after the verified Midtrans notification reaches:
+Member selects a nominal top-up in IDR, the API creates a Midtrans QRIS transaction, downloads the QR image server-side, and returns it as a base64 data URL. Credits are granted only after the verified Midtrans notification reaches:
 
 ```text
 POST https://<API_DOMAIN>/api/payments/webhook/midtrans

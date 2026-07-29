@@ -1,5 +1,13 @@
-import { Injectable } from "@nestjs/common";
-import { quoteUsageCost, type UsageCostQuote } from "@cliper/billing";
+import { Inject, Injectable } from "@nestjs/common";
+import {
+  quoteClipJob,
+  quoteUsageCost,
+  validateClipJobPricingPolicy,
+  type ClipJobPricingInput,
+  type ClipJobPricingQuote,
+  type ClipJobPricingValidation,
+  type UsageCostQuote,
+} from "@cliper/billing";
 import type { AiModule, CliperChatRequest, CliperInternalChatResponse } from "@cliper/contracts";
 import { AdminStoreService } from "../admin/admin-store.service.js";
 
@@ -13,7 +21,37 @@ function microToUsd(value: bigint): number {
 
 @Injectable()
 export class PricingService {
-  constructor(private readonly adminStore: AdminStoreService) {}
+  constructor(@Inject(AdminStoreService) private readonly adminStore: AdminStoreService) {}
+
+  quoteAnalysisJob(input: ClipJobPricingInput): ClipJobPricingQuote {
+    return quoteClipJob(input, this.adminStore.pricingPolicy());
+  }
+
+  simulateAnalysisJob(input: ClipJobPricingInput, policyOverride: Record<string, unknown> = {}) {
+    const policy = {
+      ...this.adminStore.pricingPolicy(),
+      ...policyOverride,
+    };
+    const validation = validateClipJobPricingPolicy(policy);
+    if (!validation.valid) return { validation };
+    return { validation, quote: quoteClipJob(input, policy) };
+  }
+
+  validateAnalysisJobPolicy(): ClipJobPricingValidation {
+    return validateClipJobPricingPolicy(this.adminStore.pricingPolicy());
+  }
+
+  providerCostIdr(providerCostUsd: number): number {
+    return Math.ceil(Math.max(0, Number(providerCostUsd || 0)) * this.adminStore.pricingPolicy().usdToIdr);
+  }
+
+  maximumJobCredits(): number {
+    return this.adminStore.pricingPolicy().maximumJobCredits;
+  }
+
+  analysisJobPolicy() {
+    return this.adminStore.pricingPolicy();
+  }
 
   quoteProviderCost(providerCostUsd: number, module?: AiModule): UsageCostQuote {
     const policy = this.adminStore.pricingPolicy();

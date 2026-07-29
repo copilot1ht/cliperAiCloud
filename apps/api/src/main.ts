@@ -21,6 +21,19 @@ async function bootstrap(): Promise<void> {
   for (const warning of runtimeConfig.report().warnings) console.warn(`[config] ${warning}`);
   const production = process.env.NODE_ENV === "production";
   const allowedOrigins = new Set((process.env.WEB_ORIGIN || "http://localhost:3000").split(",").map((item) => item.trim()));
+  if (!production) {
+    for (const origin of Array.from(allowedOrigins)) {
+      try {
+        const parsed = new URL(origin);
+        if (parsed.hostname === "localhost") parsed.hostname = "127.0.0.1";
+        else if (parsed.hostname === "127.0.0.1") parsed.hostname = "localhost";
+        else continue;
+        allowedOrigins.add(parsed.origin);
+      } catch {
+        // Runtime validation reports malformed configured origins.
+      }
+    }
+  }
   if (production) app.set("trust proxy", 1);
   app.use((request: Request, response: Response, next: NextFunction) => {
     const requestId = String(request.headers["x-request-id"] || randomUUID()).slice(0, 128);

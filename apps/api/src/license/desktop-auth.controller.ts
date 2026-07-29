@@ -1,4 +1,4 @@
-import { Body, Controller, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Inject, Post, Req, UseGuards } from "@nestjs/common";
 import type { DesktopActivateRequest, DesktopRefreshRequest, LicenseValidationRequest } from "@cliper/contracts";
 import { LicenseService } from "./license.service.js";
 import { DesktopSessionService } from "../security/desktop-session.service.js";
@@ -6,11 +6,14 @@ import { DesktopSessionGuard, type DesktopAuthenticatedRequest } from "../securi
 
 @Controller("api/auth")
 export class DesktopAuthController {
-  constructor(private readonly licenses: LicenseService, private readonly sessions: DesktopSessionService) {}
+  constructor(
+    @Inject(LicenseService) private readonly licenses: LicenseService,
+    @Inject(DesktopSessionService) private readonly sessions: DesktopSessionService,
+  ) {}
 
   @Post("verify")
-  verify(@Body() request: LicenseValidationRequest) {
-    const result = this.licenses.validate(request);
+  async verify(@Body() request: LicenseValidationRequest) {
+    const result = await this.licenses.validate(request);
     return {
       status: result.valid ? "active" : result.status || "revoked",
       valid: result.valid,
@@ -24,18 +27,18 @@ export class DesktopAuthController {
   }
 
   @Post("desktop/activate")
-  activate(@Body() request: DesktopActivateRequest) {
+  async activate(@Body() request: DesktopActivateRequest) {
     return this.sessions.activate(request);
   }
 
   @Post("desktop/refresh")
-  refresh(@Body() request: DesktopRefreshRequest) {
+  async refresh(@Body() request: DesktopRefreshRequest) {
     return this.sessions.refresh(request);
   }
 
   @Post("desktop/heartbeat")
   @UseGuards(DesktopSessionGuard)
-  heartbeat(@Req() request: DesktopAuthenticatedRequest) {
+  async heartbeat(@Req() request: DesktopAuthenticatedRequest) {
     return this.sessions.heartbeat(request.desktopSession!);
   }
 }
