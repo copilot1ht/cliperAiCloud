@@ -97,7 +97,10 @@ Node.js: 22
 
 Project Vercel harus menjadi project **web**, bukan `cliper-ai-cloud-api`. Jika halaman deployment menunjuk project API, disconnect repository dari project tersebut lalu import ulang sebagai web dengan Root Directory `apps/web`.
 
-`apps/web/vercel.json` menyediakan pengaturan yang sama. `vercel.json` di root menjadi fallback bila project terlanjur diimpor dengan Root Directory `/`.
+`apps/web/vercel.json` mengunci install/build monorepo dari repository root sambil
+tetap memakai output framework default. Build Web memakai Webpack secara eksplisit
+agar trace production Next.js tersedia untuk packaging Vercel. `vercel.json` di
+root menjadi fallback bila project terlanjur diimpor dengan Root Directory `/`.
 
 Environment Vercel:
 
