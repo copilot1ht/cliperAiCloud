@@ -2,9 +2,6 @@ FROM node:22-bookworm-slim AS build
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
-# Set dummy DATABASE_URL for Prisma schema parsing during build
-# Actual database connection happens at runtime
-ENV DATABASE_URL=postgresql://build:build@localhost:5432/cliper_build?schema=public
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssl && rm -rf /var/lib/apt/lists/*
@@ -25,6 +22,10 @@ COPY apps/api apps/api
 COPY packages packages
 COPY prisma prisma
 
+# DATABASE_URL is required for Prisma schema parsing during build
+# Use a dummy value during build - actual connection happens at runtime
+ARG DATABASE_URL=postgresql://build:build@localhost:5432/cliper_build?schema=public
+ENV DATABASE_URL=$DATABASE_URL
 RUN pnpm db:generate
 RUN pnpm --filter @cliper/api... build
 
