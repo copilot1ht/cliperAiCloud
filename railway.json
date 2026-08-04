@@ -3,6 +3,9 @@
   "build": {
     "builder": "DOCKERFILE",
     "dockerfilePath": "Dockerfile.api",
+    "buildArgs": {
+      "DATABASE_URL": "postgresql://build:build@localhost:5432/cliper_build?schema=public"
+    },
     "watchPatterns": [
       "/apps/api/**",
       "/packages/**",
