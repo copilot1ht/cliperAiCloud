@@ -22,9 +22,7 @@ COPY apps/api apps/api
 COPY packages packages
 COPY prisma prisma
 
-# DATABASE_URL is required for Prisma schema parsing during build
-# Use a dummy value during build - actual connection happens at runtime
-ARG DATABASE_URL=postgresql://build:build@localhost:5432/cliper_build?schema=public
+ARG DATABASE_URL=postgresql://postgres:postgres@localhost:5432/cliper_build?schema=public
 ENV DATABASE_URL=$DATABASE_URL
 RUN pnpm db:generate
 RUN pnpm --filter @cliper/api... build
