@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Gauge, KeyRound, Plus, Power, RefreshCw, ServerCog, ShieldCheck, Trash2 } from "lucide-react";
+import { CheckCircle2, Gauge, KeyRound, Plus, Power, RefreshCw, Trash2 } from "lucide-react";
 import { AdminError, AdminLoading, AdminModal, EmptyState, LocalModeNotice } from "@/components/admin-ui";
 import {
   adminFetch,
@@ -263,7 +263,7 @@ export function AdminProviders() {
   return <>
     <LocalModeNotice />
     {error && <AdminError message={error} retry={load} />}
-    <section className="compact-stats provider-stats">
+    <section className="compact-stats provider-stats" aria-label="Ringkasan provider">
       <div className="metric-block"><small>Provider tersimpan</small><strong>{data.providers.length}</strong><span>key server-side</span></div>
       <div className="metric-block"><small>Online</small><strong>{totals.healthy}</strong><span>lulus health check</span></div>
       <div className="metric-block"><small>Perlu diperiksa</small><strong>{totals.attention}</strong><span>offline atau belum diuji</span></div>
@@ -303,10 +303,6 @@ export function AdminProviders() {
           </div>
         </article>;
       })}</div> : <EmptyState title="Belum ada provider" detail="Tambahkan DeepSeek, Gemini, OpenAI, Qwen, atau Claude. Server akan memvalidasi key sebelum menyimpannya." />}
-    </section>
-
-    <section className="panel security-notice">
-      <div className="process-strip"><span><KeyRound size={18} /><strong>API key</strong><small>admin paste sekali</small></span><i>→</i><span><ServerCog size={18} /><strong>Auto detect</strong><small>endpoint, model, latency</small></span><i>→</i><span><ShieldCheck size={18} /><strong>Encrypted pool</strong><small>siap untuk AI Router</small></span></div>
     </section>
 
     {editing && <ProviderForm

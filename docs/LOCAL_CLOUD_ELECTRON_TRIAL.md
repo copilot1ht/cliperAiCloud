@@ -13,8 +13,9 @@ Dokumen ini adalah urutan uji fase pertama sebelum deploy. Provider key tidak pe
 ## 1. Jalankan Cloud lokal
 
 ```powershell
-cd "C:\Users\USER\Desktop\Cliper Ai Studio\WEB PRODUCTION SAAS"
+cd "C:\Users\USER\Desktop\Cliper Ai Cloud"
 pnpm install
+if (-not (Test-Path .env)) { pnpm env:local }
 pnpm db:generate
 pnpm exec prisma migrate deploy
 pnpm dev

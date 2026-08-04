@@ -8,6 +8,7 @@ const original = {
   DEV_ADMIN_PASSWORD_HASH: process.env.DEV_ADMIN_PASSWORD_HASH,
   BOOTSTRAP_ADMIN_EMAIL: process.env.BOOTSTRAP_ADMIN_EMAIL,
   BOOTSTRAP_ADMIN_PASSWORD_HASH: process.env.BOOTSTRAP_ADMIN_PASSWORD_HASH,
+  AUTH_STORAGE: process.env.AUTH_STORAGE,
 };
 
 beforeEach(async () => {
@@ -38,8 +39,15 @@ describe("AuthService", () => {
     expect(await auth.userById(result.user.id)).toMatchObject({ role: "admin", plan: "enterprise", deviceLimit: 2, protected: true });
   });
 
+  it("rejects a malformed configured password hash without leaking a server error", async () => {
+    process.env.DEV_ADMIN_PASSWORD_HASH = "replace-with-argon2id-hash";
+    await expect(new AuthService().login({ email: "admin@test.local", password: "strong-admin-password" }))
+      .rejects.toThrow("Email atau password salah");
+  });
+
   it("allows the separately configured bootstrap admin in production", async () => {
     process.env.NODE_ENV = "production";
+    process.env.AUTH_STORAGE = "memory";
     process.env.BOOTSTRAP_ADMIN_EMAIL = "owner@cliper.test";
     process.env.BOOTSTRAP_ADMIN_PASSWORD_HASH = await hash("production-admin-password");
     const result = await new AuthService().login({ email: "owner@cliper.test", password: "production-admin-password" });

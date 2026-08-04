@@ -21,4 +21,3 @@ packages/database/generated/
 apps/api/src/generated/prisma/
 
 .vercel
-.env*

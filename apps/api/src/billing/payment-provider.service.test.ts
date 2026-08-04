@@ -123,6 +123,48 @@ describe("MidtransPaymentProvider", () => {
       ),
     ).not.toContain(serverKey);
     expect(String(request.body)).toContain("25000");
+    const qrRequest = calls[1]?.[1] || {};
+    expect(qrRequest.redirect).toBe("error");
+  });
+
+  it("rejects a QR response that is not a PNG", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            transaction_id: "trx-qris-invalid-image",
+            actions: [
+              {
+                name: "generate-qr-code",
+                url: "https://api.sandbox.midtrans.com/v2/qris/trx-qris-invalid-image/qr-code",
+              },
+            ],
+          }),
+          { status: 201 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response("not an image", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      provider.createPayment({
+        invoiceNumber: "CLP-20260715-INVALID-IMAGE",
+        amountIdr: 25_000,
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+        customer: {
+          id: "u1",
+          email: "user@example.com",
+          displayName: "User",
+        },
+        description: "Top-up",
+      }),
+    ).rejects.toThrow("tipe file");
   });
 
   it("always requests QRIS even when no payment selector is sent", async () => {

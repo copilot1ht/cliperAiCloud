@@ -1,10 +1,13 @@
 import { AppShell } from "@/components/app-shell";
-import { desktopReleases, releaseAssetUrl } from "@/lib/desktop-releases";
+import { desktopDownloadsReady, desktopReleases, releaseAssetUrl } from "@/lib/desktop-releases";
 import { CheckCircle2, Download, FileArchive, History, ShieldCheck } from "lucide-react";
 
 export default function DownloadsPage() {
   const current = desktopReleases.find((release) => release.status === "current") ?? desktopReleases[0];
   if (!current) return null;
+  const setupUrl = releaseAssetUrl(current.version, "setup");
+  const portableUrl = releaseAssetUrl(current.version, "portable");
+  const checksumUrl = releaseAssetUrl(current.version, "checksums");
 
   return (
     <AppShell eyebrow="Desktop app" title="Download Cliper Studio">
@@ -20,10 +23,19 @@ export default function DownloadsPage() {
           </div>
         </div>
         <div className="release-actions">
-          <a className="button button-primary" href={releaseAssetUrl(current.version, "setup")}><Download size={17} /> Download Setup</a>
-          <a className="button button-secondary" href={releaseAssetUrl(current.version, "portable")}><FileArchive size={17} /> Portable</a>
+          {setupUrl
+            ? <a className="button button-primary" href={setupUrl}><Download size={17} /> Download Setup</a>
+            : <span className="button button-primary button-disabled" aria-disabled="true"><Download size={17} /> Segera tersedia</span>}
+          {portableUrl
+            ? <a className="button button-secondary" href={portableUrl}><FileArchive size={17} /> Portable</a>
+            : <span className="button button-secondary button-disabled" aria-disabled="true"><FileArchive size={17} /> Portable belum tersedia</span>}
         </div>
       </section>
+      {!desktopDownloadsReady && (
+        <div className="notice notice-warning">
+          Build beta sudah terdaftar, tetapi binary publik belum diterbitkan. Tombol download akan aktif setelah release asset lolos checksum dan tersedia di host publik.
+        </div>
+      )}
 
       <div className="release-grid">
         <section className="panel">
@@ -35,7 +47,9 @@ export default function DownloadsPage() {
         <section className="panel">
           <div className="panel-head"><div><p className="section-kicker">Integrity</p><h2>Verify download</h2></div><ShieldCheck size={20} /></div>
           <p className="release-copy">Cocokkan SHA-256 setelah download. File checksum diterbitkan bersama setiap release.</p>
-          <a className="button button-secondary" href={releaseAssetUrl(current.version, "checksums")}>Download SHA256SUMS</a>
+          {checksumUrl
+            ? <a className="button button-secondary" href={checksumUrl}>Download SHA256SUMS</a>
+            : <span className="button button-secondary button-disabled" aria-disabled="true">Checksum belum diterbitkan</span>}
         </section>
       </div>
 

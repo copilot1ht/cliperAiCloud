@@ -1,6 +1,7 @@
-const githubReleaseBase =
-  process.env.NEXT_PUBLIC_DESKTOP_RELEASE_BASE_URL?.replace(/\/$/, "") ||
-  "https://github.com/copilot1ht/cliperAiCloud/releases/download";
+export const desktopReleaseBaseUrl =
+  process.env.NEXT_PUBLIC_DESKTOP_RELEASE_BASE_URL?.trim().replace(/\/$/, "") || "";
+
+export const desktopDownloadsReady = Boolean(desktopReleaseBaseUrl);
 
 export interface DesktopRelease {
   version: string;
@@ -36,11 +37,12 @@ export const desktopReleases: DesktopRelease[] = [
 ];
 
 export function releaseAssetUrl(version: string, asset: "setup" | "portable" | "checksums") {
+  if (!desktopReleaseBaseUrl) return undefined;
   const tag = `v${version}`;
   const file = {
     setup: "Cliper-Studio-Plus-Setup.exe",
     portable: "Cliper-Studio-Plus-Portable.exe",
     checksums: "SHA256SUMS.txt",
   }[asset];
-  return `${githubReleaseBase}/${tag}/${file}`;
+  return `${desktopReleaseBaseUrl}/${tag}/${file}`;
 }

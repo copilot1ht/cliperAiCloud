@@ -33,6 +33,9 @@ export class HealthController {
       (provider) => provider.enabled && provider.status === "healthy" && provider.pricingConfigured,
     );
     const providerReady = healthyStoredProviders.length > 0 || report.providers.some((provider) => provider.enabled);
+    const warnings = providerReady
+      ? report.warnings.filter((warning) => !warning.startsWith("Tidak ada provider AI aktif."))
+      : report.warnings;
     const redisRequired = report.mode === "production";
     return {
       // Redis is optional for the local single-process trial, but remains a
@@ -54,7 +57,7 @@ export class HealthController {
         redis: { configured: report.infrastructure.redis, reachable: dependencies.redis, required: redisRequired },
         secureOrigins: report.infrastructure.secureOrigins,
       },
-      warnings: report.warnings,
+      warnings,
       errors: report.errors,
       time: new Date().toISOString(),
     };

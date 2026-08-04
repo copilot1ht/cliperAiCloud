@@ -251,6 +251,10 @@ export class MidtransPaymentProvider implements PaymentProvider {
     try {
       const response = await fetch(parsed.toString(), {
         method: "GET",
+        // The QR URL comes from Midtrans, but redirects can otherwise turn this
+        // into an outbound fetch to an unrelated host. Reject them instead of
+        // following them with the API credential attached.
+        redirect: "error",
         headers: {
           Accept: "image/png",
           Authorization: this.headers()["Authorization"] || "",
@@ -262,18 +266,28 @@ export class MidtransPaymentProvider implements PaymentProvider {
           `Gambar QRIS Midtrans gagal dimuat (HTTP ${response.status}).`,
         );
       }
+      const contentType = (String(response.headers.get("content-type") || "")
+        .split(";")[0] || "")
+        .trim()
+        .toLowerCase();
+      if (contentType !== "image/png") {
+        throw new ServiceUnavailableException(
+          "Midtrans mengembalikan gambar QRIS dengan tipe file yang tidak valid.",
+        );
+      }
+      const contentLength = Number(response.headers.get("content-length") || 0);
+      if (Number.isFinite(contentLength) && contentLength > 2_000_000) {
+        throw new ServiceUnavailableException(
+          "Ukuran gambar QRIS Midtrans melebihi batas aman.",
+        );
+      }
       const bytes = Buffer.from(await response.arrayBuffer());
       if (bytes.length < 64 || bytes.length > 2_000_000) {
         throw new ServiceUnavailableException(
           "Ukuran gambar QRIS Midtrans tidak valid.",
         );
       }
-      const contentType = (String(response.headers.get("content-type") || "")
-        .split(";")[0] || "")
-        .trim()
-        .toLowerCase();
-      const mime = contentType === "image/svg+xml" ? contentType : "image/png";
-      return `data:${mime};base64,${bytes.toString("base64")}`;
+      return `data:image/png;base64,${bytes.toString("base64")}`;
     } finally {
       clearTimeout(timer);
     }

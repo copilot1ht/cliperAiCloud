@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.build.json",
     "config:check": "tsx src/config/check.ts",
     "hash:password": "tsx src/config/hash-password.ts",
+    "accounts:sync-bootstrap": "tsx src/config/sync-bootstrap-admin.ts",
     "accounts:seed": "tsx src/config/seed-access-accounts.ts",
     "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",

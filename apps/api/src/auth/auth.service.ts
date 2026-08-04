@@ -79,6 +79,16 @@ function sessionHash(token: string): string {
   return createHash("sha256").update(String(token || "")).digest("hex");
 }
 
+async function passwordMatches(passwordHash: string, password: string): Promise<boolean> {
+  const normalizedHash = String(passwordHash || "").trim();
+  if (!normalizedHash.startsWith("$argon2")) return false;
+  try {
+    return await verify(normalizedHash, password);
+  } catch {
+    return false;
+  }
+}
+
 export function authStorageMode(): AuthStorageMode {
   if (String(process.env.AUTH_STORAGE || "").toLowerCase() === "memory") {
     return String(process.env.NODE_ENV || "development").toLowerCase() === "production" ? "bootstrap-memory" : "development-memory";
@@ -158,7 +168,7 @@ export class AuthService {
         include: { creditAccount: { select: { balanceMicro: true } } },
       }) as DatabaseUserRecord | null;
       if (user) {
-        if (!(await verify(user.passwordHash, password))) this.rejectLogin(email);
+        if (!(await passwordMatches(user.passwordHash, password))) this.rejectLogin(email);
         if (!user.isActive) {
           this.securityEvents?.record({ event: "web_login_suspended", severity: "warning", accountId: user.id, detail: "Login rejected for suspended account." });
           throw new UnauthorizedException("Akun sedang dinonaktifkan oleh administrator.");
@@ -178,7 +188,7 @@ export class AuthService {
     const configuredAdminEmail = adminEmail();
     const configuredAdminHash = adminPasswordHash();
     if (email === configuredAdminEmail) {
-      if (!configuredAdminHash || !(await verify(configuredAdminHash, password))) this.rejectLogin(email);
+      if (!(await passwordMatches(configuredAdminHash, password))) this.rejectLogin(email);
       const result = this.createMemorySession(this.bootstrapAdmin(configuredAdminHash));
       this.loginAttempts.delete(email);
       this.securityEvents?.record({ event: "web_login_success", severity: "info", accountId: "bootstrap-admin", detail: "Bootstrap admin login successful." });
@@ -186,7 +196,7 @@ export class AuthService {
     }
 
     const user = this.users.get(email);
-    if (!user || !(await verify(user.passwordHash, password))) this.rejectLogin(email);
+    if (!user || !(await passwordMatches(user.passwordHash, password))) this.rejectLogin(email);
     if (user.status !== "active") {
       this.securityEvents?.record({ event: "web_login_suspended", severity: "warning", accountId: user.id, detail: "Login rejected for suspended account." });
       throw new UnauthorizedException("Akun sedang dinonaktifkan oleh administrator.");

@@ -3,6 +3,7 @@ import {
   configuredTopupMinimumIdr,
   configuredTopupMinimumUsd,
   configuredTopupUsdToIdrDisplayRate,
+  transientQrDataUrl,
 } from "./payment.service.js";
 
 describe("Billing top-up helpers", () => {
@@ -29,5 +30,12 @@ describe("Billing top-up helpers", () => {
     process.env.PAYMENT_MIN_TOPUP_USD = "not-a-number";
     process.env.PAYMENT_USD_TO_IDR_DISPLAY_RATE = "not-a-number";
     expect(configuredTopupMinimumIdr()).toBe(53100);
+  });
+
+  it("creates a temporary QR image only when a provider QR payload exists", async () => {
+    expect(await transientQrDataUrl(null)).toBeNull();
+    await expect(transientQrDataUrl("CLIPER:payment:test")).resolves.toMatch(
+      /^data:image\/png;base64,/,
+    );
   });
 });

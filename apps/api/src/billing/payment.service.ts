@@ -9,6 +9,7 @@ import {
 } from "@nestjs/common";
 import { paymentPayloadHash, type PaymentWebhookEvent } from "@cliper/billing";
 import { randomBytes } from "node:crypto";
+import QRCode from "qrcode";
 import { DatabaseService } from "../database/database.service.js";
 import {
   InvoiceStatus,
@@ -81,6 +82,21 @@ export function configuredTopupMinimumUsd(): number {
     "PAYMENT_MIN_TOPUP_USD",
     DEFAULT_TOPUP_MIN_USD,
   );
+}
+
+export async function transientQrDataUrl(
+  qrString: string | null | undefined,
+): Promise<string | null> {
+  if (!qrString) return null;
+  try {
+    return await QRCode.toDataURL(qrString, {
+      errorCorrectionLevel: "M",
+      margin: 2,
+      width: 320,
+    });
+  } catch {
+    return null;
+  }
 }
 
 export function configuredTopupUsdToIdrDisplayRate(): number {
@@ -305,7 +321,7 @@ export class PaymentService {
         include: { payment: true, items: true },
       });
     });
-    return this.safeInvoice(invoice);
+    return await this.safeInvoice(invoice);
   }
 
   async createTopupInvoice(
@@ -396,7 +412,6 @@ export class PaymentService {
             exchangeRate,
             usdEquivalent,
             paymentMethod,
-            qrImageBase64: providerPayment.qrImageBase64 || null,
             qrImageUrl: providerPayment.qrImageUrl || null,
           },
           items: {
@@ -414,7 +429,7 @@ export class PaymentService {
         include: { payment: true, items: true },
       });
     });
-    return this.safeInvoice(invoice);
+    return await this.safeInvoice(invoice);
   }
 
   async processWebhook(
@@ -550,7 +565,9 @@ export class PaymentService {
             autoRenew: subscription.autoRenew,
           }
         : null,
-      invoices: invoices.map((invoice) => this.safeInvoice(invoice)),
+      invoices: await Promise.all(
+        invoices.map((invoice) => this.safeInvoice(invoice)),
+      ),
     };
   }
 
@@ -563,7 +580,7 @@ export class PaymentService {
         include: { payment: true, items: true },
       });
     if (!invoice) throw new NotFoundException("Invoice tidak ditemukan.");
-    return this.safeInvoice(invoice);
+    return await this.safeInvoice(invoice);
   }
 
   async syncInvoiceStatus(userId: string, number: string) {
@@ -630,7 +647,7 @@ export class PaymentService {
     return {
       ...result,
       synced: true,
-      invoice: latest ? this.safeInvoice(latest) : undefined,
+      invoice: latest ? await this.safeInvoice(latest) : undefined,
     };
   }
 
@@ -1298,7 +1315,7 @@ export class PaymentService {
     });
   }
 
-  private safeInvoice(invoice: {
+  private async safeInvoice(invoice: {
     number: string;
     status: InvoiceStatus;
     subtotalIdr: number;
@@ -1320,6 +1337,12 @@ export class PaymentService {
     }>;
   }) {
     const metadata = metadataRecord(invoice.metadata);
+    const canShowQr = invoice.status === InvoiceStatus.OPEN && Boolean(invoice.qrString);
+    // QR image data is generated on demand from the stored payment payload.
+    // Do not persist Base64 blobs in invoice metadata.
+    const qrImageBase64 = canShowQr
+      ? await transientQrDataUrl(invoice.qrString)
+      : null;
     return {
       number: invoice.number,
       status:
@@ -1332,7 +1355,7 @@ export class PaymentService {
       provider: invoice.provider,
       paymentUrl: invoice.paymentUrl,
       qrString: invoice.qrString,
-      qrImageBase64: String(metadata.qrImageBase64 || "") || null,
+      qrImageBase64,
       qrImageUrl: String(metadata.qrImageUrl || "") || null,
       issuedAt: invoice.issuedAt.toISOString(),
       expiresAt: invoice.expiresAt?.toISOString(),

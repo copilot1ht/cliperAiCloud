@@ -19,9 +19,9 @@ Implementasi ini masih memory-backed. Ia memperkuat kontrak dan alur lokal, teta
 Repository tetap berisi dua produk dengan batas yang jelas:
 
 ```text
-Cliper Ai Studio/
-|-- Electron desktop                 aplikasi render lokal
-`-- WEB PRODUCTION SAAS/             Cliper AI Cloud
+C:\Users\USER\Desktop\
+|-- Cliper Ai Studio/                Electron desktop, worker, dan render lokal
+`-- Cliper Ai Cloud/                 client + admin portal, API, Prisma, dan AI gateway
     |-- apps/web                     client + admin portal
     |-- apps/api                     gateway dan control plane
     |-- packages/ai-router           routing provider

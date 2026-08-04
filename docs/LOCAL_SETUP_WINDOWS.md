@@ -22,25 +22,14 @@ docker compose version
 ## 2. Siapkan environment
 
 ```powershell
-Set-Location "C:\Users\USER\Desktop\Cliper Ai Studio\WEB PRODUCTION SAAS"
-Copy-Item .env.example .env
+Set-Location "C:\Users\USER\Desktop\Cliper Ai Cloud"
+pnpm install
+pnpm env:local
 ```
 
-Buat secret acak dengan PowerShell:
-
-```powershell
-[Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
-```
-
-Gunakan hasil berbeda untuk:
-
-- `JWT_SECRET`
-- `REFRESH_TOKEN_SECRET`
-- `ADMIN_API_KEY`
-- `PROVIDER_ENCRYPTION_KEY`
-- `CLIPER_DEV_API_KEY`
-
-Jangan commit `.env`. Jangan memakai secret yang sama untuk dua fungsi.
+`pnpm env:local` membuat secret acak terpisah dan hash Argon2id untuk password
+admin yang Anda masukkan. Jangan commit `.env`, jangan gunakan ulang secret lokal
+untuk staging/production, dan jangan menyalin key provider ke Electron.
 
 ## 3. Provider awal
 

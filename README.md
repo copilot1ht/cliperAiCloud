@@ -18,26 +18,64 @@ Hasil validasi terbaru: [Validation Report 2026-07-12](docs/VALIDATION_REPORT_20
 
 ## Arsitektur aman
 
-- Aplikasi Electron stabil tetap berada di root repository selama masa transisi.
-- Workspace ini berdiri sendiri dan tidak ikut ke paket Electron/ASAR.
+- Aplikasi Electron berada di `C:\Users\USER\Desktop\Cliper Ai Studio`; workspace ini adalah control plane Cloud yang terpisah.
+- Workspace ini tidak ikut ke paket Electron/ASAR.
 - Desktop dapat memakai endpoint OpenAI-compatible `POST /v1/chat/completions` melalui mode Custom AI yang sudah ada.
 - Provider key hanya disimpan di server. Jangan pernah memasukkannya ke Electron atau `NEXT_PUBLIC_*`.
 
 ## Menjalankan lokal
 
-Prasyarat: Node.js 20.19+ LTS, pnpm 10.34.5, Docker Desktop.
+Prasyarat: Node.js 20.19+ LTS, pnpm 10.34.5, dan Docker Desktop. Desktop
+tetap memproses video/render lokal; Cloud hanya melayani akun, lisensi, billing,
+dan AI gateway.
+
+Persiapan pertama kali dari folder ini:
 
 ```powershell
-Copy-Item .env.example .env
-docker compose up -d
 pnpm install
+if (-not (Test-Path .env)) { pnpm env:local }
+docker compose up -d postgres redis
 pnpm db:generate
-pnpm db:migrate
+pnpm exec prisma migrate deploy
 pnpm config:check
-pnpm dev
 ```
 
-Untuk uji lokal tanpa PostgreSQL billing, gunakan:
+Starter Desktop juga menjalankan `pnpm accounts:sync-bootstrap` setelah migration
+di local development. Perintah ini membuat atau memperbarui satu super admin dari
+`DEV_ADMIN_EMAIL` dan hash Argon2id di `.env`, tanpa menyimpan password plaintext
+di database log atau source code.
+
+Secara default bootstrap lokal membuat admin `admin@cliperaicloud.com`. Masukkan
+password baru minimal 12 karakter saat `pnpm env:local` meminta input; password
+lama atau password yang pernah dibagikan tidak digunakan ulang.
+
+Untuk pemakaian harian, jalankan seluruh stack dari root Electron:
+
+```powershell
+cd "C:\Users\USER\Desktop\Cliper Ai Studio"
+Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+npm run start:local-cloud
+```
+
+Tanpa membuka Electron:
+
+```powershell
+npm run start:local-cloud -- -NoElectron
+```
+
+Hentikan API, web, dan Electron yang dibuat starter:
+
+```powershell
+cd "C:\Users\USER\Desktop\Cliper Ai Studio"
+npm run stop:local-cloud
+```
+
+Untuk debugging manual, jalankan `pnpm dev:api` dan `pnpm dev:web` pada dua
+terminal berbeda. Endpoint desktop lokal selalu
+`http://127.0.0.1:4100/v1`, bukan URL provider AI langsung.
+
+Mode berikut hanya untuk eksperimen singkat. Data billing tersimpan di memori dan
+hilang ketika API direstart:
 
 ```env
 ANALYSIS_BILLING_STORAGE=memory
@@ -59,22 +97,24 @@ pnpm config:check
 
 Production akan menolak konfigurasi billing memory, provider rate nol, atau pricing job yang tidak menutup protected cost.
 
-- Web: `http://localhost:3000`
-- Login dan pendaftaran: `http://localhost:3000/login`
-- API: `http://localhost:4100/health`
+- Web: `http://127.0.0.1:3000`
+- Login dan pendaftaran: `http://127.0.0.1:3000/login`
+- API live health: `http://127.0.0.1:4100/health/live`
+- API readiness: `http://127.0.0.1:4100/health/ready`
+- Electron endpoint: `http://127.0.0.1:4100/v1`
 
 ### Halaman admin lokal
 
 Gunakan satu halaman login yang sama. Account dengan role `admin` otomatis diarahkan ke control plane; member otomatis diarahkan ke dashboard user.
 
-- Overview: `http://localhost:3000/admin/overview`
-- Users & Plans: `http://localhost:3000/admin/users`
-- Providers dan server-side key pool: `http://localhost:3000/admin/providers`
-- AI Router primary/fallback: `http://localhost:3000/admin/ai-router`
-- Revenue dan AI margin: `http://localhost:3000/admin/revenue`
-- Incoming payments dan reconciliation: `http://localhost:3000/admin/payments`
-- System Health: `http://localhost:3000/admin/system-health`
-- Security events dan desktop sessions: `http://localhost:3000/admin/security`
+- Overview: `http://127.0.0.1:3000/admin/overview`
+- Users & Plans: `http://127.0.0.1:3000/admin/users`
+- Providers dan server-side key pool: `http://127.0.0.1:3000/admin/providers`
+- AI Router primary/fallback: `http://127.0.0.1:3000/admin/ai-router`
+- Revenue dan AI margin: `http://127.0.0.1:3000/admin/revenue`
+- Incoming payments dan reconciliation: `http://127.0.0.1:3000/admin/payments`
+- System Health: `http://127.0.0.1:3000/admin/system-health`
+- Security events dan desktop sessions: `http://127.0.0.1:3000/admin/security`
 
 Menu admin memakai route nyata, bukan anchor pada halaman overview. Link lama seperti `/admin/overview#providers` otomatis dialihkan ke route baru.
 
@@ -150,3 +190,25 @@ Skrip kedua menguji register, key issuance, device activation, refresh rotation,
 ## Deployment
 
 Panduan deployment production untuk web Vercel dan API Railway tersedia di [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+## Distribusi aplikasi desktop
+
+Jangan membuat repository source menjadi public hanya agar file EXE dapat diunduh.
+Gunakan repository public khusus binary, misalnya
+`copilot1ht/cliper-studio-releases`, atau bucket Cloudflare R2. Upload hanya:
+
+```text
+Cliper-Studio-Plus-Setup.exe
+Cliper-Studio-Plus-Portable.exe
+SHA256SUMS.txt
+```
+
+Setelah release asset tersedia pada tag seperti `v1.11.0-beta.1`, isi environment
+Vercel berikut lalu redeploy:
+
+```env
+NEXT_PUBLIC_DESKTOP_RELEASE_BASE_URL=https://github.com/copilot1ht/cliper-studio-releases/releases/download
+```
+
+Jika environment ini kosong, halaman Download menonaktifkan tombol secara jujur
+dan tidak mengarahkan user ke URL 404.

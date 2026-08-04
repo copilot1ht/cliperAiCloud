@@ -278,12 +278,12 @@ button {
   position: sticky;
   top: 0;
   z-index: 12;
-  min-height: 88px;
+  min-height: 80px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
-  padding: 19px 30px;
+  padding: 16px 28px;
   background: rgba(255, 255, 255, 0.96);
   border-bottom: 1px solid var(--line);
   backdrop-filter: blur(12px);
@@ -372,9 +372,15 @@ button {
 }
 .page-content {
   width: 100%;
-  max-width: 1640px;
+  max-width: 1440px;
+  display: grid;
+  align-content: start;
+  gap: 16px;
   margin: 0 auto;
-  padding: 24px 30px 42px;
+  padding: 22px 28px 40px;
+}
+.page-content > * {
+  margin-block: 0;
 }
 .mobile-menu,
 .mobile-close,
@@ -548,7 +554,7 @@ button {
 }
 .panel {
   min-width: 0;
-  padding: 18px;
+  padding: 20px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1190,14 +1196,17 @@ td code {
   line-height: 1.5;
 }
 .compact-stats {
+  display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
 }
 .metric-block {
-  min-height: 102px;
+  min-height: 92px;
   display: grid;
   align-content: center;
   gap: 3px;
-  padding: 16px;
+  padding: 14px 16px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -1210,7 +1219,7 @@ td code {
 }
 .metric-block strong {
   overflow: hidden;
-  font-size: 22px;
+  font-size: 21px;
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3199,6 +3208,27 @@ td code {
 .release-actions {
   justify-content: flex-end;
 }
+
+.button-disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+  pointer-events: none;
+}
+
+.notice {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 14px 0;
+  padding: 12px 14px;
+}
+
+.notice-warning {
+  background: #fff8e8;
+  border-color: #edcf8a;
+  color: #68480a;
+}
 .release-badges {
   margin-top: 15px;
 }
@@ -3264,7 +3294,8 @@ td code {
 }
 
 @media (max-width: 1120px) {
-  .stats-grid {
+  .stats-grid,
+  .compact-stats {
     grid-template-columns: 1fr 1fr;
   }
   .content-grid-main {
