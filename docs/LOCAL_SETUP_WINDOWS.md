@@ -7,7 +7,9 @@ Dokumen ini menyiapkan Cliper AI Cloud untuk development lokal. Jangan gunakan k
 - Node.js LTS yang memenuhi `>=20.19.0`.
 - pnpm 10.34.5.
 - Git.
-- Docker Desktop dengan WSL 2 backend.
+- Docker Desktop dengan WSL 2 backend direkomendasikan untuk PostgreSQL dan
+  Redis lokal. Bootstrap tetap dapat berjalan tanpa Docker dan akan memberi
+  status `WARNING`/`SKIPPED`, bukan gagal total.
 - PostgreSQL client opsional untuk debugging.
 
 Verifikasi:
@@ -15,6 +17,7 @@ Verifikasi:
 ```powershell
 node --version
 pnpm --version
+# Opsional saat bootstrap pertama; wajib sebelum menyalakan DB/Redis lewat Compose.
 docker version
 docker compose version
 ```
@@ -61,6 +64,11 @@ docker compose ps
 ```
 
 PostgreSQL berjalan pada port `5432`, Redis pada `6379`.
+
+Jika Docker belum terpasang atau daemon belum aktif, lanjutkan bootstrap saja.
+Database migration akan diberi status `SKIPPED`; pasang/hidupkan Docker sebelum
+menjalankan API dengan `AUTH_STORAGE=postgresql` dan
+`ANALYSIS_BILLING_STORAGE=postgres`.
 
 ## 5. Install dan database
 
@@ -112,7 +120,9 @@ Jangan lanjut deployment bila typecheck, test, build, environment check, atau mi
 
 ### `docker` tidak dikenali
 
-Install Docker Desktop, aktifkan WSL 2, restart terminal, lalu jalankan `docker version`.
+Bootstrap boleh tetap dijalankan untuk membuat `.env` dan Prisma Client. Untuk
+stack lokal lengkap, install Docker Desktop, aktifkan WSL 2, restart terminal,
+lalu jalankan `docker version`, `docker compose up -d`, dan migration.
 
 ### Readiness `false`
 

@@ -25,7 +25,9 @@ Hasil validasi terbaru: [Validation Report 2026-07-12](docs/VALIDATION_REPORT_20
 
 ## Menjalankan lokal
 
-Prasyarat: Node.js 20.19+ LTS, pnpm 10.34.5, dan Docker Desktop. Desktop
+Prasyarat inti: Node.js 20.19+ LTS dan pnpm 10.34.5. Docker Desktop sangat
+disarankan untuk PostgreSQL/Redis lokal, tetapi bootstrap tetap selesai dengan
+peringatan ketika Docker belum terpasang atau daemon belum berjalan. Desktop
 tetap memproses video/render lokal; Cloud hanya melayani akun, lisensi, billing,
 dan AI gateway.
 
@@ -34,6 +36,7 @@ Persiapan pertama kali dari folder ini:
 ```powershell
 pnpm install
 if (-not (Test-Path .env)) { pnpm env:local }
+# Jalankan bila Docker Desktop tersedia dan sedang hidup.
 docker compose up -d postgres redis
 pnpm db:generate
 pnpm exec prisma migrate deploy
@@ -69,6 +72,12 @@ Hentikan API, web, dan Electron yang dibuat starter:
 cd "C:\Users\USER\Desktop\Cliper Ai Studio"
 npm run stop:local-cloud
 ```
+
+Jika Docker belum tersedia, `pnpm env:local` tetap membuat `.env`, memeriksa
+Node/pnpm/Prisma, dan menandai database/Redis sebagai `WARNING` atau `SKIPPED`.
+Pasang atau hidupkan Docker Desktop kemudian jalankan kembali
+`docker compose up -d postgres redis`, lalu `pnpm exec prisma migrate deploy`
+sebelum menyalakan API dengan persistence PostgreSQL.
 
 Untuk debugging manual, jalankan `pnpm dev:api` dan `pnpm dev:web` pada dua
 terminal berbeda. Endpoint desktop lokal selalu
