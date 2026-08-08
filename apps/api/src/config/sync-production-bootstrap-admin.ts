@@ -32,14 +32,18 @@ export function productionBootstrapAdminFromEnv(
   };
 }
 
-async function main(): Promise<void> {
-  loadWorkspaceEnv();
-  if (process.argv[2] !== "--confirm-live-reset") {
-    throw new Error("Tambahkan --confirm-live-reset untuk mencabut sesi dan menyetel ulang akun bootstrap production.");
-  }
+export function productionBootstrapAdminSyncRequested(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return String(env.BOOTSTRAP_ADMIN_SYNC_ON_START || "").trim().toLowerCase() === "true"
+    && String(env.BOOTSTRAP_ADMIN_SYNC_CONFIRMATION || "").trim() === "SYNC BOOTSTRAP ADMIN";
+}
 
-  const admin = productionBootstrapAdminFromEnv();
-  const database = new DatabaseService();
+export async function syncProductionBootstrapAdmin(
+  database: DatabaseService,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ email: string; role: "super_admin"; synced: true; sessionsRevoked: true }> {
+  const admin = productionBootstrapAdminFromEnv(env);
   if (!database.configured()) {
     throw new Error("DATABASE_URL belum dikonfigurasi untuk sinkronisasi admin production.");
   }
@@ -90,8 +94,21 @@ async function main(): Promise<void> {
       },
     }),
   ]);
-  await database.onModuleDestroy();
-  process.stdout.write(JSON.stringify({ email: admin.email, role: "super_admin", synced: true, sessionsRevoked: true }));
+  return { email: admin.email, role: "super_admin", synced: true, sessionsRevoked: true };
+}
+
+async function main(): Promise<void> {
+  loadWorkspaceEnv();
+  if (process.argv[2] !== "--confirm-live-reset") {
+    throw new Error("Tambahkan --confirm-live-reset untuk mencabut sesi dan menyetel ulang akun bootstrap production.");
+  }
+
+  const database = new DatabaseService();
+  try {
+    process.stdout.write(JSON.stringify(await syncProductionBootstrapAdmin(database)));
+  } finally {
+    await database.onModuleDestroy();
+  }
 }
 
 if (process.argv[1] && process.argv[1].includes("sync-production-bootstrap-admin")) {

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { productionBootstrapAdminFromEnv } from "./sync-production-bootstrap-admin.js";
+import {
+  productionBootstrapAdminFromEnv,
+  productionBootstrapAdminSyncRequested,
+} from "./sync-production-bootstrap-admin.js";
 
 describe("productionBootstrapAdminFromEnv", () => {
   const hash = "$argon2id$v=19$m=19456,t=2,p=1$abc$def";
@@ -20,5 +23,18 @@ describe("productionBootstrapAdminFromEnv", () => {
       BOOTSTRAP_ADMIN_EMAIL: "admin@cliperaicloud.com",
       BOOTSTRAP_ADMIN_PASSWORD_HASH: "not-a-hash",
     })).toThrow("Argon2id");
+  });
+
+  it("requires two explicit flags before startup sync is allowed", () => {
+    expect(productionBootstrapAdminSyncRequested({
+      BOOTSTRAP_ADMIN_SYNC_ON_START: "true",
+    })).toBe(false);
+    expect(productionBootstrapAdminSyncRequested({
+      BOOTSTRAP_ADMIN_SYNC_CONFIRMATION: "SYNC BOOTSTRAP ADMIN",
+    })).toBe(false);
+    expect(productionBootstrapAdminSyncRequested({
+      BOOTSTRAP_ADMIN_SYNC_ON_START: "true",
+      BOOTSTRAP_ADMIN_SYNC_CONFIRMATION: "SYNC BOOTSTRAP ADMIN",
+    })).toBe(true);
   });
 });

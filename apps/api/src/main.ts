@@ -7,6 +7,8 @@ import { randomUUID } from "node:crypto";
 import { AppModule } from "./app.module.js";
 import { RuntimeConfigService } from "./config/runtime-config.js";
 import { loadWorkspaceEnv } from "./config/load-env.js";
+import { productionBootstrapAdminSyncRequested, syncProductionBootstrapAdmin } from "./config/sync-production-bootstrap-admin.js";
+import { DatabaseService } from "./database/database.service.js";
 import { PrismaExceptionFilter } from "./database/prisma-exception.filter.js";
 
 loadWorkspaceEnv();
@@ -22,6 +24,10 @@ async function bootstrap(): Promise<void> {
   app.useGlobalFilters(new PrismaExceptionFilter());
   runtimeConfig.assertProductionSafe();
   for (const warning of runtimeConfig.report().warnings) console.warn(`[config] ${warning}`);
+  if (productionBootstrapAdminSyncRequested()) {
+    const result = await syncProductionBootstrapAdmin(app.get(DatabaseService));
+    console.warn(`[bootstrap] production admin synchronized for ${result.email}; existing sessions were revoked.`);
+  }
   const production = process.env.NODE_ENV === "production";
   const allowedOrigins = new Set((process.env.WEB_ORIGIN || "http://localhost:3000").split(",").map((item) => item.trim()));
   if (!production) {
