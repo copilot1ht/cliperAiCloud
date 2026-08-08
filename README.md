@@ -23,6 +23,16 @@ Hasil validasi terbaru: [Validation Report 2026-07-12](docs/VALIDATION_REPORT_20
 - Desktop dapat memakai endpoint OpenAI-compatible `POST /v1/chat/completions` melalui mode Custom AI yang sudah ada.
 - Provider key hanya disimpan di server. Jangan pernah memasukkannya ke Electron atau `NEXT_PUBLIC_*`.
 
+## Ownership production
+
+- Web production dilayani oleh Vercel pada `https://www.cliperaicloud.online`.
+- API production dilayani oleh Railway; Vercel meneruskan request browser melalui
+  route same-origin `/cloud-api` menggunakan `CLIPER_API_URL` server-side.
+- Railway hanya menjalankan API dan PostgreSQL. Video, transkripsi, dan render
+  tetap berjalan lokal di aplikasi Electron.
+- Jangan menaruh kredensial database, payment, maupun provider AI pada variable
+  `NEXT_PUBLIC_*` atau bundle browser.
+
 ## Menjalankan lokal
 
 Prasyarat inti: Node.js 20.19+ LTS dan pnpm 10.34.5. Docker Desktop sangat
