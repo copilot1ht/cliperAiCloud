@@ -9,12 +9,16 @@ const original = {
   BOOTSTRAP_ADMIN_EMAIL: process.env.BOOTSTRAP_ADMIN_EMAIL,
   BOOTSTRAP_ADMIN_PASSWORD_HASH: process.env.BOOTSTRAP_ADMIN_PASSWORD_HASH,
   AUTH_STORAGE: process.env.AUTH_STORAGE,
+  PASSWORD_RESET_EXPOSE_TOKEN_FOR_TESTS: process.env.PASSWORD_RESET_EXPOSE_TOKEN_FOR_TESTS,
+  WEB_ORIGIN: process.env.WEB_ORIGIN,
 };
 
 beforeEach(async () => {
   process.env.NODE_ENV = "development";
   process.env.DEV_ADMIN_EMAIL = "admin@test.local";
   process.env.DEV_ADMIN_PASSWORD_HASH = await hash("strong-admin-password");
+  process.env.PASSWORD_RESET_EXPOSE_TOKEN_FOR_TESTS = "true";
+  process.env.WEB_ORIGIN = "http://localhost:3000";
 });
 
 afterEach(() => {
@@ -91,5 +95,22 @@ describe("AuthService", () => {
       await expect(auth.login({ email: "missing@test.local", password: "wrong-password" })).rejects.toThrow("Email atau password salah");
     }
     await expect(auth.login({ email: "missing@test.local", password: "wrong-password" })).rejects.toThrow("Terlalu banyak");
+  });
+
+  it("uses a one-time recovery token and revokes existing sessions", async () => {
+    const auth = new AuthService();
+    const account = await auth.register({ email: "recover@test.local", password: "strong-member-password", displayName: "Recover Member" });
+    const request = await auth.requestPasswordReset({ email: "recover@test.local" });
+    expect(request.resetToken).toBeTruthy();
+    await auth.confirmPasswordReset({ token: request.resetToken, password: "changed-member-password" });
+    await expect(auth.session(account.token)).rejects.toThrow("Session tidak valid");
+    await expect(auth.confirmPasswordReset({ token: request.resetToken, password: "another-password" })).rejects.toThrow("Tautan pemulihan");
+    await expect(auth.login({ email: "recover@test.local", password: "changed-member-password" })).resolves.toMatchObject({ user: { role: "member" } });
+  });
+
+  it("does not reveal whether an unknown email owns an account", async () => {
+    const auth = new AuthService();
+    const request = await auth.requestPasswordReset({ email: "unknown@test.local" });
+    expect(request).toEqual({ ok: true, message: "Jika akun terdaftar, tautan pemulihan telah dikirim ke email Anda." });
   });
 });

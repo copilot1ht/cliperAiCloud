@@ -173,6 +173,9 @@ export function validateRuntimeConfig(
   const secureOrigins = Boolean(origins) && origins !== "*";
   if (production && !secureOrigins)
     errors.push("WEB_ORIGIN production wajib eksplisit dan tidak boleh '*'.");
+  if (!env.RESEND_API_KEY || !env.PASSWORD_RESET_FROM) {
+    warnings.push("Pemulihan password email belum dikonfigurasi. Set RESEND_API_KEY dan PASSWORD_RESET_FROM untuk mengaktifkannya.");
+  }
   const paymentProvider = String(
     env.PAYMENT_PROVIDER || "sandbox",
   ).toLowerCase();

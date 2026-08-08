@@ -110,6 +110,22 @@ CLIPER_API_URL=https://DOMAIN-API.up.railway.app
 
 Hapus `NEXT_PUBLIC_API_URL` pada production. Browser akan memakai `/cloud-api`; Next.js meneruskan request ke Railway sehingga cookie login tetap first-party dan API provider tidak diekspos sebagai konfigurasi browser.
 
+### Password recovery
+
+Pemulihan password berjalan melalui API Railway, bukan browser. Tambahkan ke
+service `@cliper/api` setelah domain pengirim email sudah tervalidasi di Resend:
+
+```text
+APP_URL=https://www.cliperaicloud.online
+RESEND_API_KEY=<server-side-only>
+PASSWORD_RESET_FROM=Cliper AI Cloud <no-reply@your-verified-domain>
+PASSWORD_RESET_REPLY_TO=support@your-domain
+```
+
+Jangan set `PASSWORD_RESET_EXPOSE_TOKEN_FOR_TESTS=true` pada production. Tanpa
+`RESEND_API_KEY` dan alamat pengirim tervalidasi, endpoint akan menolak reset
+secara jelas daripada berpura-pura mengirim email.
+
 ## 3. Urutan Deploy
 
 1. Push branch `main` ke GitHub.

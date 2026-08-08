@@ -2961,6 +2961,25 @@ td code {
   font-size: 10px;
   line-height: 1.45;
 }
+.auth-message.success {
+  color: #176c4b;
+  background: #eaf8f1;
+  border-color: #b7e6cf;
+}
+.auth-back-button {
+  justify-self: start;
+  margin: -3px 0 2px;
+}
+.auth-page-single {
+  grid-template-columns: 1fr;
+}
+.auth-page-single .auth-stage {
+  width: 100%;
+  align-items: center;
+}
+.auth-single-brand {
+  display: flex;
+}
 .auth-footer {
   display: flex;
   align-items: center;

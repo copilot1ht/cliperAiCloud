@@ -1,4 +1,4 @@
-import { BadRequestException, HttpException, HttpStatus, Inject, Injectable, Optional, UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, HttpException, HttpStatus, Inject, Injectable, Optional, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
 import { Algorithm, hash, verify } from "@node-rs/argon2";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { CreditAccountService } from "../billing/credit-account.service.js";
@@ -59,6 +59,20 @@ export interface AuthResult {
   redirectTo: string;
 }
 
+interface MemoryPasswordResetToken {
+  userId: string;
+  expiresAt: number;
+  consumedAt?: number;
+}
+
+export interface PasswordResetRequestResult {
+  ok: true;
+  message: string;
+  // Development-only test aid. It is never included when NODE_ENV=production.
+  resetToken?: string;
+  resetUrl?: string;
+}
+
 const ARGON_OPTIONS = {
   algorithm: Algorithm.Argon2id,
   memoryCost: 19_456,
@@ -77,6 +91,16 @@ function validEmail(value: string): boolean {
 
 function sessionHash(token: string): string {
   return createHash("sha256").update(String(token || "")).digest("hex");
+}
+
+function escapeHtml(value: string): string {
+  return String(value || "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[character] || character));
 }
 
 async function passwordMatches(passwordHash: string, password: string): Promise<boolean> {
@@ -141,6 +165,7 @@ function planForDatabase(plan: MemberPlan): PlanCode {
 export class AuthService {
   private readonly users = new Map<string, MemoryUser>();
   private readonly sessions = new Map<string, MemorySession>();
+  private readonly passwordResetTokens = new Map<string, MemoryPasswordResetToken>();
   private readonly loginAttempts = new Map<string, { count: number; resetAt: number; blockedUntil: number }>();
 
   constructor(
@@ -242,6 +267,100 @@ export class AuthService {
     } else if (token) {
       this.sessions.delete(token);
     }
+    return { ok: true };
+  }
+
+  async requestPasswordReset(input: { email?: string }): Promise<PasswordResetRequestResult> {
+    const email = normalizeEmail(input.email || "");
+    const genericMessage = "Jika akun terdaftar, tautan pemulihan telah dikirim ke email Anda.";
+    if (!validEmail(email)) return { ok: true, message: genericMessage };
+
+    const testMode = this.allowsTestResetToken();
+    if (!testMode && !this.passwordResetEmailConfigured()) {
+      throw new ServiceUnavailableException("Pemulihan password melalui email belum dikonfigurasi. Hubungi administrator Cliper.");
+    }
+
+    const rawToken = randomBytes(32).toString("base64url");
+    const tokenHash = sessionHash(rawToken);
+    const resetUrl = this.passwordResetUrl(rawToken);
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+
+    if (this.usesPostgres()) {
+      const user = await this.database!.client().user.findUnique({ where: { email }, select: { id: true, isActive: true } });
+      if (!user || !user.isActive) return { ok: true, message: genericMessage };
+      const now = new Date();
+      const recent = await this.database!.client().passwordResetToken.findFirst({
+        where: { userId: user.id, consumedAt: null, expiresAt: { gt: now }, createdAt: { gt: new Date(Date.now() - 60_000) } },
+        select: { id: true },
+        orderBy: { createdAt: "desc" },
+      });
+      if (recent) return { ok: true, message: genericMessage };
+      await this.database!.client().passwordResetToken.create({ data: { userId: user.id, tokenHash, expiresAt } });
+      if (testMode) return { ok: true, message: genericMessage, resetToken: rawToken, resetUrl };
+      try {
+        await this.sendPasswordResetEmail(email, resetUrl);
+      } catch (error) {
+        await this.database!.client().passwordResetToken.deleteMany({ where: { tokenHash, consumedAt: null } });
+        this.securityEvents?.record({ event: "password_reset_delivery_failed", severity: "critical", accountId: user.id, detail: "Password reset email delivery failed." });
+        throw error;
+      }
+      this.securityEvents?.record({ event: "password_reset_requested", severity: "info", accountId: user.id, detail: "Password recovery email requested." });
+      return { ok: true, message: genericMessage };
+    }
+
+    const user = this.users.get(email);
+    if (!user || user.status !== "active") return { ok: true, message: genericMessage };
+    const existing = Array.from(this.passwordResetTokens.values()).find((item) => item.userId === user.id && !item.consumedAt && item.expiresAt > Date.now());
+    if (existing) return { ok: true, message: genericMessage };
+    this.passwordResetTokens.set(tokenHash, { userId: user.id, expiresAt: expiresAt.getTime() });
+    if (testMode) return { ok: true, message: genericMessage, resetToken: rawToken, resetUrl };
+    try {
+      await this.sendPasswordResetEmail(email, resetUrl);
+    } catch (error) {
+      this.passwordResetTokens.delete(tokenHash);
+      throw error;
+    }
+    return { ok: true, message: genericMessage };
+  }
+
+  async confirmPasswordReset(input: { token?: string; password?: string }): Promise<{ ok: true }> {
+    const rawToken = String(input.token || "").trim();
+    const password = String(input.password || "");
+    if (!rawToken || rawToken.length < 32) throw new BadRequestException("Tautan pemulihan tidak valid atau sudah kedaluwarsa.");
+    if (password.length < 10) throw new BadRequestException("Password minimal 10 karakter.");
+    const tokenHash = sessionHash(rawToken);
+    const passwordHash = await hash(password, ARGON_OPTIONS);
+
+    if (this.usesPostgres()) {
+      const record = await this.database!.client().passwordResetToken.findUnique({
+        where: { tokenHash },
+        include: { user: { select: { id: true, isActive: true } } },
+      });
+      if (!record || record.consumedAt || record.expiresAt.getTime() <= Date.now() || !record.user.isActive) {
+        throw new BadRequestException("Tautan pemulihan tidak valid atau sudah kedaluwarsa.");
+      }
+      const now = new Date();
+      await this.database!.client().$transaction(async (tx) => {
+        const consumed = await tx.passwordResetToken.updateMany({ where: { id: record.id, consumedAt: null }, data: { consumedAt: now } });
+        if (consumed.count !== 1) throw new BadRequestException("Tautan pemulihan sudah digunakan.");
+        await tx.user.update({ where: { id: record.userId }, data: { passwordHash, passwordChangedAt: now } });
+        await tx.session.updateMany({ where: { userId: record.userId, revokedAt: null }, data: { revokedAt: now } });
+        await tx.desktopSession.updateMany({ where: { userId: record.userId, revokedAt: null }, data: { revokedAt: now } });
+        await tx.auditLog.create({ data: { actorId: record.userId, action: "account.password_reset_self_service", entityType: "user", entityId: record.userId, metadata: { sessionsRevoked: true } } });
+      });
+      this.securityEvents?.record({ event: "password_reset_completed", severity: "info", accountId: record.userId, detail: "Self-service password reset completed." });
+      return { ok: true };
+    }
+
+    const record = this.passwordResetTokens.get(tokenHash);
+    if (!record || record.consumedAt || record.expiresAt <= Date.now()) {
+      throw new BadRequestException("Tautan pemulihan tidak valid atau sudah kedaluwarsa.");
+    }
+    const user = Array.from(this.users.values()).find((item) => item.id === record.userId);
+    if (!user || user.status !== "active") throw new BadRequestException("Tautan pemulihan tidak valid atau sudah kedaluwarsa.");
+    record.consumedAt = Date.now();
+    user.passwordHash = passwordHash;
+    await this.revokeUserSessions(user.id);
     return { ok: true };
   }
 
@@ -550,7 +669,11 @@ export class AuthService {
 
   private async revokeUserSessions(userId: string): Promise<void> {
     if (this.usesPostgres()) {
-      await this.database!.client().session.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } });
+      const now = new Date();
+      await this.database!.client().$transaction([
+        this.database!.client().session.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } }),
+        this.database!.client().desktopSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } }),
+      ]);
       return;
     }
     for (const [token, session] of this.sessions.entries()) if (session.userId === userId) this.sessions.delete(token);
@@ -596,5 +719,54 @@ export class AuthService {
   private nonNegative(value: unknown, fallback: number): number {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
+  }
+
+  private allowsTestResetToken(): boolean {
+    return String(process.env.NODE_ENV || "development").toLowerCase() !== "production" &&
+      String(process.env.PASSWORD_RESET_EXPOSE_TOKEN_FOR_TESTS || "").toLowerCase() === "true";
+  }
+
+  private passwordResetEmailConfigured(): boolean {
+    return Boolean(String(process.env.RESEND_API_KEY || "").trim() && String(process.env.PASSWORD_RESET_FROM || "").trim());
+  }
+
+  private passwordResetUrl(token: string): string {
+    const configured = String(process.env.APP_URL || process.env.WEB_ORIGIN || "").split(",")[0]?.trim();
+    const fallback = String(process.env.NODE_ENV || "development").toLowerCase() === "production" ? "" : "http://localhost:3000";
+    try {
+      const target = new URL(configured || fallback);
+      if (String(process.env.NODE_ENV || "development").toLowerCase() === "production" && target.protocol !== "https:") {
+        throw new Error("insecure password reset URL");
+      }
+      target.pathname = "/reset-password";
+      target.search = "";
+      target.searchParams.set("token", token);
+      return target.toString();
+    } catch {
+      throw new ServiceUnavailableException("URL aplikasi untuk pemulihan password belum dikonfigurasi dengan aman.");
+    }
+  }
+
+  private async sendPasswordResetEmail(email: string, resetUrl: string): Promise<void> {
+    const apiKey = String(process.env.RESEND_API_KEY || "").trim();
+    const from = String(process.env.PASSWORD_RESET_FROM || "").trim();
+    if (!apiKey || !from) throw new ServiceUnavailableException("Pemulihan password melalui email belum dikonfigurasi. Hubungi administrator Cliper.");
+    const replyTo = String(process.env.PASSWORD_RESET_REPLY_TO || "").trim();
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from,
+        to: [email],
+        ...(replyTo ? { reply_to: replyTo } : {}),
+        subject: "Reset password Cliper AI Cloud",
+        text: `Gunakan tautan ini untuk membuat password baru. Tautan berlaku 30 menit dan hanya dapat digunakan sekali: ${resetUrl}`,
+        html: `<p>Gunakan tautan berikut untuk membuat password baru. Tautan berlaku <strong>30 menit</strong> dan hanya dapat digunakan sekali.</p><p><a href="${escapeHtml(resetUrl)}">Reset password Cliper AI Cloud</a></p><p>Jika Anda tidak meminta perubahan ini, abaikan email ini.</p>`,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      throw new ServiceUnavailableException("Email pemulihan belum dapat dikirim. Coba lagi beberapa saat atau hubungi administrator.");
+    }
   }
 }

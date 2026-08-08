@@ -106,6 +106,7 @@ model User {
   apiKeys         ApiKey[]
   devices         Device[]
   sessions        Session[]
+  passwordResetTokens PasswordResetToken[]
   desktopSessions DesktopSession[]
   payments        PaymentTransaction[]
   invoices        Invoice[]
@@ -136,6 +137,23 @@ model Session {
   @@index([userId, revokedAt])
   @@index([tokenFamily])
   @@map("sessions")
+}
+
+// Only a SHA-256 hash of each recovery token is stored. The raw token exists
+// only in the email link, so a database read cannot be used to take over an
+// account.
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  consumedAt DateTime?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
 }
 
 // Desktop work sessions are intentionally separate from browser sessions.

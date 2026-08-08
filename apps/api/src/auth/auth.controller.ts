@@ -31,4 +31,14 @@ export class AuthController {
     response.setHeader("Set-Cookie", clearSessionCookie());
     return this.auth.logout(sessionToken(authorization, cookie));
   }
+
+  @Post("password-reset/request")
+  async requestPasswordReset(@Body() input: { email?: string }) {
+    return this.auth.requestPasswordReset(input);
+  }
+
+  @Post("password-reset/confirm")
+  async confirmPasswordReset(@Body() input: { token?: string; password?: string }) {
+    return this.auth.confirmPasswordReset(input);
+  }
 }
