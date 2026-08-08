@@ -231,3 +231,8 @@ NEXT_PUBLIC_DESKTOP_RELEASE_BASE_URL=https://github.com/copilot1ht/cliper-studio
 
 Jika environment ini kosong, halaman Download menonaktifkan tombol secara jujur
 dan tidak mengarahkan user ke URL 404.
+# Cliper AI Cloud
+
+## Operations
+
+- [Encrypted backup and Railway migration](docs/BACKUP_AND_RAILWAY_MIGRATION.md)

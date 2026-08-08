@@ -164,6 +164,10 @@ export class AdminStoreService implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
+    await this.reloadFromDatabase();
+  }
+
+  async reloadFromDatabase(): Promise<void> {
     if (!this.database?.configured()) return;
     const client = this.database.client();
     const [providers, routes, pricing] = await Promise.all([

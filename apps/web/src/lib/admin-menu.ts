@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { BarChart3, CreditCard, Download, HeartPulse, Key, LayoutDashboard, Route, ServerCog, ShieldCheck, Users } from "lucide-react";
+import { ArchiveRestore, BarChart3, CreditCard, Download, HeartPulse, Key, LayoutDashboard, Route, ServerCog, ShieldCheck, Users } from "lucide-react";
 
 export interface AdminMenuItem {
   href: string;
@@ -15,6 +15,7 @@ export const adminMenu: AdminMenuItem[] = [
   { href: "/admin/ai-router", label: "AI Router", icon: Route },
   { href: "/admin/revenue", label: "Revenue", icon: BarChart3 },
   { href: "/admin/payments", label: "Payments", icon: CreditCard },
+  { href: "/admin/backups", label: "Backup & migration", icon: ArchiveRestore },
   { href: "/admin/system-health", label: "System Health", icon: HeartPulse },
   { href: "/admin/security", label: "Security", icon: ShieldCheck },
   { href: "/admin/releases", label: "App releases", icon: Download },

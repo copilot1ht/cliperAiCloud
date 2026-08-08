@@ -13,8 +13,11 @@ loadWorkspaceEnv();
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true, rawBody: true });
-  app.useBodyParser("json", { limit: process.env.MAX_BODY_SIZE || "256kb" });
-  app.useBodyParser("urlencoded", { limit: process.env.MAX_BODY_SIZE || "256kb", extended: true });
+  // Encrypted admin backups are intentionally bounded again in BackupService.
+  // The wider parser limit only allows their JSON archive to reach that guard.
+  const bodySizeLimit = process.env.MAX_BODY_SIZE || "12mb";
+  app.useBodyParser("json", { limit: bodySizeLimit });
+  app.useBodyParser("urlencoded", { limit: bodySizeLimit, extended: true });
   const runtimeConfig = app.get(RuntimeConfigService);
   app.useGlobalFilters(new PrismaExceptionFilter());
   runtimeConfig.assertProductionSafe();

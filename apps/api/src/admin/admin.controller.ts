@@ -14,6 +14,7 @@ import { PaymentService } from "../billing/payment.service.js";
 import { DatabaseService } from "../database/database.service.js";
 import { AnalysisJobService } from "../billing/analysis-job.service.js";
 import { PricingService } from "../billing/pricing.service.js";
+import { BackupService } from "./backup.service.js";
 
 const plans = [
   { code: "free", name: "Free", priceIdr: 0, credits: 100, deviceLimit: 1, active: true },
@@ -39,6 +40,7 @@ export class AdminController {
     @Inject(DatabaseService) private readonly database: DatabaseService,
     @Inject(AnalysisJobService) private readonly analysisJobs: AnalysisJobService,
     @Inject(PricingService) private readonly pricingService: PricingService,
+    @Inject(BackupService) private readonly backups: BackupService,
   ) {}
 
   @Get("overview")
@@ -157,6 +159,29 @@ export class AdminController {
         rateLimitsPerMinute: this.rateLimits.limits(),
       },
     };
+  }
+
+  @Get("backups/status")
+  backupStatus() {
+    return this.backups.status();
+  }
+
+  @Post("backups/export")
+  exportBackup(@Body() input: { passphrase?: string }, @Req() request: AdminAuthenticatedRequest) {
+    return this.backups.exportEncrypted(input.passphrase, request.cliperAdminSession?.userId);
+  }
+
+  @Post("backups/inspect")
+  inspectBackup(@Body() input: { archive?: unknown; passphrase?: string }) {
+    return this.backups.inspect(input);
+  }
+
+  @Post("backups/restore")
+  restoreBackup(
+    @Body() input: { archive?: unknown; passphrase?: string; confirmation?: string },
+    @Req() request: AdminAuthenticatedRequest,
+  ) {
+    return this.backups.restore(input, request.cliperAdminSession?.userId);
   }
 
   @Post("users")

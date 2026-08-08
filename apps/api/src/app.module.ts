@@ -31,9 +31,10 @@ import { AnalysisJobController } from "./billing/analysis-job.controller.js";
 import { AnalysisJobService } from "./billing/analysis-job.service.js";
 import { AccountWriteGuard } from "./security/account-write.guard.js";
 import { DirectCreditService } from "./billing/direct-credit.service.js";
+import { BackupService } from "./admin/backup.service.js";
 
 @Module({
   controllers: [HealthController, GatewayController, AnalysisJobController, LicenseController, DesktopAuthController, KeyController, AuthController, AdminController, MemberController, PaymentController],
-  providers: [AdminStoreService, ProviderConnectionService, PricingService, CreditAccountService, DirectCreditService, AnalysisJobService, GatewayService, ApiKeyGuard, SessionGuard, AdminSessionGuard, AccountWriteGuard, LicenseService, UsageService, RuntimeConfigService, AuthService, DesktopSessionService, DesktopSessionGuard, RateLimitService, SecurityEventService, DatabaseService, PaymentProviderService, PaymentService],
+  providers: [AdminStoreService, ProviderConnectionService, BackupService, PricingService, CreditAccountService, DirectCreditService, AnalysisJobService, GatewayService, ApiKeyGuard, SessionGuard, AdminSessionGuard, AccountWriteGuard, LicenseService, UsageService, RuntimeConfigService, AuthService, DesktopSessionService, DesktopSessionGuard, RateLimitService, SecurityEventService, DatabaseService, PaymentProviderService, PaymentService],
 })
 export class AppModule {}
