@@ -83,6 +83,7 @@ export class AdminController {
     const report = this.runtimeConfig.report();
     const dependencies = await this.runtimeConfig.dependencies();
     const providers = this.gateway.providers();
+    const desktopSessionSummary = await this.desktopSessions.summary();
     const memory = process.memoryUsage();
     const paymentProvider = String(process.env.PAYMENT_PROVIDER || "sandbox").toLowerCase();
     const midtransProduction = String(process.env.MIDTRANS_IS_PRODUCTION || "false").toLowerCase() === "true";
@@ -129,7 +130,7 @@ export class AdminController {
         { code: "providers", label: "AI Providers", status: providers.some((item) => item.status === "healthy") ? "healthy" : "not-configured", detail: `${providers.filter((item) => item.status === "healthy").length}/${providers.length} provider healthy` },
         { code: "queue", label: "Queue", status: "not-configured", detail: "BullMQ worker has not been deployed" },
         { code: "midtrans", label: "Midtrans", status: midtransConfigured ? "healthy" : "not-configured", detail: `${midtrans.mode} · ${midtrans.configuration}` },
-        { code: "license", label: "Desktop Sessions", status: "healthy", detail: `${this.desktopSessions.summary().active} active signed sessions` },
+        { code: "license", label: "Desktop Sessions", status: "healthy", detail: `${desktopSessionSummary.active} active signed sessions` },
       ],
       midtrans,
       providers,
@@ -139,10 +140,10 @@ export class AdminController {
   }
 
   @Get("security")
-  security() {
+  async security() {
     return {
       mode: authStorageMode(),
-      sessions: this.desktopSessions.summary(),
+      sessions: await this.desktopSessions.summary(),
       events: this.securityEvents.list(100),
       eventSummary: this.securityEvents.summary(),
       policy: {

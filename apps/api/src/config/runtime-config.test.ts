@@ -31,6 +31,12 @@ describe("validateRuntimeConfig", () => {
     expect(report.errors.join(" ")).toContain("CLIPER_DEV_API_KEY");
   });
 
+  it("requires persistent desktop sessions in production", () => {
+    const report = validateRuntimeConfig({ ...safeProduction, DESKTOP_SESSION_STORAGE: "memory" });
+    expect(report.ready).toBe(false);
+    expect(report.errors.join(" ")).toContain("DESKTOP_SESSION_STORAGE");
+  });
+
   it("can start the control plane before the first provider is configured", () => {
     const { GEMINI_API_KEYS: _provider, ...withoutProvider } = safeProduction;
     const report = validateRuntimeConfig(withoutProvider);

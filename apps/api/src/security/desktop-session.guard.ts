@@ -9,11 +9,11 @@ export type DesktopAuthenticatedRequest = Request & { desktopSession?: DesktopSe
 export class DesktopSessionGuard implements CanActivate {
   constructor(@Inject(DesktopSessionService) private readonly sessions: DesktopSessionService) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<DesktopAuthenticatedRequest>();
     const token = bearerToken(request.headers.authorization);
     if (!token.startsWith("clip_at_")) throw new UnauthorizedException("Desktop session token wajib digunakan.");
-    request.desktopSession = this.sessions.authenticateSigned(token, {
+    request.desktopSession = await this.sessions.authenticateSigned(token, {
       method: request.method,
       path: request.originalUrl.split("?", 1)[0] || request.path,
       body: request.body,

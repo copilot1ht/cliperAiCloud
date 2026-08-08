@@ -10,6 +10,33 @@ export interface CliperCloudClientOptions {
 
 type AuthMode = "none" | "license" | "session";
 
+/**
+ * A Cliper Cloud base URL may be supplied as either the API root or the
+ * OpenAI-compatible gateway root (`.../v1`).  Authentication endpoints live
+ * at the API root, while gateway endpoints live under `/v1`; keeping this
+ * normalization in one place prevents requests such as `/v1/api/auth/verify`.
+ */
+export function resolveCloudEndpoint(baseUrl: string, requestPath: string): string {
+  const rawBaseUrl = String(baseUrl || "").trim();
+  if (!rawBaseUrl) throw new Error("Cliper Cloud base URL wajib diisi.");
+
+  let target: URL;
+  try {
+    target = new URL(rawBaseUrl);
+  } catch {
+    throw new Error("Cliper Cloud base URL tidak valid.");
+  }
+
+  const normalizedPath = `/${String(requestPath || "").replace(/^\/+/, "")}`;
+  const basePath = target.pathname
+    .replace(/\/+$/, "")
+    .replace(/\/v1$/i, "");
+  target.pathname = `${basePath}${normalizedPath}`.replace(/\/+/g, "/");
+  target.search = "";
+  target.hash = "";
+  return target.toString();
+}
+
 export class CliperCloudClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
@@ -18,6 +45,9 @@ export class CliperCloudClient {
   private session?: DesktopSessionResponse;
 
   constructor(options: CliperCloudClientOptions) {
+    // Validate the URL early, but retain the caller's form so the resolver
+    // can correctly route both root and `/v1` endpoints.
+    resolveCloudEndpoint(options.baseUrl, "/health/live");
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.apiKey = options.apiKey;
     this.timeoutMs = options.timeoutMs ?? 45000;
@@ -68,7 +98,7 @@ export class CliperCloudClient {
         const headers: Record<string, string> = { "Content-Type": "application/json" };
         if (authMode === "license") headers.Authorization = `Bearer ${this.apiKey}`;
         if (authMode === "session") Object.assign(headers, this.signedHeaders(path, bodyText));
-        const response = await fetch(`${this.baseUrl}${path}`, { method: "POST", headers, body: bodyText, signal: controller.signal });
+        const response = await fetch(resolveCloudEndpoint(this.baseUrl, path), { method: "POST", headers, body: bodyText, signal: controller.signal });
         const payload = await response.json() as T & { message?: string };
         if (!response.ok) throw new Error(payload.message ?? `Cloud request gagal (HTTP ${response.status}).`);
         if (verifyIntegrity && authMode === "session") this.verifyResponse(path, payload as unknown as CliperChatResponse);

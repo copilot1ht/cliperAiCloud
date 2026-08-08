@@ -106,6 +106,7 @@ model User {
   apiKeys         ApiKey[]
   devices         Device[]
   sessions        Session[]
+  desktopSessions DesktopSession[]
   payments        PaymentTransaction[]
   invoices        Invoice[]
   licenses        License[]
@@ -135,6 +136,49 @@ model Session {
   @@index([userId, revokedAt])
   @@index([tokenFamily])
   @@map("sessions")
+}
+
+// Desktop work sessions are intentionally separate from browser sessions.
+// Only token hashes and an encrypted signing secret are persisted, so an API
+// restart does not invalidate a long-running local render.
+model DesktopSession {
+  id                     String                @id
+  apiKeyId               String
+  userId                 String
+  plan                   PlanCode
+  unlimited              Boolean               @default(false)
+  deviceFingerprint      String
+  accessHash             String                @unique
+  refreshHash            String                @unique
+  encryptedSigningSecret String
+  accessExpiresAt        DateTime
+  refreshExpiresAt       DateTime
+  offlineGraceUntil      DateTime
+  lastHeartbeatAt        DateTime
+  revokedAt              DateTime?
+  user                   User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apiKey                 ApiKey                @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  nonces                 DesktopRequestNonce[]
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+
+  @@index([apiKeyId, revokedAt])
+  @@index([userId, revokedAt])
+  @@index([accessExpiresAt])
+  @@map("desktop_sessions")
+}
+
+model DesktopRequestNonce {
+  id        String         @id @default(cuid())
+  sessionId String
+  nonce     String
+  expiresAt DateTime
+  session   DesktopSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdAt DateTime       @default(now())
+
+  @@unique([sessionId, nonce])
+  @@index([expiresAt])
+  @@map("desktop_request_nonces")
 }
 
 model Plan {
@@ -194,6 +238,7 @@ model ApiKey {
   devices       Device[]
   creditEntries CreditLedger[]
   license       License?
+  desktopSessions DesktopSession[]
   analysisJobs  AnalysisJob[]
   createdAt     DateTime       @default(now())
 

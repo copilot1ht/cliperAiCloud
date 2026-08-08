@@ -38,7 +38,7 @@ export class ApiKeyGuard implements CanActivate {
     const configured = String(process.env.CLIPER_DEV_API_KEY || "").trim();
     if (!token) throw new UnauthorizedException("Cliper API key tidak valid.");
     if (token.startsWith("clip_at_")) {
-      const session = this.desktopSessions.authenticateSigned(token, {
+      const session = await this.desktopSessions.authenticateSigned(token, {
         method: request.method,
         path: request.originalUrl.split("?", 1)[0] || request.path,
         body: request.body,

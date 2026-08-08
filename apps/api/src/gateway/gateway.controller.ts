@@ -45,7 +45,7 @@ export class GatewayController {
       metadata: { ...(request.metadata ?? {}), plan: serverPlan },
     }, httpRequest?.cliperAuth?.accountId || "development-account", serverPlan, httpRequest?.cliperAuth?.apiKeyId);
     if (httpRequest?.cliperAuth?.mode === "desktop-session" && httpRequest.cliperAuth.sessionId) {
-      result.integrity = this.desktopSessions.signResponse(httpRequest.cliperAuth.sessionId, "/v1/chat/completions", result);
+      result.integrity = await this.desktopSessions.signResponse(httpRequest.cliperAuth.sessionId, "/v1/chat/completions", result);
       httpResponse.setHeader("X-Cliper-Response-Signed", "1");
     }
     return result;

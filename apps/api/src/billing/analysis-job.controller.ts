@@ -40,9 +40,9 @@ export class AnalysisJobController {
     return request.cliperAuth?.accountId || "development-account";
   }
 
-  private signed(path: string, payload: Record<string, unknown>, request: CliperAuthenticatedRequest, response: Response) {
+  private async signed(path: string, payload: Record<string, unknown>, request: CliperAuthenticatedRequest, response: Response) {
     if (request.cliperAuth?.mode !== "desktop-session" || !request.cliperAuth.sessionId) return payload;
-    const integrity = this.desktopSessions.signResponse(request.cliperAuth.sessionId, path, payload);
+    const integrity = await this.desktopSessions.signResponse(request.cliperAuth.sessionId, path, payload);
     response.setHeader("X-Cliper-Response-Signed", "1");
     return { ...payload, integrity };
   }

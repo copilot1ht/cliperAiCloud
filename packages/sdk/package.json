@@ -10,8 +10,12 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test"
+    "test": "vitest run"
   },
   "dependencies": { "@cliper/contracts": "workspace:*", "@cliper/security": "workspace:*" },
-  "devDependencies": { "typescript": "^5.9.3" }
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
 }

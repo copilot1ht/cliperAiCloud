@@ -1,6 +1,6 @@
-import { Inject, Injectable, Optional, UnauthorizedException } from "@nestjs/common";
+import { Inject, Injectable, Optional, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
 import type { DesktopActivateRequest, DesktopHeartbeatResponse, DesktopRefreshRequest, DesktopSessionResponse } from "@cliper/contracts";
-import { sha256Hex, signDesktopRequest, verifyDesktopRequestSignature } from "@cliper/security";
+import { decryptSecret, encryptSecret, sha256Hex, signDesktopRequest, verifyDesktopRequestSignature } from "@cliper/security";
 import { randomBytes, randomUUID } from "node:crypto";
 import { CreditAccountService } from "../billing/credit-account.service.js";
 import { LicenseService } from "../license/license.service.js";
@@ -23,6 +23,25 @@ interface DesktopSessionRecord {
   lastHeartbeatAt: number;
   revokedAt?: number;
   nonces: Map<string, number>;
+}
+
+interface PersistedDesktopSession {
+  id: string;
+  apiKeyId: string;
+  userId: string;
+  plan: string;
+  unlimited: boolean;
+  deviceFingerprint: string;
+  accessHash: string;
+  refreshHash: string;
+  encryptedSigningSecret: string;
+  accessExpiresAt: Date;
+  refreshExpiresAt: Date;
+  offlineGraceUntil: Date;
+  lastHeartbeatAt: Date;
+  revokedAt: Date | null;
+  apiKey: { status: string; expiresAt: Date | null };
+  user: { isActive: boolean; unlimitedCredits: boolean };
 }
 
 export interface DesktopSessionContext {
@@ -55,6 +74,21 @@ function header(headers: SignedHttpRequest["headers"], name: string): string {
   return Array.isArray(value) ? String(value[0] || "") : String(value || "");
 }
 
+function planCode(plan: string): "FREE" | "STARTER" | "PRO" | "TEAM" | "ENTERPRISE" {
+  switch (String(plan || "free").trim().toUpperCase()) {
+    case "STARTER":
+      return "STARTER";
+    case "PRO":
+      return "PRO";
+    case "TEAM":
+      return "TEAM";
+    case "ENTERPRISE":
+      return "ENTERPRISE";
+    default:
+      return "FREE";
+  }
+}
+
 @Injectable()
 export class DesktopSessionService {
   private readonly sessions = new Map<string, DesktopSessionRecord>();
@@ -76,20 +110,19 @@ export class DesktopSessionService {
       throw new UnauthorizedException(license.reason || "License tidak valid.");
     }
     const session = this.issue(identity, request.deviceFingerprint, Boolean(license.unlimited));
+    if (this.usesPersistence()) await this.persist(session.record);
     this.securityEvents.record({ event: "desktop_session_activated", severity: "info", accountId: identity.accountId, sessionId: session.record.id, detail: "Desktop session diterbitkan." });
     return this.response(session.record, session.accessToken, session.refreshToken, license);
   }
 
   async refresh(request: DesktopRefreshRequest): Promise<DesktopSessionResponse> {
-    const sessionId = this.refreshIndex.get(sha256Hex(request.refreshToken || ""));
-    const current = sessionId ? this.sessions.get(sessionId) : undefined;
+    const current = await this.findByRefreshHash(sha256Hex(request.refreshToken || ""));
     if (!current || current.revokedAt || current.refreshExpiresAt <= Date.now() || current.deviceFingerprint !== request.deviceFingerprint) {
-      this.securityEvents.record({ event: "desktop_refresh_rejected", severity: "warning", sessionId, detail: "Refresh token tidak valid, kedaluwarsa, atau device tidak cocok." });
+      this.securityEvents.record({ event: "desktop_refresh_rejected", severity: "warning", sessionId: current?.id, detail: "Refresh token tidak valid, kedaluwarsa, atau device tidak cocok." });
       throw new UnauthorizedException("Refresh token tidak valid atau sudah berakhir.");
     }
-    this.accessIndex.delete(current.accessHash);
-    this.refreshIndex.delete(current.refreshHash);
     const rotated = this.rotate(current);
+    if (this.usesPersistence()) await this.persist(current);
     const creditsRemainingMicro = await this.currentCredits(current.accountId);
     this.securityEvents.record({ event: "desktop_session_refreshed", severity: "info", accountId: current.accountId, sessionId: current.id, detail: "Access dan refresh token dirotasi." });
     return {
@@ -104,18 +137,25 @@ export class DesktopSessionService {
     };
   }
 
-  authenticateSigned(accessToken: string, request: SignedHttpRequest): DesktopSessionContext {
-    const sessionId = this.accessIndex.get(sha256Hex(accessToken || ""));
-    const session = sessionId ? this.sessions.get(sessionId) : undefined;
-    if (!session || session.revokedAt || session.accessExpiresAt <= Date.now()) throw new UnauthorizedException("Desktop access token tidak valid atau sudah berakhir.");
-    this.verifySignature(session, request);
+  async authenticateSigned(accessToken: string, request: SignedHttpRequest): Promise<DesktopSessionContext> {
+    const session = await this.findByAccessHash(sha256Hex(accessToken || ""));
+    if (!session || session.revokedAt || session.accessExpiresAt <= Date.now()) {
+      throw new UnauthorizedException("Desktop access token tidak valid atau sudah berakhir.");
+    }
+    await this.verifySignature(session, request);
     return this.context(session);
   }
 
   async heartbeat(context: DesktopSessionContext): Promise<DesktopHeartbeatResponse> {
-    const session = this.sessions.get(context.sessionId);
+    const session = await this.findById(context.sessionId);
     if (!session || session.revokedAt) throw new UnauthorizedException("Desktop session tidak aktif.");
     session.lastHeartbeatAt = Date.now();
+    if (this.usesPersistence()) {
+      await this.databaseClient().desktopSession.update({
+        where: { id: session.id },
+        data: { lastHeartbeatAt: new Date(session.lastHeartbeatAt) },
+      });
+    }
     const creditsRemainingMicro = await this.currentCredits(session.accountId);
     return {
       status: "active",
@@ -127,8 +167,8 @@ export class DesktopSessionService {
     };
   }
 
-  signResponse(sessionId: string, path: string, payload: unknown) {
-    const session = this.sessions.get(sessionId);
+  async signResponse(sessionId: string, path: string, payload: unknown) {
+    const session = await this.findById(sessionId);
     if (!session || session.revokedAt) return undefined;
     const timestamp = String(Date.now());
     const checksum = sha256Hex(JSON.stringify(payload));
@@ -136,13 +176,21 @@ export class DesktopSessionService {
     return { timestamp, checksum, signature };
   }
 
-  summary() {
-    const sessions = Array.from(this.sessions.values());
-    return {
-      total: sessions.length,
-      active: sessions.filter((item) => !item.revokedAt && item.refreshExpiresAt > Date.now()).length,
-      staleHeartbeat: sessions.filter((item) => !item.revokedAt && Date.now() - item.lastHeartbeatAt > 20 * 60_000).length,
-    };
+  async summary() {
+    if (!this.usesPersistence()) return this.memorySummary();
+    const now = new Date();
+    const staleBefore = new Date(Date.now() - 20 * 60_000);
+    try {
+      const client = this.databaseClient();
+      const [total, active, staleHeartbeat] = await Promise.all([
+        client.desktopSession.count(),
+        client.desktopSession.count({ where: { revokedAt: null, refreshExpiresAt: { gt: now } } }),
+        client.desktopSession.count({ where: { revokedAt: null, lastHeartbeatAt: { lt: staleBefore } } }),
+      ]);
+      return { total, active, staleHeartbeat };
+    } catch {
+      return { total: 0, active: 0, staleHeartbeat: 0 };
+    }
   }
 
   private issue(identity: { apiKeyId: string; accountId: string; plan: string }, deviceFingerprint: string, unlimited: boolean) {
@@ -161,25 +209,29 @@ export class DesktopSessionService {
       lastHeartbeatAt: now,
       nonces: new Map(),
     };
-    this.sessions.set(record.id, record);
+    if (!this.usesPersistence()) this.sessions.set(record.id, record);
     const rotated = this.rotate(record);
     return { record, ...rotated };
   }
 
   private rotate(session: DesktopSessionRecord) {
+    const previousAccessHash = session.accessHash;
+    const previousRefreshHash = session.refreshHash;
     const accessToken = opaqueToken("clip_at");
     const refreshToken = opaqueToken("clip_rt");
     session.accessHash = sha256Hex(accessToken);
     session.refreshHash = sha256Hex(refreshToken);
     // Video downloads, transcription, and FFmpeg renders can legitimately run
-    // longer than the former 15 minute browser-style access window. This token
-    // is still device-bound, HMAC-signed, replay-protected, and revocable; a
-    // four hour work lease avoids a mid-render provider failure while keeping
-    // the long-lived refresh credential inside Electron only.
+    // longer than a browser-style access window. The token remains device-bound,
+    // HMAC-signed, replay-protected, and revocable.
     session.accessExpiresAt = Date.now() + milliseconds("DESKTOP_ACCESS_TOKEN_MS", 4 * 60 * 60_000);
     session.refreshExpiresAt = Date.now() + milliseconds("DESKTOP_REFRESH_TOKEN_MS", 30 * 24 * 60 * 60_000);
-    this.accessIndex.set(session.accessHash, session.id);
-    this.refreshIndex.set(session.refreshHash, session.id);
+    if (!this.usesPersistence()) {
+      if (previousAccessHash) this.accessIndex.delete(previousAccessHash);
+      if (previousRefreshHash) this.refreshIndex.delete(previousRefreshHash);
+      this.accessIndex.set(session.accessHash, session.id);
+      this.refreshIndex.set(session.refreshHash, session.id);
+    }
     return { accessToken, refreshToken };
   }
 
@@ -202,7 +254,7 @@ export class DesktopSessionService {
     };
   }
 
-  private verifySignature(session: DesktopSessionRecord, request: SignedHttpRequest): void {
+  private async verifySignature(session: DesktopSessionRecord, request: SignedHttpRequest): Promise<void> {
     const timestamp = header(request.headers, "x-cliper-timestamp");
     const nonce = header(request.headers, "x-cliper-nonce");
     const contentSha256 = header(request.headers, "x-cliper-content-sha256");
@@ -213,8 +265,6 @@ export class DesktopSessionService {
       this.reject(session, "desktop_signature_expired", "Timestamp request berada di luar batas 60 detik.");
     }
     if (!/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) this.reject(session, "desktop_nonce_invalid", "Nonce request tidak valid.");
-    for (const [value, expiresAt] of session.nonces.entries()) if (expiresAt <= now) session.nonces.delete(value);
-    if (session.nonces.has(nonce)) this.reject(session, "desktop_replay_blocked", "Nonce sudah pernah digunakan.");
     const expectedContentHash = sha256Hex(JSON.stringify(request.body ?? {}));
     if (contentSha256 !== expectedContentHash) this.reject(session, "desktop_content_mismatch", "Checksum body request tidak cocok.");
     const valid = verifyDesktopRequestSignature(session.signingSecret, {
@@ -225,7 +275,153 @@ export class DesktopSessionService {
       contentSha256,
     }, signature);
     if (!valid) this.reject(session, "desktop_signature_invalid", "HMAC signature request tidak valid.");
-    session.nonces.set(nonce, now + 60_000);
+    await this.claimNonce(session, nonce, now + 60_000);
+  }
+
+  private async claimNonce(session: DesktopSessionRecord, nonce: string, expiresAt: number): Promise<void> {
+    if (!this.usesPersistence()) {
+      const now = Date.now();
+      for (const [value, expiry] of session.nonces.entries()) if (expiry <= now) session.nonces.delete(value);
+      if (session.nonces.has(nonce)) this.reject(session, "desktop_replay_blocked", "Nonce sudah pernah digunakan.");
+      session.nonces.set(nonce, expiresAt);
+      return;
+    }
+    try {
+      const client = this.databaseClient();
+      await client.desktopRequestNonce.deleteMany({ where: { sessionId: session.id, expiresAt: { lte: new Date() } } });
+      await client.desktopRequestNonce.create({ data: { sessionId: session.id, nonce, expiresAt: new Date(expiresAt) } });
+    } catch (error) {
+      if (typeof error === "object" && error !== null && "code" in error && String(error.code) === "P2002") {
+        this.reject(session, "desktop_replay_blocked", "Nonce sudah pernah digunakan.");
+      }
+      throw new ServiceUnavailableException("Validasi keamanan desktop sementara tidak tersedia.");
+    }
+  }
+
+  private async findByAccessHash(accessHash: string): Promise<DesktopSessionRecord | undefined> {
+    if (!this.usesPersistence()) {
+      const sessionId = this.accessIndex.get(accessHash);
+      return sessionId ? this.sessions.get(sessionId) : undefined;
+    }
+    const stored = await this.databaseClient().desktopSession.findUnique({
+      where: { accessHash },
+      include: { apiKey: { select: { status: true, expiresAt: true } }, user: { select: { isActive: true, unlimitedCredits: true } } },
+    });
+    return this.hydrate(stored as PersistedDesktopSession | null);
+  }
+
+  private async findByRefreshHash(refreshHash: string): Promise<DesktopSessionRecord | undefined> {
+    if (!this.usesPersistence()) {
+      const sessionId = this.refreshIndex.get(refreshHash);
+      return sessionId ? this.sessions.get(sessionId) : undefined;
+    }
+    const stored = await this.databaseClient().desktopSession.findUnique({
+      where: { refreshHash },
+      include: { apiKey: { select: { status: true, expiresAt: true } }, user: { select: { isActive: true, unlimitedCredits: true } } },
+    });
+    return this.hydrate(stored as PersistedDesktopSession | null);
+  }
+
+  private async findById(id: string): Promise<DesktopSessionRecord | undefined> {
+    if (!this.usesPersistence()) return this.sessions.get(id);
+    const stored = await this.databaseClient().desktopSession.findUnique({
+      where: { id },
+      include: { apiKey: { select: { status: true, expiresAt: true } }, user: { select: { isActive: true, unlimitedCredits: true } } },
+    });
+    return this.hydrate(stored as PersistedDesktopSession | null);
+  }
+
+  private async hydrate(stored: PersistedDesktopSession | null): Promise<DesktopSessionRecord | undefined> {
+    if (!stored || stored.revokedAt) return undefined;
+    const keyExpired = Boolean(stored.apiKey.expiresAt && stored.apiKey.expiresAt.getTime() <= Date.now());
+    if (!stored.user.isActive || stored.apiKey.status !== "ACTIVE" || keyExpired) {
+      await this.revokeStored(stored.id);
+      return undefined;
+    }
+    let signingSecret: string;
+    try {
+      signingSecret = decryptSecret(stored.encryptedSigningSecret, this.encryptionSecret());
+    } catch {
+      await this.revokeStored(stored.id);
+      this.securityEvents.record({ event: "desktop_session_secret_unavailable", severity: "warning", accountId: stored.userId, sessionId: stored.id, detail: "Sesi desktop perlu diaktifkan ulang setelah rotasi atau perubahan encryption secret." });
+      return undefined;
+    }
+    return {
+      id: stored.id,
+      apiKeyId: stored.apiKeyId,
+      accountId: stored.userId,
+      plan: String(stored.plan).toLowerCase(),
+      unlimited: stored.unlimited || stored.user.unlimitedCredits,
+      deviceFingerprint: stored.deviceFingerprint,
+      accessHash: stored.accessHash,
+      refreshHash: stored.refreshHash,
+      signingSecret,
+      accessExpiresAt: stored.accessExpiresAt.getTime(),
+      refreshExpiresAt: stored.refreshExpiresAt.getTime(),
+      offlineGraceUntil: stored.offlineGraceUntil.getTime(),
+      lastHeartbeatAt: stored.lastHeartbeatAt.getTime(),
+      nonces: new Map(),
+    };
+  }
+
+  private async persist(session: DesktopSessionRecord): Promise<void> {
+    const client = this.databaseClient();
+    const data = {
+      apiKeyId: session.apiKeyId,
+      userId: session.accountId,
+      plan: planCode(session.plan),
+      unlimited: session.unlimited,
+      deviceFingerprint: session.deviceFingerprint,
+      accessHash: session.accessHash,
+      refreshHash: session.refreshHash,
+      encryptedSigningSecret: encryptSecret(session.signingSecret, this.encryptionSecret()),
+      accessExpiresAt: new Date(session.accessExpiresAt),
+      refreshExpiresAt: new Date(session.refreshExpiresAt),
+      offlineGraceUntil: new Date(session.offlineGraceUntil),
+      lastHeartbeatAt: new Date(session.lastHeartbeatAt),
+      revokedAt: session.revokedAt ? new Date(session.revokedAt) : null,
+    };
+    await client.desktopSession.upsert({ where: { id: session.id }, create: { id: session.id, ...data }, update: data });
+  }
+
+  private async revokeStored(id: string): Promise<void> {
+    try {
+      await this.databaseClient().desktopSession.update({ where: { id }, data: { revokedAt: new Date() } });
+    } catch {
+      // The original authentication failure remains the useful user-facing result.
+    }
+  }
+
+  private usesPersistence(): boolean {
+    const configured = String(process.env.DESKTOP_SESSION_STORAGE || "").trim().toLowerCase();
+    if (configured === "memory") return false;
+    if (configured === "postgres" || configured === "postgresql") return true;
+    return String(process.env.NODE_ENV || "development").toLowerCase() === "production" ||
+      (this.database?.configured() === true && ["postgres", "postgresql"].includes(String(process.env.LICENSE_STORAGE || "").toLowerCase()));
+  }
+
+  private databaseClient() {
+    if (!this.database?.configured()) {
+      throw new ServiceUnavailableException("PostgreSQL wajib tersedia untuk sesi desktop yang persisten.");
+    }
+    return this.database.client();
+  }
+
+  private encryptionSecret(): string {
+    const secret = String(process.env.PROVIDER_ENCRYPTION_KEY || process.env.LICENSE_KEY_PEPPER || "");
+    if (secret.length < 32) {
+      throw new ServiceUnavailableException("Encryption secret server belum valid untuk sesi desktop persisten.");
+    }
+    return secret;
+  }
+
+  private memorySummary() {
+    const sessions = Array.from(this.sessions.values());
+    return {
+      total: sessions.length,
+      active: sessions.filter((item) => !item.revokedAt && item.refreshExpiresAt > Date.now()).length,
+      staleHeartbeat: sessions.filter((item) => !item.revokedAt && Date.now() - item.lastHeartbeatAt > 20 * 60_000).length,
+    };
   }
 
   private reject(session: DesktopSessionRecord, event: string, detail: string): never {

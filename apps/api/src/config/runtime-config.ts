@@ -19,6 +19,7 @@ export interface RuntimeConfigReport {
     redis: boolean;
     secureOrigins: boolean;
     analysisBillingStorage: "memory" | "postgres";
+    desktopSessionStorage: "memory" | "postgres";
   };
 }
 
@@ -141,6 +142,21 @@ export function validateRuntimeConfig(
   }
   if (analysisBillingStorage === "postgres" && !env.DATABASE_URL) {
     errors.push("ANALYSIS_BILLING_STORAGE=postgres membutuhkan DATABASE_URL.");
+  }
+  const desktopSessionDefault =
+    production || (Boolean(env.DATABASE_URL) && ["postgres", "postgresql"].includes(String(env.LICENSE_STORAGE || "").toLowerCase()))
+      ? "postgres"
+      : "memory";
+  const desktopSessionStorage =
+    String(env.DESKTOP_SESSION_STORAGE || desktopSessionDefault).toLowerCase() === "postgresql" ||
+    String(env.DESKTOP_SESSION_STORAGE || desktopSessionDefault).toLowerCase() === "postgres"
+      ? "postgres"
+      : "memory";
+  if (production && desktopSessionStorage !== "postgres") {
+    errors.push("DESKTOP_SESSION_STORAGE production wajib 'postgres'; sesi Electron tidak boleh hilang saat API restart.");
+  }
+  if (desktopSessionStorage === "postgres" && !env.DATABASE_URL) {
+    errors.push("DESKTOP_SESSION_STORAGE=postgres membutuhkan DATABASE_URL.");
   }
   for (const provider of providerDefinitions.filter(
     (item) => item.enabled !== false && item.apiKeys.length > 0,
@@ -301,6 +317,7 @@ export function validateRuntimeConfig(
       redis: Boolean(env.REDIS_URL),
       secureOrigins,
       analysisBillingStorage,
+      desktopSessionStorage,
     },
   };
 }
