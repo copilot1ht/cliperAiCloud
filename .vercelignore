@@ -9,7 +9,7 @@
 .runtime-logs
 .turbo
 .vercel
-backups
+/backups/
 coverage
 dist
 node_modules
