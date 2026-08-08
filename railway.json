@@ -12,6 +12,8 @@
       "/pnpm-lock.yaml",
       "/pnpm-workspace.yaml",
       "/turbo.json",
+      "/prisma.config.ts",
+      "/railway.json",
       "/Dockerfile.api"
     ]
   },
