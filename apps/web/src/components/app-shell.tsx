@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BadgeDollarSign, BarChart3, Boxes, ChevronDown, CreditCard, Download, Home, Key, LogOut, Menu, Settings, ShieldCheck, X } from "lucide-react";
+import { BadgeDollarSign, BarChart3, Boxes, ChevronDown, Download, Home, Key, LogOut, Menu, Settings, ShieldCheck, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { apiBase } from "@/lib/api-base";
 import { adminMenu } from "@/lib/admin-menu";
@@ -12,8 +12,7 @@ const mainNav = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
   { href: "/usage", label: "Usage", icon: BarChart3 },
   { href: "/keys", label: "API Keys", icon: Key },
-  { href: "/topup", label: "Top up", icon: CreditCard },
-  { href: "/billing", label: "Billing", icon: BadgeDollarSign },
+  { href: "/billing", label: "Wallet & Billing", icon: BadgeDollarSign },
   { href: "/downloads", label: "Download app", icon: Download },
 ];
 

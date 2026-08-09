@@ -34,4 +34,28 @@ describe("LicenseService development verification", () => {
     expect(await service.authenticateGatewayKey(first.rawKey)).toMatchObject({ accountId: "member-a", plan: "pro" });
     await expect(service.revokeKey(first.key.id, "member-b")).rejects.toThrow(/tidak ditemukan/i);
   });
+
+  it("blocks a new API key for a persistent account without available credits", async () => {
+    const database = {
+      configured: () => true,
+      client: () => ({
+        user: {
+          findUnique: async () => ({
+            id: "member-empty",
+            planCode: "FREE",
+            deviceLimit: 1,
+            unlimitedCredits: false,
+          }),
+        },
+        userCreditAccount: {
+          findUnique: async () => ({ balanceMicro: 0n, reservedMicro: 0n }),
+        },
+      }),
+    };
+    const service = new LicenseService(undefined, database as never);
+
+    await expect(service.createKey({ ownerId: "member-empty" })).rejects.toThrow(
+      /Saldo Cliper Credits tidak mencukupi/i,
+    );
+  });
 });

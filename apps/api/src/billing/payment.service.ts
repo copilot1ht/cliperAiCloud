@@ -62,9 +62,10 @@ const plans: PlanDefinition[] = [
   },
 ];
 
-const DEFAULT_TOPUP_MIN_IDR = 25_000;
+// IDR is the payment authority. USD is only a display reference in the web UI.
+const DEFAULT_TOPUP_MIN_IDR = 17_000;
 const DEFAULT_TOPUP_MAX_IDR = 10_000_000;
-const DEFAULT_TOPUP_MIN_USD = 3;
+const DEFAULT_TOPUP_MIN_USD = 1;
 const DEFAULT_TOPUP_USD_TO_IDR_DISPLAY_RATE = 17_700;
 
 function configuredTopupAmount(name: string, fallback: number): number {
@@ -111,14 +112,10 @@ export function configuredTopupUsdToIdrDisplayRate(): number {
 }
 
 export function configuredTopupMinimumIdr(): number {
-  const legacyMinimum = configuredTopupAmount(
+  return configuredTopupAmount(
     "PAYMENT_MIN_TOPUP_IDR",
     DEFAULT_TOPUP_MIN_IDR,
   );
-  const usdEquivalent = Math.ceil(
-    configuredTopupMinimumUsd() * configuredTopupUsdToIdrDisplayRate(),
-  );
-  return Math.max(legacyMinimum, usdEquivalent);
 }
 
 function topupConfiguration() {
@@ -229,7 +226,7 @@ export class PaymentService {
     await this.expireOpenInvoices(identity.id);
     const number = invoiceNumber();
     const expiresAt = new Date(Date.now() + 15 * 60_000);
-    const provider = this.providers.active();
+    const provider = await this.providers.active();
     const providerPayment = await provider.createPayment({
       invoiceNumber: number,
       amountIdr: plan.priceIdr,
@@ -350,7 +347,7 @@ export class PaymentService {
     await this.expireOpenInvoices(identity.id);
     const number = invoiceNumber();
     const expiresAt = new Date(Date.now() + 15 * 60_000);
-    const provider = this.providers.active();
+    const provider = await this.providers.active();
     const providerPayment = await provider.createPayment({
       invoiceNumber: number,
       amountIdr,
@@ -437,7 +434,7 @@ export class PaymentService {
     rawBody: Buffer,
     headers: Record<string, string | string[] | undefined>,
   ) {
-    const provider = this.providers.byCode(providerCode);
+    const provider = await this.providers.byCode(providerCode);
     const verified = provider.verifyWebhook(rawBody, headers);
     if (!verified.verified || !verified.event) {
       await this.recordRejectedWebhook(
@@ -610,7 +607,7 @@ export class PaymentService {
       throw new NotFoundException("Payment atau invoice tidak ditemukan.");
     if (actorId !== "bootstrap-admin" && payment.userId !== actorId)
       throw new UnauthorizedException("Invoice bukan milik user ini.");
-    const provider = this.providers.byCode(payment.provider);
+    const provider = await this.providers.byCode(payment.provider);
     if (!provider.getTransactionStatus) {
       throw new ConflictException(
         "Provider payment ini tidak mendukung status sync otomatis.",
@@ -754,7 +751,7 @@ export class PaymentService {
         "Credit hasil pembelian sudah dipakai atau sedang direservasi; refund otomatis ditolak sebelum provider dipanggil.",
       );
     }
-    const provider = this.providers.byCode(payment.provider);
+    const provider = await this.providers.byCode(payment.provider);
     const providerRefund = provider.refund
       ? await provider.refund(payment.externalId, payment.amountIdr)
       : undefined;

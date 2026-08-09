@@ -102,7 +102,6 @@ function escapeHtml(value: string): string {
     "'": "&#39;",
   }[character] || character));
 }
-
 async function passwordMatches(passwordHash: string, password: string): Promise<boolean> {
   const normalizedHash = String(passwordHash || "").trim();
   if (!normalizedHash.startsWith("$argon2")) return false;

@@ -1139,6 +1139,82 @@ td code {
   grid-template-columns: 1fr 1fr;
   gap: 4px 18px;
 }
+.field-wide {
+  grid-column: 1 / -1;
+}
+.field-with-action {
+  display: flex;
+  gap: 7px;
+}
+.field-with-action input {
+  min-width: 0;
+  flex: 1;
+}
+.payment-settings-card {
+  max-width: 980px;
+}
+.payment-config-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 15px 0;
+}
+.payment-config-summary span {
+  display: grid;
+  gap: 4px;
+  padding: 11px;
+  background: #f6f9fa;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+}
+.payment-config-summary small {
+  color: var(--muted);
+  font-size: 9px;
+}
+.payment-config-summary strong {
+  font-size: 11px;
+}
+.payment-enabled {
+  align-self: end;
+  min-height: 36px;
+}
+.endpoint-list {
+  display: grid;
+  gap: 6px;
+  margin: 13px 0;
+}
+.endpoint-list span {
+  display: grid;
+  grid-template-columns: auto max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 9px 10px;
+  background: #f6f9fa;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+}
+.endpoint-list strong {
+  font-size: 10px;
+}
+.endpoint-list code {
+  overflow: hidden;
+  color: #42616a;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.success-callout {
+  margin-bottom: 14px;
+  color: #1e7650;
+  background: #eaf8f0;
+  border: 1px solid #bee6ce;
+}
+.warning-callout {
+  margin: 13px 0;
+  color: #805711;
+  background: #fff7e8;
+  border: 1px solid #ecd297;
+}
 
 .admin-local-notice {
   margin-bottom: 18px;

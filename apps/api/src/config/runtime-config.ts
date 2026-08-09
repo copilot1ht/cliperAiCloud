@@ -183,7 +183,7 @@ export function validateRuntimeConfig(
     String(env.ALLOW_SANDBOX_PAYMENTS || "false").toLowerCase() === "true";
   if (production && paymentProvider === "sandbox" && !sandboxAllowed) {
     warnings.push(
-      "Sandbox payment dinonaktifkan di production; pilih PAYMENT_PROVIDER=midtrans untuk checkout nyata.",
+      "Checkout ENV sandbox dinonaktifkan di production. Aktifkan Midtrans melalui Railway Variables atau Encrypted Admin Settings sebelum menerima pembayaran nyata.",
     );
   }
   if (
@@ -235,26 +235,24 @@ export function validateRuntimeConfig(
       "MIDTRANS_IS_PRODUCTION=false membutuhkan Server Key Sandbox. Jangan gunakan key Production di localhost.",
     );
   }
-  const legacyMinimum = Number(env.PAYMENT_MIN_TOPUP_IDR || 25_000);
-  const minTopupUsd = Number(env.PAYMENT_MIN_TOPUP_USD || 3);
+  const minimumTopupIdr = Number(env.PAYMENT_MIN_TOPUP_IDR || 17_000);
+  const minTopupUsd = Number(env.PAYMENT_MIN_TOPUP_USD || 1);
   const usdToIdrTopupRate = Number(
     env.PAYMENT_USD_TO_IDR_DISPLAY_RATE || env.PLATFORM_USD_TO_IDR || 17_700,
   );
-  const minTopup = Math.ceil(minTopupUsd * usdToIdrTopupRate);
   const maxTopup = Number(env.PAYMENT_MAX_TOPUP_IDR || 10_000_000);
-  const effectiveMinimum = Math.max(legacyMinimum, minTopup);
   if (
-    !Number.isSafeInteger(legacyMinimum) ||
+    !Number.isSafeInteger(minimumTopupIdr) ||
     !Number.isFinite(minTopupUsd) ||
     minTopupUsd <= 0 ||
     !Number.isSafeInteger(usdToIdrTopupRate) ||
     usdToIdrTopupRate <= 0 ||
     !Number.isSafeInteger(maxTopup) ||
-    effectiveMinimum < 25_000 ||
-    maxTopup < effectiveMinimum
+    minimumTopupIdr < 17_000 ||
+    maxTopup < minimumTopupIdr
   ) {
     errors.push(
-      "Konfigurasi top-up tidak valid. PAYMENT_MIN_TOPUP_USD, PAYMENT_USD_TO_IDR_DISPLAY_RATE, dan maksimum IDR harus menghasilkan minimum yang valid.",
+      "Konfigurasi top-up tidak valid. PAYMENT_MIN_TOPUP_IDR minimal 17000; USD hanya dipakai sebagai referensi tampilan.",
     );
   }
   const creditsPerIdr = Number(env.PAYMENT_CREDITS_PER_IDR || 1);

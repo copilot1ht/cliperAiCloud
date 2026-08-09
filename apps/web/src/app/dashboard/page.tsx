@@ -47,7 +47,7 @@ export default function DashboardPage() {
           <span>Desktop key, AI usage, dan wallet Anda terhubung dalam satu workspace aman.</span>
           <div className="member-hero-actions">
             <Link className="button button-primary" href="/keys"><Key size={16} /> Kelola API key</Link>
-            <Link className="button button-secondary" href="/topup"><CreditCard size={16} /> Top up credits</Link>
+            <Link className="button button-secondary" href="/billing"><CreditCard size={16} /> Isi saldo</Link>
           </div>
         </div>
         <div className="member-balance">

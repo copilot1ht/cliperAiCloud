@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Inject, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Inject, Param, Patch, Post, Put, Req, UseGuards } from "@nestjs/common";
 import { AuthService, authStorageMode, type AuthRole, type MemberPlan, type MemberStatus } from "../auth/auth.service.js";
 import { GatewayService } from "../gateway/gateway.service.js";
 import { AdminSessionGuard, type AdminAuthenticatedRequest } from "../security/admin-session.guard.js";
@@ -16,9 +16,11 @@ import { AnalysisJobService } from "../billing/analysis-job.service.js";
 import { PricingService } from "../billing/pricing.service.js";
 import { BackupService } from "./backup.service.js";
 import { ReleaseCatalogService, type DesktopReleaseInput } from "./release-catalog.service.js";
+import { PaymentConfigurationService, type PaymentSettingsInput } from "../billing/payment-configuration.service.js";
+import { PaymentProviderService } from "../billing/payment-provider.service.js";
 
 const plans = [
-  { code: "free", name: "Free", priceIdr: 0, credits: 100, deviceLimit: 1, active: true },
+  { code: "free", name: "Free", priceIdr: 0, credits: 0, deviceLimit: 1, active: true },
   { code: "starter", name: "Starter", priceIdr: 99_000, credits: 50_000, deviceLimit: 1, active: true },
   { code: "pro", name: "Pro", priceIdr: 299_000, credits: 500_000, deviceLimit: 3, active: true },
   { code: "enterprise", name: "Enterprise", priceIdr: 0, credits: 0, deviceLimit: 10, active: true },
@@ -43,6 +45,8 @@ export class AdminController {
     @Inject(PricingService) private readonly pricingService: PricingService,
     @Inject(BackupService) private readonly backups: BackupService,
     @Inject(ReleaseCatalogService) private readonly releases: ReleaseCatalogService,
+    @Inject(PaymentConfigurationService) private readonly paymentConfiguration: PaymentConfigurationService,
+    @Inject(PaymentProviderService) private readonly paymentProviders: PaymentProviderService,
   ) {}
 
   @Get("overview")
@@ -89,20 +93,21 @@ export class AdminController {
     const providers = this.gateway.providers();
     const desktopSessionSummary = await this.desktopSessions.summary();
     const memory = process.memoryUsage();
-    const paymentProvider = String(process.env.PAYMENT_PROVIDER || "sandbox").toLowerCase();
-    const midtransProduction = String(process.env.MIDTRANS_IS_PRODUCTION || "false").toLowerCase() === "true";
-    const midtransConfigured = paymentProvider === "midtrans" && String(process.env.MIDTRANS_SERVER_KEY || "").trim().length >= 20;
+    const paymentSettings = await this.paymentConfiguration.status();
+    const midtransConfigured = paymentSettings.enabled && paymentSettings.configured;
     const midtrans = {
-      mode: midtransProduction ? "Production" : "Sandbox",
+      mode: paymentSettings.environment === "production" ? "Production" : "Sandbox",
       configuration: midtransConfigured ? "Ready" : "Missing",
-      webhookUrl: String(process.env.MIDTRANS_NOTIFICATION_URL || `${String(process.env.API_PUBLIC_URL || "").replace(/\/$/, "")}/api/payments/webhook/midtrans`).replace(/^\/api/, "https://<public-api-domain>/api"),
+      source: paymentSettings.sourceLabel,
+      webhookUrl: paymentSettings.notificationUrl || "Not configured",
+      finishRedirectUrl: paymentSettings.finishRedirectUrl || "Not configured",
       apiReachability: midtransConfigured ? "Configured" : "Not configured",
       lastWebhookAt: null as string | null,
       lastSuccessfulPaymentAt: null as string | null,
       failedWebhookCount: 0,
       signatureVerification: "No webhook received",
     };
-    if (paymentProvider === "midtrans" && this.database.configured()) {
+    if (paymentSettings.configured && this.database.configured()) {
       try {
         const client = this.database.client();
         const [lastWebhook, lastPayment, failedWebhookCount] = await Promise.all([
@@ -133,7 +138,7 @@ export class AdminController {
         { code: "redis", label: "Redis", status: dependencies.redis ? "healthy" : report.infrastructure.redis ? "offline" : "not-configured", detail: dependencies.redis ? "TCP connection reachable" : "Distributed cache/rate limit is not active" },
         { code: "providers", label: "AI Providers", status: providers.some((item) => item.status === "healthy") ? "healthy" : "not-configured", detail: `${providers.filter((item) => item.status === "healthy").length}/${providers.length} provider healthy` },
         { code: "queue", label: "Queue", status: "not-configured", detail: "BullMQ worker has not been deployed" },
-        { code: "midtrans", label: "Midtrans", status: midtransConfigured ? "healthy" : "not-configured", detail: `${midtrans.mode} · ${midtrans.configuration}` },
+        { code: "midtrans", label: "Midtrans", status: midtransConfigured ? "healthy" : "not-configured", detail: `${midtrans.mode} · ${midtrans.configuration} · ${midtrans.source}` },
         { code: "license", label: "Desktop Sessions", status: "healthy", detail: `${desktopSessionSummary.active} active signed sessions` },
       ],
       midtrans,
@@ -359,6 +364,31 @@ export class AdminController {
   @Get("payments")
   payments() {
     return this.paymentsService.adminPayments();
+  }
+
+  @Get("settings/payment")
+  paymentSettings() {
+    return this.paymentConfiguration.status();
+  }
+
+  @Put("settings/payment")
+  async savePaymentSettings(
+    @Body() input: PaymentSettingsInput,
+    @Req() request: AdminAuthenticatedRequest,
+  ) {
+    return this.paymentConfiguration.save(
+      input,
+      request.cliperAdminSession?.userId,
+    );
+  }
+
+  @Post("settings/payment/test")
+  async testPaymentSettings() {
+    const [configuration, connection] = await Promise.all([
+      this.paymentConfiguration.status(),
+      this.paymentProviders.testMidtransConnection(),
+    ]);
+    return { configuration, connection };
   }
 
   @Post("payments/:id/refund")

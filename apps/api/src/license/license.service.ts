@@ -1,7 +1,7 @@
 import { Inject, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import type { LicenseValidationRequest, LicenseValidationResponse } from "@cliper/contracts";
 import { generateCliperApiKey, hashCliperApiKey, isCliperApiKey } from "@cliper/security";
-import { CreditAccountService } from "../billing/credit-account.service.js";
+import { CreditAccountService, InsufficientCreditsException } from "../billing/credit-account.service.js";
 import { DatabaseService } from "../database/database.service.js";
 import { KeyStatus, PlanCode } from "../generated/prisma/client.js";
 import { LicenseKeyStore, type LicenseKeyMetadata } from "./key-storage.js";
@@ -103,8 +103,16 @@ export class LicenseService {
   async createKey(input: { ownerId?: string; label?: string; plan?: string; deviceLimit?: number }) {
     if (!this.usesPostgres()) return this.store.createKey(input);
     const ownerId = String(input.ownerId || "");
-    const owner = await this.database!.client().user.findUnique({ where: { id: ownerId }, select: { id: true, planCode: true, deviceLimit: true } });
+    const owner = await this.database!.client().user.findUnique({ where: { id: ownerId }, select: { id: true, planCode: true, deviceLimit: true, unlimitedCredits: true } });
     if (!owner) throw new NotFoundException("Pemilik API key tidak ditemukan.");
+    if (!owner.unlimitedCredits) {
+      const account = await this.database!.client().userCreditAccount.findUnique({
+        where: { userId: owner.id },
+        select: { balanceMicro: true, reservedMicro: true },
+      });
+      const available = account ? account.balanceMicro - account.reservedMicro : 0n;
+      if (available <= 0n) throw new InsufficientCreditsException(0, 1);
+    }
     const material = generateCliperApiKey(keyPepper());
     const expiresAt = addDays(DEFAULT_EXPIRE_DAYS);
     const key = await this.database!.client().apiKey.create({

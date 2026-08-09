@@ -35,8 +35,8 @@ export class InsufficientCreditsException extends HttpException {
       message: "Saldo Cliper Credits tidak mencukupi.",
       availableCredits: Number((availableMicro / 1_000_000).toFixed(6)),
       requiredCredits: Number((requiredMicro / 1_000_000).toFixed(6)),
-      minimumTopupIdr: Number(process.env.PAYMENT_MIN_TOPUP_IDR || 25_000),
-      topupUrl: String(process.env.CLIPER_TOPUP_URL || `${String(process.env.WEB_ORIGIN || "http://localhost:3000").replace(/\/$/, "")}/topup`),
+      minimumTopupIdr: Number(process.env.PAYMENT_MIN_TOPUP_IDR || 17_000),
+      topupUrl: String(process.env.CLIPER_TOPUP_URL || `${String(process.env.WEB_ORIGIN || "http://localhost:3000").replace(/\/$/, "")}/billing`),
       requestId,
     }, HttpStatus.PAYMENT_REQUIRED);
   }

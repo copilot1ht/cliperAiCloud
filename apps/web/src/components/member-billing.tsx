@@ -256,7 +256,8 @@ export function MemberBilling({
       </section>
     );
 
-  const topupMinUsd = data.topup.minUsd || 3;
+  // IDR is authoritative for checkout. USD is only a display reference.
+  const topupMinUsd = data.topup.minUsd || 1;
   const topupDisplayRate = data.topup.usdToIdrDisplayRate || 17_700;
   const topupUsdEquivalent = topupAmount / topupDisplayRate;
   const topupIsValid =

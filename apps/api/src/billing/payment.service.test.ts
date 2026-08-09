@@ -14,22 +14,29 @@ describe("Billing top-up helpers", () => {
     delete process.env.PLATFORM_USD_TO_IDR;
   });
 
-  it("uses the greater of the legacy IDR guard and the USD minimum", () => {
+  it("uses the configured IDR minimum as the payment authority", () => {
     process.env.PAYMENT_MIN_TOPUP_IDR = "100000";
     expect(configuredTopupMinimumIdr()).toBe(100000);
   });
 
-  it("defaults to a US$3 equivalent, paid in IDR", () => {
-    expect(configuredTopupMinimumUsd()).toBe(3);
+  it("defaults to Rp17.000 while USD remains a display reference", () => {
+    expect(configuredTopupMinimumUsd()).toBe(1);
     expect(configuredTopupUsdToIdrDisplayRate()).toBe(17700);
-    expect(configuredTopupMinimumIdr()).toBe(53100);
+    expect(configuredTopupMinimumIdr()).toBe(17000);
   });
 
   it("ignores invalid top-up overrides", () => {
     process.env.PAYMENT_MIN_TOPUP_IDR = "not-a-number";
     process.env.PAYMENT_MIN_TOPUP_USD = "not-a-number";
     process.env.PAYMENT_USD_TO_IDR_DISPLAY_RATE = "not-a-number";
-    expect(configuredTopupMinimumIdr()).toBe(53100);
+    expect(configuredTopupMinimumIdr()).toBe(17000);
+  });
+
+  it("creates a temporary QR image only when a provider QR payload exists", async () => {
+    expect(await transientQrDataUrl(null)).toBeNull();
+    await expect(transientQrDataUrl("CLIPER:payment:test")).resolves.toMatch(
+      /^data:image\/png;base64,/,
+    );
   });
 
   it("creates a temporary QR image only when a provider QR payload exists", async () => {

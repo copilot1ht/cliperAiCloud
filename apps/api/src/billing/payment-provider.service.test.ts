@@ -292,4 +292,25 @@ describe("MidtransPaymentProvider", () => {
       status: "pending",
     });
   });
+
+  it("treats an HTTP 404 status lookup as a pending checkout instead of a provider outage", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            status_code: "404",
+            status_message: "The requested resource is not found",
+          }),
+          { status: 404 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      provider.getTransactionStatus("CLP-20260715-NOT-OPENED", 25_000),
+    ).resolves.toMatchObject({
+      externalId: "CLP-20260715-NOT-OPENED",
+      status: "pending",
+    });
+  });
 });

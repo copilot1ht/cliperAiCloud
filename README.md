@@ -172,8 +172,9 @@ reserve maksimum job
 → release sisa reservation
 ```
 
-Default trial: 1 credit = Rp1, gross margin minimum 50%, target 60%, dan
-reservation maksimum 2.000 credits. Request duplikat memakai provider request ID
+1 credit = Rp1, gross margin minimum 50%, target 60%, dan reservation maksimum
+2.000 credits. Akun baru memulai dengan saldo 0; pemrosesan dan key baru aktif
+setelah top-up tervalidasi. Request duplikat memakai provider request ID
 sebagai idempotency key sehingga usage dan job cost tidak tercatat dua kali.
 Semua nilai internal hanya tersedia pada Admin Revenue.
 

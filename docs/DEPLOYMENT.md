@@ -29,6 +29,8 @@ JWT_SECRET=MINIMAL_32_KARAKTER_RANDOM
 REFRESH_TOKEN_SECRET=MINIMAL_32_KARAKTER_RANDOM_BERBEDA
 ADMIN_API_KEY=MINIMAL_24_KARAKTER_RANDOM
 PROVIDER_ENCRYPTION_KEY=MINIMAL_32_KARAKTER_RANDOM
+# Optional, but recommended when Admin Payment Settings stores a Midtrans key.
+PAYMENT_CONFIG_ENCRYPTION_KEY=MINIMAL_32_KARAKTER_RANDOM_BERBEDA
 LICENSE_KEY_PEPPER=MINIMAL_32_KARAKTER_RANDOM
 BOOTSTRAP_ADMIN_EMAIL=EMAIL_ADMIN
 BOOTSTRAP_ADMIN_PASSWORD_HASH=HASH_ARGON2ID
@@ -36,11 +38,13 @@ ALLOW_LEGACY_API_KEY_AUTH=false
 DATABASE_URL=${{Postgres.DATABASE_URL}}
 PAYMENT_PROVIDER=midtrans
 ALLOW_SANDBOX_PAYMENTS=false
-MIDTRANS_MERCHANT_ID=your-sandbox-merchant-id
-MIDTRANS_CLIENT_KEY=your-sandbox-client-key
-MIDTRANS_SERVER_KEY=your-sandbox-server-key
-MIDTRANS_IS_PRODUCTION=false
-PAYMENT_MIN_TOPUP_IDR=25000
+MIDTRANS_MERCHANT_ID=your-production-merchant-id
+MIDTRANS_CLIENT_KEY=your-production-client-key
+MIDTRANS_SERVER_KEY=your-production-server-key
+MIDTRANS_IS_PRODUCTION=true
+MIDTRANS_NOTIFICATION_URL=https://api.cliperaicloud.online/api/payments/webhook/midtrans
+MIDTRANS_FINISH_REDIRECT_URL=https://www.cliperaicloud.online/billing
+PAYMENT_MIN_TOPUP_IDR=17000
 PAYMENT_MAX_TOPUP_IDR=10000000
 PAYMENT_CREDITS_PER_IDR=1
 MINIMUM_MARGIN_BPS=5000
@@ -64,7 +68,9 @@ REDIS_URL=${{Redis.REDIS_URL}}
 
 Untuk uji lokal gunakan Sandbox Access Keys. API membuat QRIS melalui Midtrans Core API dan menampilkan gambar QR di web. Set `MIDTRANS_IS_PRODUCTION=true` hanya setelah Production Access Keys dan notification URL HTTPS siap. Jangan menaruh Server Key di GitHub, browser, atau log.
 
-Atur Payment Notification URL di Midtrans MAP ke `https://<API_DOMAIN>/api/payments/webhook/midtrans`. Endpoint ini harus dapat diakses publik melalui HTTPS. Redirect user ke `/invoices?invoice=<NUMBER>` tidak menggantikan notification URL: saldo hanya diberikan dari callback yang signature-nya valid.
+Atur Payment Notification URL di Midtrans MAP ke `https://api.cliperaicloud.online/api/payments/webhook/midtrans` dan Finish Redirect URL ke `https://www.cliperaicloud.online/billing`. Endpoint notification harus dapat diakses publik melalui HTTPS. Redirect user tidak menggantikan notification URL: saldo hanya diberikan dari callback yang signature-nya valid.
+
+Untuk aktivasi pertama, simpan credential hanya pada Railway service `@cliper/api`. Sesudah database Production sehat, admin dapat memasukkan rotasi key melalui **Admin > Settings > Payment Settings**; nilai akan dienkripsi dan UI hanya menampilkan status/mask. Jangan menaruh Midtrans key pada Vercel atau `@cliper/web`.
 
 Implementasi control-plane MVP saat ini masih memakai store proses untuk beberapa data. Jangan menaikkan replica lebih dari satu sebelum repository persistence Prisma selesai diintegrasikan.
 

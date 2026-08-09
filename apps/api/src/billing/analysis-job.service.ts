@@ -660,10 +660,10 @@ export class AnalysisJobService {
       balanceStatus: availableCredits < maximumJobCredits
         ? "insufficient"
         : availableCredits <= this.pricingPolicy().lowBalanceWarningCredits ? "low" : "ready",
-      minimumTopupIdr: Number(process.env.PAYMENT_MIN_TOPUP_IDR || 25_000),
+      minimumTopupIdr: Number(process.env.PAYMENT_MIN_TOPUP_IDR || 17_000),
       topupUrl: String(
         process.env.CLIPER_TOPUP_URL
-        || `${String(process.env.WEB_ORIGIN || "http://localhost:3000").replace(/\/$/, "")}/topup?source=desktop`,
+        || `${String(process.env.WEB_ORIGIN || "http://localhost:3000").replace(/\/$/, "")}/billing?source=desktop`,
       ),
       storage: this.storageMode(),
     };

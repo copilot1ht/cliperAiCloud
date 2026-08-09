@@ -30,8 +30,10 @@ afterEach(() => {
 
 describe("AuthService", () => {
   it("registers normal accounts only as member", async () => {
-    const result = await new AuthService().register({ email: "member@test.local", password: "strong-member-password", displayName: "Member Test" });
+    const auth = new AuthService();
+    const result = await auth.register({ email: "member@test.local", password: "strong-member-password", displayName: "Member Test" });
     expect(result.user.role).toBe("member");
+    expect((await auth.userById(result.user.id)).credits).toBe(0);
     expect(result.redirectTo).toBe("/dashboard");
   });
 

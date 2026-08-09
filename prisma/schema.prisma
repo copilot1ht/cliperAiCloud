@@ -621,6 +621,23 @@ model PaymentLog {
   @@map("payment_logs")
 }
 
+model PaymentGatewaySetting {
+  id                   String   @id @default(cuid())
+  provider             String   @unique
+  enabled              Boolean  @default(false)
+  isProduction         Boolean  @default(false)
+  encryptedMerchantId  String?
+  encryptedClientKey   String?
+  encryptedServerKey   String?
+  notificationUrl      String?
+  finishRedirectUrl    String?
+  updatedById          String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@map("payment_gateway_settings")
+}
+
 model InvoiceItem {
   id           String   @id @default(cuid())
   invoiceId    String

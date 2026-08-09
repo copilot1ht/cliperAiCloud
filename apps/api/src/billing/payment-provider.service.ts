@@ -16,6 +16,10 @@ import {
 } from "@cliper/billing";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import QRCode from "qrcode";
+import {
+  PaymentConfigurationService,
+  type MidtransCredentials,
+} from "./payment-configuration.service.js";
 
 const SANDBOX_CODE = "sandbox";
 const MIDTRANS_CODE = "midtrans";
@@ -205,6 +209,7 @@ export class MidtransPaymentProvider implements PaymentProvider {
   private async request(
     url: string,
     init: RequestInit,
+    acceptedErrorStatuses: number[] = [],
   ): Promise<Record<string, unknown>> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 30_000);
@@ -214,7 +219,7 @@ export class MidtransPaymentProvider implements PaymentProvider {
         string,
         unknown
       >;
-      if (!response.ok) {
+      if (!response.ok && !acceptedErrorStatuses.includes(response.status)) {
         const message = String(
           payload.status_message ||
             payload.error_messages ||
@@ -224,7 +229,7 @@ export class MidtransPaymentProvider implements PaymentProvider {
           `Midtrans request gagal: ${message.slice(0, 240)}`,
         );
       }
-      return payload;
+      return { ...payload, __httpStatus: response.status };
     } catch (error) {
       if (error instanceof ServiceUnavailableException) throw error;
       throw new ServiceUnavailableException(
@@ -444,8 +449,12 @@ export class MidtransPaymentProvider implements PaymentProvider {
         method: "GET",
         headers: this.headers(),
       },
+      [404],
     );
-    if (String(payload.status_code || "") === "404") {
+    if (
+      Number(payload.__httpStatus || 0) === 404 ||
+      String(payload.status_code || "") === "404"
+    ) {
       if (
         !Number.isSafeInteger(expectedAmountIdr) ||
         Number(expectedAmountIdr) <= 0
@@ -500,6 +509,24 @@ export class MidtransPaymentProvider implements PaymentProvider {
     return event;
   }
 
+  async testConnection(): Promise<{
+    ok: true;
+    latencyMs: number;
+    verification: "credentials-accepted";
+  }> {
+    const startedAt = Date.now();
+    await this.request(
+      `${this.apiOrigin}/v2/cliper-connection-check-${randomUUID()}/status`,
+      { method: "GET", headers: this.headers() },
+      [404],
+    );
+    return {
+      ok: true,
+      latencyMs: Date.now() - startedAt,
+      verification: "credentials-accepted",
+    };
+  }
+
   async refund(
     externalId: string,
     amountIdr: number,
@@ -529,9 +556,10 @@ export class MidtransPaymentProvider implements PaymentProvider {
 @Injectable()
 export class PaymentProviderService {
   private readonly sandbox: SandboxPaymentProvider;
-  private readonly midtrans?: MidtransPaymentProvider;
 
-  constructor() {
+  constructor(
+    private readonly configuration: PaymentConfigurationService,
+  ) {
     const secret = String(
       process.env.PAYMENT_SANDBOX_WEBHOOK_SECRET || LOCAL_SANDBOX_SECRET,
     );
@@ -539,42 +567,26 @@ export class PaymentProviderService {
       secret,
       process.env.WEB_ORIGIN || "http://localhost:3000",
     );
-    const configuredProvider = String(
-      process.env.PAYMENT_PROVIDER || SANDBOX_CODE,
-    )
-      .trim()
-      .toLowerCase();
-    // Keep an inactive Midtrans credential out of the local runtime entirely.
-    // This makes the internal sandbox test safe even when an operator still has
-    // an old production credential in a private .env pending rotation.
-    if (
-      configuredProvider === MIDTRANS_CODE &&
-      process.env.MIDTRANS_SERVER_KEY
-    ) {
-      this.midtrans = new MidtransPaymentProvider(
-        process.env.MIDTRANS_SERVER_KEY,
-        process.env.WEB_ORIGIN || "http://localhost:3000",
-        String(process.env.MIDTRANS_IS_PRODUCTION || "false").toLowerCase() ===
-          "true",
-      );
-    }
   }
 
-  active(): PaymentProvider {
-    const code = String(process.env.PAYMENT_PROVIDER || SANDBOX_CODE)
-      .trim()
-      .toLowerCase();
-    if (code === MIDTRANS_CODE) {
-      if (!this.midtrans)
+  private midtrans(credentials: MidtransCredentials): MidtransPaymentProvider {
+    return new MidtransPaymentProvider(
+      credentials.serverKey,
+      process.env.WEB_ORIGIN || "http://localhost:3000",
+      credentials.isProduction,
+    );
+  }
+
+  async active(): Promise<PaymentProvider> {
+    const active = await this.configuration.resolveActive();
+    if (active.provider === MIDTRANS_CODE) {
+      if (!active.enabled || !active.midtrans) {
         throw new ServiceUnavailableException(
-          "Midtrans belum dikonfigurasi. Isi MIDTRANS_SERVER_KEY di environment API.",
+          "Midtrans belum dikonfigurasi. Gunakan Railway Variables atau Admin Payment Settings pada API.",
         );
-      return this.midtrans;
+      }
+      return this.midtrans(active.midtrans);
     }
-    if (code !== SANDBOX_CODE)
-      throw new ServiceUnavailableException(
-        `Payment provider '${code}' belum memiliki adapter aktif.`,
-      );
     const production = process.env.NODE_ENV === "production";
     const sandboxAllowed =
       String(process.env.ALLOW_SANDBOX_PAYMENTS || "false").toLowerCase() ===
@@ -587,16 +599,17 @@ export class PaymentProviderService {
     return this.sandbox;
   }
 
-  byCode(code: string): PaymentProvider {
+  async byCode(code: string): Promise<PaymentProvider> {
     const normalized = String(code || "")
       .trim()
       .toLowerCase();
     if (normalized === MIDTRANS_CODE) {
-      if (!this.midtrans)
+      const saved = await this.configuration.resolveMidtransForOperations();
+      if (!saved)
         throw new ServiceUnavailableException(
-          "Midtrans belum dikonfigurasi. Isi MIDTRANS_SERVER_KEY di environment API.",
+          "Konfigurasi Midtrans untuk invoice ini tidak tersedia. Periksa Railway Variables atau Admin Payment Settings.",
         );
-      return this.midtrans;
+      return this.midtrans(saved.credentials);
     }
     if (normalized === SANDBOX_CODE) {
       const production = process.env.NODE_ENV === "production";
@@ -610,6 +623,24 @@ export class PaymentProviderService {
       return this.sandbox;
     }
     throw new BadRequestException("Payment provider tidak didukung.");
+  }
+
+  async testMidtransConnection() {
+    const saved = await this.configuration.resolveMidtransForOperations();
+    if (!saved) {
+      throw new ServiceUnavailableException(
+        "Midtrans belum memiliki Merchant ID, Client Key, dan Server Key lengkap.",
+      );
+    }
+    const result = await this.midtrans(saved.credentials).testConnection();
+    return {
+      ...result,
+      environment: saved.credentials.isProduction ? "production" : "sandbox",
+      source:
+        saved.source === "admin-settings"
+          ? "Encrypted Admin Settings"
+          : "Railway ENV",
+    };
   }
 
   sandboxEvent(event: PaymentWebhookEvent): {

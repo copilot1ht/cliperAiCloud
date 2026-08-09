@@ -1,5 +1,43 @@
 # Midtrans Setup
 
+## Production configuration source
+
+Use one active configuration source at a time:
+
+1. **Railway Variables** on service `@cliper/api` for the first Production activation.
+2. **Admin > Settings > Payment Settings** after PostgreSQL and
+   `PAYMENT_CONFIG_ENCRYPTION_KEY` are configured. The admin form stores the
+   credentials encrypted and never returns their plaintext to the browser.
+
+Never place Midtrans server credentials in `@cliper/web`, Vercel variables,
+Electron, `.env.example`, or Git. Rotate any key that has been shared outside
+Midtrans before Production use.
+
+### Railway Variables (`@cliper/api` only)
+
+```text
+PAYMENT_PROVIDER=midtrans
+MIDTRANS_IS_PRODUCTION=true
+MIDTRANS_MERCHANT_ID=<rotated-production-merchant-id>
+MIDTRANS_CLIENT_KEY=<rotated-production-client-key>
+MIDTRANS_SERVER_KEY=<rotated-production-server-key>
+API_PUBLIC_URL=https://api.cliperaicloud.online
+WEB_ORIGIN=https://www.cliperaicloud.online
+MIDTRANS_NOTIFICATION_URL=https://api.cliperaicloud.online/api/payments/webhook/midtrans
+MIDTRANS_FINISH_REDIRECT_URL=https://www.cliperaicloud.online/billing
+```
+
+Adding or changing a Railway variable requires an API redeploy. The Midtrans
+dashboard URLs are:
+
+```text
+Notification URL: https://api.cliperaicloud.online/api/payments/webhook/midtrans
+Finish Redirect URL: https://www.cliperaicloud.online/billing
+```
+
+The notification URL is authoritative for wallet crediting. A browser redirect
+or a QR image being displayed never marks an invoice as paid.
+
 ## 1. Configure the API service
 
 Set these variables in Railway (or the API process environment). Do not put them in GitHub, Vercel client variables, or the web bundle.
@@ -10,10 +48,10 @@ MIDTRANS_MERCHANT_ID=<sandbox-or-production-merchant-id>
 MIDTRANS_CLIENT_KEY=<matching-client-key>
 MIDTRANS_SERVER_KEY=<matching-server-key>
 MIDTRANS_IS_PRODUCTION=false
-PAYMENT_MIN_TOPUP_USD=3
+PAYMENT_MIN_TOPUP_USD=1
 PAYMENT_USD_TO_IDR_DISPLAY_RATE=17700
-# Optional legacy lower guard; the server uses the larger value.
-PAYMENT_MIN_TOPUP_IDR=25000
+# IDR is authoritative; USD is display/reference only.
+PAYMENT_MIN_TOPUP_IDR=17000
 PAYMENT_MAX_TOPUP_IDR=10000000
 PAYMENT_CREDITS_PER_IDR=1
 WEB_ORIGIN=https://your-web-domain
