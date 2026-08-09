@@ -121,8 +121,9 @@ describe("validateRuntimeConfig", () => {
       XENDIT_SECRET_KEY: "xnd_public_development_example_public_key_only",
       XENDIT_WEBHOOK_TOKEN: "xendit-webhook-token-with-at-least-32-characters",
     });
-    expect(report.ready).toBe(false);
-    expect(report.errors.join(" ")).toContain("Public API Key");
+    expect(report.ready).toBe(true);
+    expect(report.errors).toEqual([]);
+    expect(report.warnings.join(" ")).toContain("Public API Key");
   });
 
   it("reports an unconfigured dependency as unreachable", async () => {

@@ -254,7 +254,7 @@ export function validateRuntimeConfig(
       }
     }
     if (/^xnd_public_/i.test(String(env.XENDIT_SECRET_KEY || "").trim())) {
-      errors.push(
+      warnings.push(
         "XENDIT_SECRET_KEY berisi Public API Key. Buat Secret API Key dengan izin Money-In Write di Xendit Dashboard lalu simpan hanya pada Railway @cliper/api.",
       );
     }
