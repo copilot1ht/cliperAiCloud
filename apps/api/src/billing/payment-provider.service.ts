@@ -30,6 +30,24 @@ function midtransAmount(value: unknown): number {
   return Number.isSafeInteger(parsed) ? parsed : 0;
 }
 
+function midtransResponseValue(
+  payload: Record<string, unknown>,
+  key: string,
+): unknown {
+  const direct = payload[key];
+  if (direct !== undefined && direct !== null && String(direct).trim()) {
+    return direct;
+  }
+  const transactionDetails = payload.transaction_details;
+  if (
+    !transactionDetails ||
+    typeof transactionDetails !== "object" ||
+    Array.isArray(transactionDetails)
+  )
+    return undefined;
+  return (transactionDetails as Record<string, unknown>)[key];
+}
+
 function midtransText(
   payload: Record<string, unknown>,
   keys: string[],
@@ -307,8 +325,9 @@ export class MidtransPaymentProvider implements PaymentProvider {
           `Gambar QRIS Midtrans gagal dimuat (HTTP ${response.status}).`,
         );
       }
-      const contentType = (String(response.headers.get("content-type") || "")
-        .split(";")[0] || "")
+      const contentType = (
+        String(response.headers.get("content-type") || "").split(";")[0] || ""
+      )
         .trim()
         .toLowerCase();
       if (contentType !== "image/png") {
@@ -337,57 +356,91 @@ export class MidtransPaymentProvider implements PaymentProvider {
   async createPayment(
     input: CreateProviderPaymentInput,
   ): Promise<CreateProviderPaymentResult> {
-    const payload = await this.request(
-      `${this.apiOrigin}/v2/charge`,
-      {
-        method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify({
-          payment_type: "qris",
-          qris: {
-            // Core API requires the QRIS acquirer to be selected. The default
-            // is GoPay, which is also the documented QRIS Core API example.
-            acquirer: this.qrisAcquirer,
+    const payload = await this.request(`${this.apiOrigin}/v2/charge`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({
+        payment_type: "qris",
+        qris: {
+          // Core API requires the QRIS acquirer to be selected. The default
+          // is GoPay, which is also the documented QRIS Core API example.
+          acquirer: this.qrisAcquirer,
+        },
+        transaction_details: {
+          order_id: input.invoiceNumber,
+          gross_amount: input.amountIdr,
+        },
+        item_details: [
+          {
+            id: input.invoiceNumber,
+            price: input.amountIdr,
+            quantity: 1,
+            name: input.description.slice(0, 50),
           },
-          transaction_details: {
-            order_id: input.invoiceNumber,
-            gross_amount: input.amountIdr,
-          },
-          item_details: [
-            {
-              id: input.invoiceNumber,
-              price: input.amountIdr,
-              quantity: 1,
-              name: input.description.slice(0, 50),
-            },
-          ],
-          customer_details: {
-            first_name: input.customer.displayName.slice(0, 50),
-            email: input.customer.email,
-          },
-        }),
-      },
+        ],
+        customer_details: {
+          first_name: input.customer.displayName.slice(0, 50),
+          email: input.customer.email,
+        },
+      }),
+    });
+    const responseOrderId = String(
+      midtransResponseValue(payload, "order_id") || "",
+    ).trim();
+    const responseAmountIdr = midtransAmount(
+      midtransResponseValue(payload, "gross_amount"),
     );
-    const responseOrderId = String(payload.order_id || "").trim();
-    const responseAmountIdr = midtransAmount(payload.gross_amount);
-    const responsePaymentType = String(payload.payment_type || "")
+    const responsePaymentType = String(
+      midtransResponseValue(payload, "payment_type") || "",
+    )
       .trim()
       .toLowerCase();
-    if (
-      responseOrderId !== input.invoiceNumber ||
-      responseAmountIdr !== input.amountIdr ||
-      (responsePaymentType && responsePaymentType !== "qris")
-    ) {
+    const transactionStatus = String(
+      midtransResponseValue(payload, "transaction_status") || "pending",
+    )
+      .trim()
+      .toLowerCase();
+    const validationErrors: string[] = [];
+    if (responseOrderId !== input.invoiceNumber) {
+      validationErrors.push("MIDTRANS_ORDER_ID_MISMATCH");
+    }
+    if (responseAmountIdr !== input.amountIdr) {
+      validationErrors.push("MIDTRANS_AMOUNT_MISMATCH");
+    }
+    if (responsePaymentType !== "qris") {
+      validationErrors.push("MIDTRANS_PAYMENT_TYPE_MISMATCH");
+    }
+    if (!["pending", "capture", "settlement"].includes(transactionStatus)) {
+      validationErrors.push("MIDTRANS_TRANSACTION_STATUS_INVALID");
+    }
+    if (validationErrors.length > 0) {
       throw new ServiceUnavailableException(
-        "Respons Midtrans tidak cocok dengan invoice QRIS yang dibuat.",
+        `Validasi respons QRIS Midtrans gagal: ${validationErrors.join(", ")}.`,
       );
     }
     const actions = Array.isArray(payload.actions)
       ? (payload.actions as Array<Record<string, unknown>>)
       : [];
+    const actionNames = actions
+      .map((item) =>
+        String(item.name || "")
+          .trim()
+          .toLowerCase(),
+      )
+      .filter(Boolean);
     const qrAction =
-      actions.find((item) => item.name === "generate-qr-code-v2") ||
-      actions.find((item) => item.name === "generate-qr-code");
+      actions.find(
+        (item) =>
+          String(item.name || "")
+            .trim()
+            .toLowerCase() === "generate-qr-code-v2",
+      ) ||
+      actions.find(
+        (item) =>
+          String(item.name || "")
+            .trim()
+            .toLowerCase() === "generate-qr-code",
+      );
     const qrImageUrl = String(qrAction?.url || "").trim();
     const qrString = midtransText(payload, [
       "qr_string",
@@ -396,10 +449,14 @@ export class MidtransPaymentProvider implements PaymentProvider {
       "qrContent",
     ]);
     if (!qrImageUrl && !qrString) {
-      const statusCode = String(payload.status_code || payload.__httpStatus || "");
+      const statusCode = String(
+        payload.status_code || payload.__httpStatus || "",
+      );
       const message = midtransMessage(payload);
+      const actionSummary =
+        actionNames.length > 0 ? actionNames.join(", ") : "none";
       throw new ServiceUnavailableException(
-        `Midtrans belum membuat QRIS${statusCode ? ` (status ${statusCode})` : ""}${message ? `: ${message}` : ". Pastikan channel QRIS Production aktif dan credential sudah benar."}`,
+        `Midtrans belum membuat QRIS [MIDTRANS_QR_ACTION_MISSING]${statusCode ? ` (status ${statusCode})` : ""}; actions=${actionSummary}${message ? `: ${message}` : ". Pastikan channel QRIS Production aktif dan credential sudah benar."}`,
       );
     }
     let qrImageBase64: string;
@@ -634,9 +691,7 @@ export class MidtransPaymentProvider implements PaymentProvider {
 export class PaymentProviderService {
   private readonly sandbox: SandboxPaymentProvider;
 
-  constructor(
-    private readonly configuration: PaymentConfigurationService,
-  ) {
+  constructor(private readonly configuration: PaymentConfigurationService) {
     const secret = String(
       process.env.PAYMENT_SANDBOX_WEBHOOK_SECRET || LOCAL_SANDBOX_SECRET,
     );

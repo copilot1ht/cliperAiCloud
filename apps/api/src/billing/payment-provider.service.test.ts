@@ -93,10 +93,13 @@ describe("MidtransPaymentProvider", () => {
         ),
       )
       .mockResolvedValueOnce(
-        new Response(Buffer.from("valid-png-image-placeholder-data".repeat(3)), {
-          status: 200,
-          headers: { "content-type": "image/png" },
-        }),
+        new Response(
+          Buffer.from("valid-png-image-placeholder-data".repeat(3)),
+          {
+            status: 200,
+            headers: { "content-type": "image/png" },
+          },
+        ),
       );
     vi.stubGlobal("fetch", fetchMock);
     const result = await provider.createPayment({
@@ -115,9 +118,7 @@ describe("MidtransPaymentProvider", () => {
     const calls = fetchMock.mock.calls as unknown as Array<
       [string, RequestInit]
     >;
-    expect(calls[0]?.[0]).toBe(
-      "https://api.sandbox.midtrans.com/v2/charge",
-    );
+    expect(calls[0]?.[0]).toBe("https://api.sandbox.midtrans.com/v2/charge");
     const request = calls[0]?.[1] || {};
     expect(
       String(
@@ -128,6 +129,63 @@ describe("MidtransPaymentProvider", () => {
     expect(String(request.body)).toContain("25000");
     const qrRequest = calls[1]?.[1] || {};
     expect(qrRequest.redirect).toBe("error");
+  });
+
+  it("accepts equivalent pending QRIS fields and creates a scannable data URL", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              transaction_details: {
+                order_id: "CLP-20260715-NORMALIZED",
+                gross_amount: "17000.00",
+              },
+              payment_type: "QRIS",
+              transaction_status: "pending",
+              qr_string: "00020101021226610014COM.MIDTRANS.WWW",
+            }),
+            { status: 201 },
+          ),
+      ),
+    );
+    const result = await provider.createPayment({
+      invoiceNumber: "CLP-20260715-NORMALIZED",
+      amountIdr: 17_000,
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      customer: { id: "u1", email: "user@example.com", displayName: "User" },
+      description: "Top-up",
+    });
+    expect(result.qrImageBase64).toMatch(/^data:image\/png;base64,/);
+  });
+
+  it("reports exact safe codes for mismatched QRIS invoice fields", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              order_id: "CLP-20260715-OTHER",
+              gross_amount: "17001.00",
+              payment_type: "qris",
+              transaction_status: "pending",
+              qr_string: "00020101021226610014COM.MIDTRANS.WWW",
+            }),
+            { status: 201 },
+          ),
+      ),
+    );
+    await expect(
+      provider.createPayment({
+        invoiceNumber: "CLP-20260715-MISMATCH",
+        amountIdr: 17_000,
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+        customer: { id: "u1", email: "user@example.com", displayName: "User" },
+        description: "Top-up",
+      }),
+    ).rejects.toThrow("MIDTRANS_ORDER_ID_MISMATCH, MIDTRANS_AMOUNT_MISMATCH");
   });
 
   it("rejects a QR response that is not a PNG", async () => {
@@ -174,17 +232,18 @@ describe("MidtransPaymentProvider", () => {
   });
 
   it("always requests QRIS even when no payment selector is sent", async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          transaction_id: "trx-qris-2",
-          order_id: "CLP-20260715-QRIS",
-          gross_amount: "25000.00",
-          payment_type: "qris",
-          qr_string: "00020101021226610014COM.MIDTRANS.WWW",
-        }),
-        { status: 201 },
-      ),
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            transaction_id: "trx-qris-2",
+            order_id: "CLP-20260715-QRIS",
+            gross_amount: "25000.00",
+            payment_type: "qris",
+            qr_string: "00020101021226610014COM.MIDTRANS.WWW",
+          }),
+          { status: 201 },
+        ),
     );
     vi.stubGlobal("fetch", fetchMock);
     await provider.createPayment({
