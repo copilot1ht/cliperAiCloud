@@ -209,20 +209,21 @@ export class PaymentConfigurationService {
     | { source: Exclude<PaymentConfigurationSource, "not-configured">; credentials: MidtransCredentials }
     | undefined
   > {
-    const stored = await this.storedCredentials();
-    if (stored?.credentials) {
-      return { source: "admin-settings", credentials: stored.credentials };
+    const active = await this.resolveActive();
+    if (
+      active.provider !== MIDTRANS_PROVIDER ||
+      !active.enabled ||
+      !active.midtrans ||
+      active.source === "not-configured"
+    ) {
+      return undefined;
     }
-    const environment = this.environmentCredentials();
-    return environment
-      ? { source: "railway-env", credentials: environment }
-      : undefined;
+    return { source: active.source, credentials: active.midtrans };
   }
 
   async status() {
     const active = await this.resolveActive();
-    const stored = await this.storedCredentials();
-    const credentials = active.midtrans || stored?.credentials || this.environmentCredentials();
+    const credentials = active.provider === MIDTRANS_PROVIDER ? active.midtrans : undefined;
     const source = active.provider === MIDTRANS_PROVIDER ? active.source : "not-configured";
     const sourceLabel =
       source === "admin-settings"
