@@ -4,6 +4,7 @@ import {
   configuredTopupMinimumUsd,
   configuredTopupUsdToIdrDisplayRate,
   detectMidtransDashboardTestNotification,
+  paymentEnvironment,
   PaymentService,
   providerInvoiceExpiry,
   transientQrDataUrl,
@@ -71,6 +72,38 @@ describe("non-financial payment webhooks", () => {
     expect(providerInvoiceExpiry("midtrans", now).getTime() - now).toBe(
       15 * 60_000,
     );
+  });
+
+  it("keeps test and sandbox transactions out of production payment reporting", () => {
+    expect(paymentEnvironment({ environment: "test" })).toBe("test");
+    expect(paymentEnvironment({ provider: { mode: "sandbox" } })).toBe("test");
+    expect(paymentEnvironment({ environment: "live" })).toBe("production");
+  });
+
+  it("refuses to simulate an invoice that was not created in test mode", async () => {
+    const database = {
+      configured: () => true,
+      client: () => ({
+        invoice: {
+          findFirst: vi.fn().mockResolvedValue({
+            metadata: { environment: "production" },
+            status: "OPEN",
+            payment: { provider: "xendit", externalId: "pr-live" },
+          }),
+        },
+      }),
+    };
+    const providers = { simulateXenditTestPayment: vi.fn() };
+    const service = new PaymentService(
+      database as never,
+      providers as never,
+      {} as never,
+    );
+
+    await expect(
+      service.simulateXenditTestInvoice("admin-user", "CLP-LIVE"),
+    ).rejects.toThrow("Xendit test mode");
+    expect(providers.simulateXenditTestPayment).not.toHaveBeenCalled();
   });
 
   it("acknowledges a verified Xendit informational callback without provider or wallet work", async () => {

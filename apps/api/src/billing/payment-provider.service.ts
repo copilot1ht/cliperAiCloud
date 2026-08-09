@@ -1035,12 +1035,14 @@ export class XenditPaymentProvider implements PaymentProvider {
   readonly code = XENDIT_CODE;
   private readonly secretKey: string;
   private readonly webhookToken: string;
+  private readonly mode: "test" | "live";
   private readonly apiVersion: string;
   private readonly apiOrigin = "https://api.xendit.co";
 
   constructor(credentials: XenditCredentials) {
     this.secretKey = String(credentials.secretKey || "").trim();
     this.webhookToken = String(credentials.webhookToken || "").trim();
+    this.mode = credentials.mode;
     this.apiVersion = String(credentials.apiVersion || "2024-11-11").trim();
     if (this.secretKey.length < 20) {
       throw new ServiceUnavailableException(
@@ -1167,6 +1169,7 @@ export class XenditPaymentProvider implements PaymentProvider {
         width: 320,
       }),
       safeMetadata: {
+        environment: this.mode,
         paymentRequestId,
         channel: channelCode,
         status: String(payload.status || "").trim().toUpperCase() || null,
@@ -1266,6 +1269,36 @@ export class XenditPaymentProvider implements PaymentProvider {
     };
   }
 
+  async simulatePayment(
+    externalId: string,
+    amountIdr: number,
+  ): Promise<{ ok: true; status: string }> {
+    if (this.mode !== "test") {
+      throw new BadRequestException(
+        "Simulate Success hanya tersedia ketika XENDIT_MODE=test.",
+      );
+    }
+    const paymentRequestId = String(externalId || "").trim();
+    if (!paymentRequestId || !Number.isSafeInteger(amountIdr) || amountIdr <= 0) {
+      throw new BadRequestException("Invoice test Xendit tidak valid.");
+    }
+    const { payload } = await this.request(
+      `${this.apiOrigin}/v3/payment_requests/${encodeURIComponent(paymentRequestId)}/simulate`,
+      {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ amount: amountIdr }),
+      },
+    );
+    const status = String(payload.status || "").trim().toUpperCase();
+    if (status && status !== "PENDING") {
+      throw new ServiceUnavailableException(
+        "Xendit menolak simulasi pembayaran test.",
+      );
+    }
+    return { ok: true, status: status || "PENDING" };
+  }
+
   async testConnection(): Promise<{
     ok: true;
     latencyMs: number;
@@ -1288,6 +1321,14 @@ export class XenditPaymentProvider implements PaymentProvider {
 @Injectable()
 export class PaymentProviderService {
   private readonly sandbox: SandboxPaymentProvider;
+  private lastConnectionCheck:
+    | {
+        provider: string;
+        checkedAt: string;
+        ok: boolean;
+        latencyMs?: number;
+      }
+    | undefined;
 
   constructor(private readonly configuration: PaymentConfigurationService) {
     const secret = String(
@@ -1398,19 +1439,87 @@ export class PaymentProviderService {
 
   async testActiveConnection() {
     const active = await this.configuration.resolveActive();
-    if (active.provider === XENDIT_CODE) {
-      if (!active.enabled || !active.xendit) {
-        throw new ServiceUnavailableException("Xendit belum dikonfigurasi.");
-      }
-      return {
-        ...(await this.xendit(active.xendit).testConnection()),
-        provider: XENDIT_CODE,
-        environment: active.xendit.mode,
-        source: "Railway ENV",
+    try {
+      let result: {
+        ok: true;
+        latencyMs: number;
+        verification: "credentials-accepted";
+        provider: string;
+        environment: string;
+        source: string;
       };
+      if (active.provider === XENDIT_CODE) {
+        if (!active.enabled || !active.xendit) {
+          throw new ServiceUnavailableException("Xendit belum dikonfigurasi.");
+        }
+        result = {
+          ...(await this.xendit(active.xendit).testConnection()),
+          provider: XENDIT_CODE,
+          environment: active.xendit.mode,
+          source: "Railway ENV",
+        };
+      } else {
+        result = {
+          ...(await this.testMidtransConnection()),
+          provider: MIDTRANS_CODE,
+        };
+      }
+      this.lastConnectionCheck = {
+        provider: result.provider,
+        checkedAt: new Date().toISOString(),
+        ok: true,
+        latencyMs: result.latencyMs,
+      };
+      return result;
+    } catch (error) {
+      this.lastConnectionCheck = {
+        provider: active.provider,
+        checkedAt: new Date().toISOString(),
+        ok: false,
+      };
+      throw error;
     }
-    const result = await this.testMidtransConnection();
-    return { ...result, provider: MIDTRANS_CODE };
+  }
+
+  async activeConnectionStatus() {
+    const active = await this.configuration.resolveActive();
+    const current =
+      this.lastConnectionCheck?.provider === active.provider
+        ? this.lastConnectionCheck
+        : undefined;
+    return {
+      provider: active.provider,
+      state: current ? (current.ok ? "healthy" : "failed") : "not-tested",
+      checkedAt: current?.checkedAt || null,
+      latencyMs: current?.latencyMs || null,
+    };
+  }
+
+  async createXenditTestProvider(): Promise<XenditPaymentProvider> {
+    const active = await this.configuration.resolveActive();
+    if (
+      active.provider !== XENDIT_CODE ||
+      !active.enabled ||
+      !active.xendit
+    ) {
+      throw new BadRequestException(
+        "Create Test QRIS memerlukan Xendit sebagai provider aktif.",
+      );
+    }
+    if (active.xendit.mode !== "test") {
+      throw new BadRequestException(
+        "Create Test QRIS hanya tersedia ketika XENDIT_MODE=test.",
+      );
+    }
+    return this.xendit(active.xendit);
+  }
+
+  async simulateXenditTestPayment(
+    externalId: string,
+    amountIdr: number,
+  ) {
+    const provider = await this.createXenditTestProvider();
+    return provider.simulatePayment(externalId, amountIdr);
   }
 
   sandboxEvent(event: PaymentWebhookEvent): {

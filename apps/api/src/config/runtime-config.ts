@@ -207,6 +207,11 @@ export function validateRuntimeConfig(
   if (!["sandbox", "midtrans", "xendit"].includes(paymentProvider)) {
     errors.push("PAYMENT_PRIMARY_PROVIDER/PAYMENT_PROVIDER harus bernilai xendit, midtrans, atau sandbox.");
   }
+  if (String(env.PAYMENT_FALLBACK_ENABLED || "false").toLowerCase() === "true") {
+    errors.push(
+      "PAYMENT_FALLBACK_ENABLED tidak didukung. Gunakan satu provider payment aktif agar invoice, webhook, dan ledger tetap konsisten.",
+    );
+  }
   const sandboxAllowed =
     String(env.ALLOW_SANDBOX_PAYMENTS || "false").toLowerCase() === "true";
   if (production && paymentProvider === "sandbox" && !sandboxAllowed) {

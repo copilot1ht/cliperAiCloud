@@ -685,4 +685,48 @@ describe("XenditPaymentProvider", () => {
       provider.getTransactionStatus("pr-00000000-0000-0000-0000-000000000003", 17_000),
     ).resolves.toMatchObject({ invoiceNumber: "CLP-20260809-SYNC", status: "paid" });
   });
+
+  it("uses Xendit's test-only simulator without marking an invoice paid locally", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ status: "PENDING" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      provider.simulatePayment(
+        "pr-00000000-0000-0000-0000-000000000003",
+        17_000,
+      ),
+    ).resolves.toEqual({ ok: true, status: "PENDING" });
+
+    const firstCall = fetchMock.mock.calls[0];
+    expect(firstCall).toBeDefined();
+    const [url, request] = firstCall as unknown as [string, RequestInit];
+    expect(url).toBe(
+      "https://api.xendit.co/v3/payment_requests/pr-00000000-0000-0000-0000-000000000003/simulate",
+    );
+    expect(request.method).toBe("POST");
+    expect(request.body).toBe(JSON.stringify({ amount: 17_000 }));
+  });
+
+  it("does not expose the simulator when the provider runs in live mode", async () => {
+    const liveProvider = new XenditPaymentProvider({
+      secretKey,
+      webhookToken: callbackToken,
+      mode: "live",
+      apiVersion: "2024-11-11",
+      notificationUrl: "https://api.example.com/api/payments/webhook/xendit",
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      liveProvider.simulatePayment(
+        "pr-00000000-0000-0000-0000-000000000003",
+        17_000,
+      ),
+    ).rejects.toThrow("XENDIT_MODE=test");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

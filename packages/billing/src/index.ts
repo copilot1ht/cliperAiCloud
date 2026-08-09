@@ -330,6 +330,7 @@ export interface PaymentProvider {
   createPayment(input: CreateProviderPaymentInput): Promise<CreateProviderPaymentResult>;
   verifyWebhook(rawBody: Buffer, headers: Record<string, string | string[] | undefined>): VerifiedPaymentWebhook;
   getTransactionStatus?(externalId: string, expectedAmountIdr?: number): Promise<PaymentWebhookEvent>;
+  simulatePayment?(externalId: string, amountIdr: number): Promise<{ ok: true; status: string }>;
   refund?(externalId: string, amountIdr: number): Promise<{ ok: true; reference: string }>;
 }
 

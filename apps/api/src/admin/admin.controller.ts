@@ -94,6 +94,7 @@ export class AdminController {
     const desktopSessionSummary = await this.desktopSessions.summary();
     const memory = process.memoryUsage();
     const paymentSettings = await this.paymentConfiguration.status();
+    const paymentConnection = await this.paymentProviders.activeConnectionStatus();
     const paymentConfigured = paymentSettings.enabled && paymentSettings.configured;
     const payment = {
       provider: paymentSettings.provider,
@@ -106,7 +107,15 @@ export class AdminController {
       source: paymentSettings.sourceLabel,
       webhookUrl: paymentSettings.notificationUrl || "Not configured",
       finishRedirectUrl: paymentSettings.finishRedirectUrl || "Not configured",
-      apiReachability: paymentConfigured ? "Configured" : "Not configured",
+      apiReachability: !paymentConfigured
+        ? "Not configured"
+        : paymentConnection.state === "healthy"
+          ? `Reachable (${paymentConnection.latencyMs} ms)`
+          : paymentConnection.state === "failed"
+            ? "Last connection test failed"
+            : "Not tested since API start",
+      connectionState: paymentConnection.state,
+      connectionCheckedAt: paymentConnection.checkedAt,
       lastWebhookAt: null as string | null,
       lastSuccessfulPaymentAt: null as string | null,
       failedWebhookCount: 0,
@@ -143,7 +152,18 @@ export class AdminController {
         { code: "redis", label: "Redis", status: dependencies.redis ? "healthy" : report.infrastructure.redis ? "offline" : "not-configured", detail: dependencies.redis ? "TCP connection reachable" : "Distributed cache/rate limit is not active" },
         { code: "providers", label: "AI Providers", status: providers.some((item) => item.status === "healthy") ? "healthy" : "not-configured", detail: `${providers.filter((item) => item.status === "healthy").length}/${providers.length} provider healthy` },
         { code: "queue", label: "Queue", status: "not-configured", detail: "BullMQ worker has not been deployed" },
-        { code: "payment", label: `${payment.label} payment`, status: paymentConfigured ? "healthy" : "not-configured", detail: `${payment.mode} · ${payment.configuration} · ${payment.source}` },
+        {
+          code: "payment",
+          label: `${payment.label} payment`,
+          status: !paymentConfigured
+            ? "not-configured"
+            : paymentConnection.state === "healthy"
+              ? "healthy"
+              : paymentConnection.state === "failed"
+                ? "offline"
+                : "not-configured",
+          detail: `${payment.mode} · ${payment.configuration} · ${payment.apiReachability}`,
+        },
         { code: "license", label: "Desktop Sessions", status: "healthy", detail: `${desktopSessionSummary.active} active signed sessions` },
       ],
       payment,
@@ -396,6 +416,39 @@ export class AdminController {
       this.paymentProviders.testActiveConnection(),
     ]);
     return { configuration, connection };
+  }
+
+  @Post("settings/payment/test-qris")
+  async createXenditTestQris(@Req() request: AdminAuthenticatedRequest) {
+    const userId = request.cliperAdminSession?.userId || "";
+    const user = await this.auth.userById(userId);
+    return this.paymentsService.createXenditTestTopup({
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+    });
+  }
+
+  @Post("settings/payment/test-qris/:number/simulate")
+  simulateXenditTestQris(
+    @Param("number") number: string,
+    @Req() request: AdminAuthenticatedRequest,
+  ) {
+    return this.paymentsService.simulateXenditTestInvoice(
+      request.cliperAdminSession?.userId || "",
+      number,
+    );
+  }
+
+  @Post("settings/payment/test-qris/:number/sync")
+  syncXenditTestQris(
+    @Param("number") number: string,
+    @Req() request: AdminAuthenticatedRequest,
+  ) {
+    return this.paymentsService.syncInvoiceStatus(
+      request.cliperAdminSession?.userId || "",
+      number,
+    );
   }
 
   @Post("payments/:id/refund")

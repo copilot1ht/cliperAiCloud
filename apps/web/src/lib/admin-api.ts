@@ -85,6 +85,7 @@ export interface PaymentRecord {
   amountIdr: number;
   method: string;
   status: "paid" | "pending" | "failed" | "expired" | "refunded";
+  environment: "test" | "production";
   createdAt: string;
   updatedAt: string;
 }

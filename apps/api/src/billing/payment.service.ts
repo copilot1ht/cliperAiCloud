@@ -214,6 +214,19 @@ interface MidtransDashboardTestNotification {
   signaturePresent: boolean;
 }
 
+export function paymentEnvironment(value: unknown): "test" | "production" {
+  const metadata = metadataRecord(value);
+  const provider = metadataRecord(metadata.provider);
+  const configured = String(
+    metadata.environment || provider.environment || provider.mode || "",
+  )
+    .trim()
+    .toLowerCase();
+  return configured === "test" || configured === "sandbox"
+    ? "test"
+    : "production";
+}
+
 export function providerInvoiceExpiry(
   providerCode: string,
   now = Date.now(),
@@ -295,6 +308,7 @@ export class PaymentService {
       customer: identity,
       description: `Cliper AI Cloud ${plan.name} - 30 hari`,
     });
+    const environment = paymentEnvironment(providerPayment.safeMetadata);
 
     const invoice = await this.serializable(async (tx) => {
       await tx.user.upsert({
@@ -340,6 +354,7 @@ export class PaymentService {
           metadata: jsonInput({
             provider: providerPayment.safeMetadata || {},
             invoiceNumber: number,
+            environment,
           }),
         },
       });
@@ -363,6 +378,7 @@ export class PaymentService {
             credits: plan.credits,
             durationDays: plan.durationDays,
             deviceLimit: plan.deviceLimit,
+            environment,
           },
           items: {
             create: [
@@ -416,6 +432,7 @@ export class PaymentService {
       customer: identity,
       description: `Cliper AI Cloud top-up ${amountIdr.toLocaleString("id-ID")} IDR`,
     });
+    const environment = paymentEnvironment(providerPayment.safeMetadata);
     const invoice = await this.serializable(async (tx) => {
       await tx.user.upsert({
         where: { id: identity.id },
@@ -444,6 +461,7 @@ export class PaymentService {
             kind: "topup",
             paymentMethod,
             qrImageUrl: providerPayment.qrImageUrl || null,
+            environment,
           }),
         },
       });
@@ -471,6 +489,7 @@ export class PaymentService {
             usdEquivalent,
             paymentMethod,
             qrImageUrl: providerPayment.qrImageUrl || null,
+            environment,
           },
           items: {
             create: [
@@ -488,6 +507,70 @@ export class PaymentService {
       });
     });
     return await this.safeInvoice(invoice);
+  }
+
+  async createXenditTestTopup(identity: PaymentIdentity) {
+    await this.providers.createXenditTestProvider();
+    return this.createTopupInvoice(identity, configuredTopupMinimumIdr());
+  }
+
+  async simulateXenditTestInvoice(userId: string, number: string) {
+    if (this.localReadMode()) {
+      throw new ServiceUnavailableException(
+        "Simulasi Xendit memerlukan PostgreSQL aktif.",
+      );
+    }
+    const invoice = await this.database.client().invoice.findFirst({
+      where: { userId, number },
+      include: { payment: true, items: true },
+    });
+    if (!invoice?.payment) {
+      throw new NotFoundException("Invoice test tidak ditemukan.");
+    }
+    if (invoice.payment.provider !== "xendit") {
+      throw new BadRequestException("Invoice ini bukan QRIS Xendit.");
+    }
+    if (paymentEnvironment(invoice.metadata) !== "test") {
+      throw new BadRequestException(
+        "Simulasi hanya boleh digunakan untuk invoice yang dibuat di Xendit test mode.",
+      );
+    }
+    if (invoice.status !== InvoiceStatus.OPEN) {
+      throw new ConflictException("Hanya invoice test yang masih OPEN dapat disimulasikan.");
+    }
+    if (invoice.expiresAt && invoice.expiresAt.getTime() <= Date.now()) {
+      throw new ConflictException("Invoice test sudah expired.");
+    }
+    const simulation = await this.providers.simulateXenditTestPayment(
+      invoice.payment.externalId,
+      invoice.totalIdr,
+    );
+    try {
+      await this.database.client().auditLog.create({
+        data: {
+          actorId: userId,
+          action: "payment.test_simulation_requested",
+          entityType: "invoice",
+          entityId: invoice.id,
+          metadata: {
+            provider: "xendit",
+            invoice: invoice.number,
+            amountIdr: invoice.totalIdr,
+          },
+        },
+      });
+    } catch {
+      this.logger.warn(
+        JSON.stringify({
+          event: "XENDIT_TEST_SIMULATION_AUDIT_UNAVAILABLE",
+          invoice: invoice.number.slice(-8),
+        }),
+      );
+    }
+    return {
+      simulation,
+      invoice: await this.safeInvoice(invoice),
+    };
   }
 
   async processWebhook(
@@ -767,8 +850,16 @@ export class PaymentService {
         },
       }),
     ]);
-    const paid = payments.filter((item) => item.status === PaymentStatus.PAID);
-    const refunded = payments.filter(
+    const productionPayments = payments.filter(
+      (item) => paymentEnvironment(item.metadata) === "production",
+    );
+    const testPayments = payments.filter(
+      (item) => paymentEnvironment(item.metadata) === "test",
+    );
+    const paid = productionPayments.filter(
+      (item) => item.status === PaymentStatus.PAID,
+    );
+    const refunded = productionPayments.filter(
       (item) => item.status === PaymentStatus.REFUNDED,
     );
     const grossIdr = [...paid, ...refunded].reduce(
@@ -792,10 +883,14 @@ export class PaymentService {
         failedCount: payments.filter(
           (item) => item.status === PaymentStatus.FAILED,
         ).length,
-        expiredCount: payments.filter(
-          (item) => item.status === PaymentStatus.EXPIRED,
-        ).length,
-        activeSubscriptions,
+          expiredCount: payments.filter(
+            (item) => item.status === PaymentStatus.EXPIRED,
+          ).length,
+          activeSubscriptions,
+          testPaymentCount: testPayments.length,
+          testPaidCount: testPayments.filter(
+            (item) => item.status === PaymentStatus.PAID,
+          ).length,
       },
       payments: payments.map((item) => ({
         id: item.id,
@@ -804,6 +899,7 @@ export class PaymentService {
         amountIdr: item.amountIdr,
         method: item.provider,
         status: item.status.toLowerCase(),
+        environment: paymentEnvironment(item.metadata),
         createdAt: item.createdAt.toISOString(),
         updatedAt: item.updatedAt.toISOString(),
       })),
@@ -1547,6 +1643,7 @@ export class PaymentService {
       credits: Number(metadata.credits || 0),
       paymentMethod: String(metadata.paymentMethod || "qris"),
       kind: String(metadata.kind || "plan"),
+      environment: paymentEnvironment(metadata),
       payment: invoice.payment
         ? {
             id: invoice.payment.id,

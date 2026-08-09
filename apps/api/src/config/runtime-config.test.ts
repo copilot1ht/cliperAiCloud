@@ -98,6 +98,20 @@ describe("validateRuntimeConfig", () => {
     expect(report.errors.join(" ")).toContain("MIDTRANS_IS_PRODUCTION");
   });
 
+  it("rejects automatic payment fallback so every invoice has one provider", () => {
+    const report = validateRuntimeConfig({
+      ...safeProduction,
+      PAYMENT_PRIMARY_PROVIDER: "xendit",
+      XENDIT_ENABLED: "true",
+      XENDIT_MODE: "test",
+      XENDIT_SECRET_KEY: "xendit-test-secret-key-with-at-least-32-characters",
+      XENDIT_WEBHOOK_TOKEN: "xendit-test-webhook-token-with-at-least-32-characters",
+      PAYMENT_FALLBACK_ENABLED: "true",
+    });
+    expect(report.ready).toBe(false);
+    expect(report.errors.join(" ")).toContain("PAYMENT_FALLBACK_ENABLED");
+  });
+
   it("reports an unconfigured dependency as unreachable", async () => {
     await expect(checkTcpUrl(undefined, 5432)).resolves.toBe(false);
   });

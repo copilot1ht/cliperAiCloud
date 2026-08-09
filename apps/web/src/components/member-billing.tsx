@@ -349,7 +349,7 @@ export function MemberBilling({
               <small>
                 {selected.provider === "sandbox"
                   ? "Sandbox payment code"
-                  : "Midtrans checkout"}
+                  : "QRIS checkout"}
               </small>
               {selected.qrImageBase64 ? (
                 <div className="qris-image-frame">
