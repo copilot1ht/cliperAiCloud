@@ -27,6 +27,19 @@ function secretLength(value?: string): number {
   return String(value || "").trim().length;
 }
 
+function looksLikePlaceholderSecret(value?: string): boolean {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes("change-me") ||
+    normalized.includes("replace-me") ||
+    normalized.includes("placeholder") ||
+    normalized.includes("isi_random") ||
+    normalized.includes("your-secret") ||
+    /^(.)\1{31,}$/.test(normalized)
+  );
+}
+
 export async function checkTcpUrl(
   value: string | undefined,
   fallbackPort: number,
@@ -86,13 +99,25 @@ export function validateRuntimeConfig(
     ["PROVIDER_ENCRYPTION_KEY", 32],
   ];
   for (const [name, minimum] of requiredSecrets) {
-    if (secretLength(env[name]) < minimum) {
+    const value = env[name];
+    if (secretLength(value) < minimum) {
       const message = `${name} wajib memiliki minimal ${minimum} karakter.`;
       production ? errors.push(message) : warnings.push(message);
+    } else if (production && looksLikePlaceholderSecret(value)) {
+      errors.push(`${name} production tidak boleh memakai nilai contoh atau placeholder.`);
     }
   }
   if (env.JWT_SECRET && env.JWT_SECRET === env.REFRESH_TOKEN_SECRET) {
     errors.push("JWT_SECRET dan REFRESH_TOKEN_SECRET harus berbeda.");
+  }
+  const paymentConfigEncryptionKey = String(env.PAYMENT_CONFIG_ENCRYPTION_KEY || "").trim();
+  if (paymentConfigEncryptionKey) {
+    if (secretLength(paymentConfigEncryptionKey) < 32) {
+      const message = "PAYMENT_CONFIG_ENCRYPTION_KEY wajib minimal 32 karakter bila disetel.";
+      production ? errors.push(message) : warnings.push(message);
+    } else if (production && looksLikePlaceholderSecret(paymentConfigEncryptionKey)) {
+      errors.push("PAYMENT_CONFIG_ENCRYPTION_KEY production tidak boleh memakai nilai contoh atau placeholder.");
+    }
   }
   if (production && env.CLIPER_DEV_API_KEY) {
     errors.push(
@@ -196,13 +221,18 @@ export function validateRuntimeConfig(
       "PAYMENT_SANDBOX_WEBHOOK_SECRET wajib minimal 32 karakter ketika sandbox diizinkan pada production.",
     );
   }
-  if (
-    paymentProvider === "midtrans" &&
-    secretLength(env.MIDTRANS_SERVER_KEY) < 20
-  ) {
-    const message =
-      "MIDTRANS_SERVER_KEY wajib dikonfigurasi ketika PAYMENT_PROVIDER=midtrans.";
-    production ? errors.push(message) : warnings.push(message);
+  if (paymentProvider === "midtrans") {
+    const requiredMidtransFields: Array<[string, number]> = [
+      ["MIDTRANS_MERCHANT_ID", 1],
+      ["MIDTRANS_CLIENT_KEY", 12],
+      ["MIDTRANS_SERVER_KEY", 20],
+    ];
+    for (const [name, minimum] of requiredMidtransFields) {
+      if (secretLength(env[name]) < minimum) {
+        const message = `${name} wajib dikonfigurasi ketika PAYMENT_PROVIDER=midtrans.`;
+        production ? errors.push(message) : warnings.push(message);
+      }
+    }
   }
   if (paymentProvider === "midtrans" && !env.WEB_ORIGIN) {
     warnings.push(
@@ -211,16 +241,21 @@ export function validateRuntimeConfig(
   }
   const midtransProduction =
     String(env.MIDTRANS_IS_PRODUCTION || "false").toLowerCase() === "true";
+  const midtransClientKey = String(env.MIDTRANS_CLIENT_KEY || "").trim();
   const midtransServerKey = String(env.MIDTRANS_SERVER_KEY || "").trim();
   if (paymentProvider === "midtrans" && !production && midtransProduction) {
     errors.push(
       "MIDTRANS_IS_PRODUCTION tidak boleh true di localhost. Gunakan Sandbox Access Key untuk pengujian lokal.",
     );
   }
+  if (production && paymentProvider === "midtrans" && !midtransProduction) {
+    errors.push("PAYMENT_PROVIDER=midtrans di production membutuhkan MIDTRANS_IS_PRODUCTION=true.");
+  }
   if (
     paymentProvider === "midtrans" &&
     midtransProduction &&
-    /^SB-Mid-server-/i.test(midtransServerKey)
+    midtransServerKey &&
+    !/^Mid-server-/i.test(midtransServerKey)
   ) {
     errors.push(
       "MIDTRANS_IS_PRODUCTION=true membutuhkan Server Key Production, bukan Sandbox.",
@@ -229,11 +264,35 @@ export function validateRuntimeConfig(
   if (
     paymentProvider === "midtrans" &&
     !midtransProduction &&
-    /^Mid-server-/i.test(midtransServerKey)
+    midtransServerKey &&
+    !/^SB-Mid-server-/i.test(midtransServerKey)
   ) {
     errors.push(
       "MIDTRANS_IS_PRODUCTION=false membutuhkan Server Key Sandbox. Jangan gunakan key Production di localhost.",
     );
+  }
+  if (
+    paymentProvider === "midtrans" &&
+    midtransProduction &&
+    midtransClientKey &&
+    !/^Mid-client-/i.test(midtransClientKey)
+  ) {
+    errors.push("MIDTRANS_IS_PRODUCTION=true membutuhkan Client Key Production.");
+  }
+  if (
+    paymentProvider === "midtrans" &&
+    !midtransProduction &&
+    midtransClientKey &&
+    !/^SB-Mid-client-/i.test(midtransClientKey)
+  ) {
+    errors.push("MIDTRANS_IS_PRODUCTION=false membutuhkan Client Key Sandbox.");
+  }
+  const midtransQrisAcquirer = String(env.MIDTRANS_QRIS_ACQUIRER || "gopay").trim().toLowerCase();
+  if (
+    paymentProvider === "midtrans" &&
+    !["gopay", "airpay_shopee"].includes(midtransQrisAcquirer)
+  ) {
+    errors.push("MIDTRANS_QRIS_ACQUIRER harus bernilai gopay atau airpay_shopee.");
   }
   const minimumTopupIdr = Number(env.PAYMENT_MIN_TOPUP_IDR || 17_000);
   const minTopupUsd = Number(env.PAYMENT_MIN_TOPUP_USD || 1);
