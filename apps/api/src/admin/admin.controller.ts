@@ -15,6 +15,7 @@ import { DatabaseService } from "../database/database.service.js";
 import { AnalysisJobService } from "../billing/analysis-job.service.js";
 import { PricingService } from "../billing/pricing.service.js";
 import { BackupService } from "./backup.service.js";
+import { ReleaseCatalogService, type DesktopReleaseInput } from "./release-catalog.service.js";
 
 const plans = [
   { code: "free", name: "Free", priceIdr: 0, credits: 100, deviceLimit: 1, active: true },
@@ -41,6 +42,7 @@ export class AdminController {
     @Inject(AnalysisJobService) private readonly analysisJobs: AnalysisJobService,
     @Inject(PricingService) private readonly pricingService: PricingService,
     @Inject(BackupService) private readonly backups: BackupService,
+    @Inject(ReleaseCatalogService) private readonly releases: ReleaseCatalogService,
   ) {}
 
   @Get("overview")
@@ -367,5 +369,20 @@ export class AdminController {
   @Post("payments/:id/sync")
   syncPayment(@Param("id") id: string) {
     return this.paymentsService.syncPaymentStatus(id);
+  }
+
+  @Get("releases")
+  releasesList() {
+    return this.releases.listAdmin();
+  }
+
+  @Post("releases")
+  createRelease(@Body() input: DesktopReleaseInput, @Req() request: AdminAuthenticatedRequest) {
+    return this.releases.create(input, request.cliperAdminSession?.userId);
+  }
+
+  @Patch("releases/:id")
+  updateRelease(@Param("id") id: string, @Body() input: DesktopReleaseInput, @Req() request: AdminAuthenticatedRequest) {
+    return this.releases.update(id, input, request.cliperAdminSession?.userId);
   }
 }

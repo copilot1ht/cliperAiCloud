@@ -3311,6 +3311,73 @@ td code {
   background: #e2f6f2;
   border-color: #b8e7df;
 }
+.release-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 15px;
+  max-width: 680px;
+}
+.release-empty svg {
+  flex: 0 0 auto;
+  color: var(--teal);
+}
+.release-empty h2 {
+  margin: 4px 0 7px;
+}
+.release-empty p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+.release-admin-list article {
+  align-items: flex-start;
+}
+.release-admin-summary {
+  min-width: 0;
+}
+.release-title-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.release-admin-summary small {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.release-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 21px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 9px !important;
+  font-weight: 800;
+}
+.release-state-draft {
+  color: #6b5a25 !important;
+  background: #fff6dc;
+  border-color: #f0d69d;
+}
+.release-state-published {
+  color: #08776f !important;
+  background: #e2f6f2;
+  border-color: #b8e7df;
+}
+.release-state-archived {
+  color: #5c6870 !important;
+  background: #eef2f3;
+  border-color: #d5dfe1;
+}
+.release-editor-help {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
 
 @media (max-width: 1120px) {
   .stats-grid,

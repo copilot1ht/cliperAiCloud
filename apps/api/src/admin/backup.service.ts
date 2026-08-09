@@ -17,6 +17,7 @@ const EXPORT_TABLES = [
   "userCreditAccount",
   "aiProvider",
   "providerPrice",
+  "desktopRelease",
   "pricingPolicy",
   "routingRule",
   "license",

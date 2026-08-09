@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { BackupService, openEncryptedBackup } from "./backup.service.js";
 
 const tableNames = [
-  "plan", "user", "subscription", "apiKey", "userCreditAccount", "aiProvider", "providerPrice",
+  "plan", "user", "subscription", "apiKey", "userCreditAccount", "aiProvider", "providerPrice", "desktopRelease",
   "pricingPolicy", "routingRule", "license", "device", "analysisJob", "aiUsage", "paymentTransaction",
   "invoice", "invoiceItem", "creditLedger", "paymentLog", "auditLog",
 ];

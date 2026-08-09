@@ -222,15 +222,14 @@ Cliper-Studio-Plus-Portable.exe
 SHA256SUMS.txt
 ```
 
-Setelah release asset tersedia pada tag seperti `v1.11.0-beta.1`, isi environment
-Vercel berikut lalu redeploy:
+Setelah asset release tersedia pada tag seperti `v1.11.0-beta.1`, buka
+`Admin > App releases` di Cliper AI Cloud. Tambahkan versi, URL HTTPS publik
+untuk Setup/Portable/checksum, lalu ubah status menjadi `Published`.
 
-```env
-NEXT_PUBLIC_DESKTOP_RELEASE_BASE_URL=https://github.com/copilot1ht/cliper-studio-releases/releases/download
-```
-
-Jika environment ini kosong, halaman Download menonaktifkan tombol secara jujur
-dan tidak mengarahkan user ke URL 404.
+Katalog release disimpan di PostgreSQL. Hanya release `Published` dengan minimal
+satu URL asset yang muncul pada halaman `Download app` untuk semua user. Dengan
+begitu binary dapat diperbarui per versi tanpa mengubah environment Vercel atau
+mengarahkan user ke URL 404.
 # Cliper AI Cloud
 
 ## Operations

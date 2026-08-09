@@ -1,15 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { desktopDownloadsReady, desktopReleases, releaseAssetUrl } from "./desktop-releases";
+import { releaseHasDownload, releaseStateLabel } from "./desktop-releases";
 
-describe("desktop release catalog", () => {
-  it("keeps one current release and never invents a download host", () => {
-    const current = desktopReleases.filter((release) => release.status === "current");
+describe("desktop release catalog helpers", () => {
+  it("only reports a release ready when a real binary URL exists", () => {
+    expect(releaseHasDownload({ setupUrl: null, portableUrl: null })).toBe(false);
+    expect(releaseHasDownload({ setupUrl: "https://downloads.example.com/setup.exe", portableUrl: null })).toBe(true);
+    expect(releaseHasDownload({ setupUrl: null, portableUrl: "https://downloads.example.com/portable.exe" })).toBe(true);
+  });
 
-    expect(current).toHaveLength(1);
-    expect(current[0]?.version).toBe("1.11.0-beta.1");
-    expect(desktopDownloadsReady).toBe(false);
-    expect(releaseAssetUrl(current[0]!.version, "setup")).toBeUndefined();
-    expect(releaseAssetUrl(current[0]!.version, "portable")).toBeUndefined();
-    expect(releaseAssetUrl(current[0]!.version, "checksums")).toBeUndefined();
+  it("uses stable human-readable state labels", () => {
+    expect(releaseStateLabel("DRAFT")).toBe("Draft");
+    expect(releaseStateLabel("PUBLISHED")).toBe("Published");
+    expect(releaseStateLabel("ARCHIVED")).toBe("Archived");
   });
 });

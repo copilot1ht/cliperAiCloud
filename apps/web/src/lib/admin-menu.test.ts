@@ -11,6 +11,7 @@ describe("adminMenu", () => {
       "/admin/ai-router",
       "/admin/revenue",
       "/admin/payments",
+      "/admin/backups",
       "/admin/system-health",
       "/admin/security",
       "/admin/releases",
