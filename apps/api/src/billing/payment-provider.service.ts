@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   ServiceUnavailableException,
 } from "@nestjs/common";
 import {
@@ -48,6 +49,93 @@ function midtransResponseValue(
   return (transactionDetails as Record<string, unknown>)[key];
 }
 
+const MIDTRANS_RESPONSE_WRAPPER_KEYS = [
+  "data",
+  "body",
+  "transaction",
+  "result",
+  "response",
+] as const;
+
+interface MidtransResponseSelection {
+  payload: Record<string, unknown>;
+  shape: string;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function hasMidtransTransactionEvidence(payload: Record<string, unknown>): boolean {
+  const directFields = ["order_id", "gross_amount", "payment_type"];
+  if (
+    directFields.some((key) => {
+      const value = payload[key];
+      return (
+        value !== undefined &&
+        value !== null &&
+        (typeof value !== "string" || value.trim().length > 0)
+      );
+    })
+  ) {
+    return true;
+  }
+  const details = asRecord(payload.transaction_details);
+  return Boolean(
+    details &&
+      ["order_id", "gross_amount"].some((key) => {
+        const value = details[key];
+        return (
+          value !== undefined &&
+          value !== null &&
+          (typeof value !== "string" || value.trim().length > 0)
+        );
+      }),
+  );
+}
+
+function selectMidtransTransactionPayload(
+  payload: Record<string, unknown>,
+): MidtransResponseSelection | null {
+  const queue: Array<MidtransResponseSelection> = [
+    { payload, shape: "root" },
+  ];
+  const visited = new Set<Record<string, unknown>>();
+
+  while (queue.length > 0 && visited.size < 16) {
+    const current = queue.shift();
+    if (!current || visited.has(current.payload)) continue;
+    visited.add(current.payload);
+    if (hasMidtransTransactionEvidence(current.payload)) return current;
+
+    for (const key of MIDTRANS_RESPONSE_WRAPPER_KEYS) {
+      const nested = asRecord(current.payload[key]);
+      if (nested && !visited.has(nested)) {
+        queue.push({ payload: nested, shape: current.shape + "." + key });
+      }
+    }
+  }
+
+  return null;
+}
+
+function safeResponseKeys(payload: Record<string, unknown>): string[] {
+  return Object.keys(payload)
+    .filter(
+      (key) =>
+        !/(authorization|key|token|secret|signature|qr[_-]?(string|content|image))/i.test(
+          key,
+        ),
+    )
+    .sort()
+    .slice(0, 16);
+}
+
+function maskedOrderId(value: unknown): string | null {
+  const normalized = String(value || "").trim();
+  return normalized ? "***" + normalized.slice(-8) : null;
+}
 function midtransText(
   payload: Record<string, unknown>,
   keys: string[],
@@ -210,6 +298,7 @@ export class SandboxPaymentProvider implements PaymentProvider {
 
 export class MidtransPaymentProvider implements PaymentProvider {
   readonly code = MIDTRANS_CODE;
+  private readonly logger = new Logger(MidtransPaymentProvider.name);
   private readonly serverKey: string;
   private readonly apiOrigin: string;
   private readonly qrisAcquirer: "gopay" | "airpay_shopee";
@@ -252,6 +341,62 @@ export class MidtransPaymentProvider implements PaymentProvider {
     }
   }
 
+  private logQrisResponseRejected(
+    reason: string,
+    input: CreateProviderPaymentInput,
+    rawPayload: Record<string, unknown>,
+    responsePayload?: Record<string, unknown>,
+    responseShape?: string,
+  ): void {
+    const payload = responsePayload || {};
+    const responseOrderId = String(
+      midtransResponseValue(payload, "order_id") || "",
+    ).trim();
+    const responseAmountIdr = midtransAmount(
+      midtransResponseValue(payload, "gross_amount"),
+    );
+    const responsePaymentType = String(
+      midtransResponseValue(payload, "payment_type") || "",
+    )
+      .trim()
+      .toLowerCase();
+    const actionNames = Array.isArray(payload.actions)
+      ? (payload.actions as Array<Record<string, unknown>>)
+          .map((item) =>
+            String(item.name || "")
+              .trim()
+              .toLowerCase(),
+          )
+          .filter(Boolean)
+      : [];
+
+    this.logger.warn(
+      JSON.stringify({
+        event: "midtrans_qris_response_rejected",
+        reason,
+        httpStatus: String(rawPayload.__httpStatus || ""),
+        providerStatusCode: String(
+          rawPayload.status_code || rawPayload.responseCode || "",
+        ),
+        responseShape: responseShape || "none",
+        localOrderId: maskedOrderId(input.invoiceNumber),
+        responseOrderId: maskedOrderId(responseOrderId),
+        orderIdMatch: responseOrderId === input.invoiceNumber,
+        localAmountIdr: input.amountIdr,
+        responseAmountIdr,
+        amountMatch: responseAmountIdr === input.amountIdr,
+        expectedPaymentType: "qris",
+        responsePaymentType: responsePaymentType || null,
+        paymentTypeMatch: responsePaymentType === "qris",
+        transactionStatus: String(
+          midtransResponseValue(payload, "transaction_status") || "",
+        ).toLowerCase() || null,
+        actionNames,
+        rootKeys: safeResponseKeys(rawPayload),
+        responseKeys: safeResponseKeys(payload),
+      }),
+    );
+  }
   private headers(): Record<string, string> {
     return {
       Accept: "application/json",
@@ -356,7 +501,7 @@ export class MidtransPaymentProvider implements PaymentProvider {
   async createPayment(
     input: CreateProviderPaymentInput,
   ): Promise<CreateProviderPaymentResult> {
-    const payload = await this.request(`${this.apiOrigin}/v2/charge`, {
+    const rawPayload = await this.request(`${this.apiOrigin}/v2/charge`, {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({
@@ -384,6 +529,18 @@ export class MidtransPaymentProvider implements PaymentProvider {
         },
       }),
     });
+    const responseSelection = selectMidtransTransactionPayload(rawPayload);
+    if (!responseSelection) {
+      this.logQrisResponseRejected(
+        "MIDTRANS_RESPONSE_SCHEMA_INVALID",
+        input,
+        rawPayload,
+      );
+      throw new ServiceUnavailableException(
+        "Midtrans mengembalikan respons QRIS tanpa payload transaksi [MIDTRANS_RESPONSE_SCHEMA_INVALID]. Pastikan GoPay Dynamic QRIS sudah aktif di Midtrans.",
+      );
+    }
+    const payload = responseSelection.payload;
     const responseOrderId = String(
       midtransResponseValue(payload, "order_id") || "",
     ).trim();
@@ -414,6 +571,13 @@ export class MidtransPaymentProvider implements PaymentProvider {
       validationErrors.push("MIDTRANS_TRANSACTION_STATUS_INVALID");
     }
     if (validationErrors.length > 0) {
+      this.logQrisResponseRejected(
+        validationErrors.join(","),
+        input,
+        rawPayload,
+        payload,
+        responseSelection.shape,
+      );
       throw new ServiceUnavailableException(
         `Validasi respons QRIS Midtrans gagal: ${validationErrors.join(", ")}.`,
       );
@@ -455,6 +619,13 @@ export class MidtransPaymentProvider implements PaymentProvider {
       const message = midtransMessage(payload);
       const actionSummary =
         actionNames.length > 0 ? actionNames.join(", ") : "none";
+      this.logQrisResponseRejected(
+        "MIDTRANS_QR_ACTION_MISSING",
+        input,
+        rawPayload,
+        payload,
+        responseSelection.shape,
+      );
       throw new ServiceUnavailableException(
         `Midtrans belum membuat QRIS [MIDTRANS_QR_ACTION_MISSING]${statusCode ? ` (status ${statusCode})` : ""}; actions=${actionSummary}${message ? `: ${message}` : ". Pastikan channel QRIS Production aktif dan credential sudah benar."}`,
       );

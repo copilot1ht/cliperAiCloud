@@ -160,6 +160,65 @@ describe("MidtransPaymentProvider", () => {
     expect(result.qrImageBase64).toMatch(/^data:image\/png;base64,/);
   });
 
+  it("accepts a Core API transaction wrapped by a transport envelope", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              status_code: "201",
+              data: {
+                order_id: "CLP-20260715-WRAPPED",
+                gross_amount: "17000.00",
+                payment_type: "qris",
+                transaction_status: "pending",
+                qr_string: "00020101021226610014COM.MIDTRANS.WWW",
+              },
+            }),
+            { status: 201 },
+          ),
+      ),
+    );
+
+    const result = await provider.createPayment({
+      invoiceNumber: "CLP-20260715-WRAPPED",
+      amountIdr: 17_000,
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      customer: { id: "u1", email: "user@example.com", displayName: "User" },
+      description: "Top-up",
+    });
+
+    expect(result.qrImageBase64).toMatch(/^data:image\/png;base64,/);
+  });
+
+  it("reports an actionable schema error for an incomplete QRIS response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              status_code: "201",
+              status_message: "QRIS transaction is created",
+              transaction_id: "trx-without-core-fields",
+            }),
+            { status: 201 },
+          ),
+      ),
+    );
+
+    await expect(
+      provider.createPayment({
+        invoiceNumber: "CLP-20260715-SCHEMA",
+        amountIdr: 17_000,
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+        customer: { id: "u1", email: "user@example.com", displayName: "User" },
+        description: "Top-up",
+      }),
+    ).rejects.toThrow("MIDTRANS_RESPONSE_SCHEMA_INVALID");
+  });
+
   it("reports exact safe codes for mismatched QRIS invoice fields", async () => {
     vi.stubGlobal(
       "fetch",
