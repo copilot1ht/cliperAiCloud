@@ -1,6 +1,6 @@
 -- Public desktop binaries stay on GitHub Releases, Cloudflare R2, or another
 -- release host. This table stores only public release metadata and URLs.
-CREATE TABLE "desktop_releases" (
+CREATE TABLE IF NOT EXISTS "desktop_releases" (
     "id" TEXT NOT NULL,
     "version" TEXT NOT NULL,
     "channel" TEXT NOT NULL DEFAULT 'beta',
@@ -17,10 +17,10 @@ CREATE TABLE "desktop_releases" (
     CONSTRAINT "desktop_releases_pkey" PRIMARY KEY ("id")
 );
 
-CREATE UNIQUE INDEX "desktop_releases_version_key" ON "desktop_releases"("version");
-CREATE UNIQUE INDEX "desktop_releases_single_current_key" ON "desktop_releases"("isCurrent") WHERE "isCurrent" = true;
-CREATE INDEX "desktop_releases_state_publishedAt_idx" ON "desktop_releases"("state", "publishedAt");
-CREATE INDEX "desktop_releases_isCurrent_idx" ON "desktop_releases"("isCurrent");
+CREATE UNIQUE INDEX IF NOT EXISTS "desktop_releases_version_key" ON "desktop_releases"("version");
+CREATE UNIQUE INDEX IF NOT EXISTS "desktop_releases_single_current_key" ON "desktop_releases"("isCurrent") WHERE "isCurrent" = true;
+CREATE INDEX IF NOT EXISTS "desktop_releases_state_publishedAt_idx" ON "desktop_releases"("state", "publishedAt");
+CREATE INDEX IF NOT EXISTS "desktop_releases_isCurrent_idx" ON "desktop_releases"("isCurrent");
 
 -- Keep the previously advertised beta entries as drafts. Admin must add
 -- public asset URLs before publishing them to members.
@@ -41,6 +41,7 @@ INSERT INTO "desktop_releases" (
     'desktop-release-1-10-0-beta-3',
     '1.10.0-beta.3',
     'beta',
+    'DRAFT',
     'Previous beta retained for manual rollback after its binary is published.',
     false,
     CURRENT_TIMESTAMP,
