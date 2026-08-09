@@ -224,6 +224,60 @@ describe("MidtransPaymentProvider", () => {
     ).rejects.toThrow("MIDTRANS_RESPONSE_SCHEMA_INVALID");
   });
 
+  it("classifies Midtrans provider rejections before QRIS schema validation", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              id: "provider-error-id",
+              status_code: "402",
+              status_message:
+                "GoPay Dynamic QRIS is not active for this merchant",
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    await expect(
+      provider.createPayment({
+        invoiceNumber: "CLP-20260715-PROVIDER-REJECTED",
+        amountIdr: 17_000,
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+        customer: { id: "u1", email: "user@example.com", displayName: "User" },
+        description: "Top-up",
+      }),
+    ).rejects.toThrow("MIDTRANS_PROVIDER_REJECTED");
+  });
+
+  it("preserves a non-2xx Midtrans response as a provider rejection", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              status_code: "401",
+              status_message: "Access denied",
+            }),
+            { status: 401 },
+          ),
+      ),
+    );
+
+    await expect(
+      provider.createPayment({
+        invoiceNumber: "CLP-20260715-PROVIDER-HTTP-REJECTED",
+        amountIdr: 17_000,
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+        customer: { id: "u1", email: "user@example.com", displayName: "User" },
+        description: "Top-up",
+      }),
+    ).rejects.toThrow("MIDTRANS_PROVIDER_REJECTED");
+  });
+
   it("reports exact safe codes for mismatched QRIS invoice fields", async () => {
     vi.stubGlobal(
       "fetch",

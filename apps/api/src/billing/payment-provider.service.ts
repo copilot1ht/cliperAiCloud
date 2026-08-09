@@ -67,7 +67,9 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
-function hasMidtransTransactionEvidence(payload: Record<string, unknown>): boolean {
+function hasMidtransTransactionEvidence(
+  payload: Record<string, unknown>,
+): boolean {
   const directFields = ["order_id", "gross_amount", "payment_type"];
   if (
     directFields.some((key) => {
@@ -84,23 +86,21 @@ function hasMidtransTransactionEvidence(payload: Record<string, unknown>): boole
   const details = asRecord(payload.transaction_details);
   return Boolean(
     details &&
-      ["order_id", "gross_amount"].some((key) => {
-        const value = details[key];
-        return (
-          value !== undefined &&
-          value !== null &&
-          (typeof value !== "string" || value.trim().length > 0)
-        );
-      }),
+    ["order_id", "gross_amount"].some((key) => {
+      const value = details[key];
+      return (
+        value !== undefined &&
+        value !== null &&
+        (typeof value !== "string" || value.trim().length > 0)
+      );
+    }),
   );
 }
 
 function selectMidtransTransactionPayload(
   payload: Record<string, unknown>,
 ): MidtransResponseSelection | null {
-  const queue: Array<MidtransResponseSelection> = [
-    { payload, shape: "root" },
-  ];
+  const queue: Array<MidtransResponseSelection> = [{ payload, shape: "root" }];
   const visited = new Set<Record<string, unknown>>();
 
   while (queue.length > 0 && visited.size < 16) {
@@ -167,6 +167,28 @@ function midtransMessage(payload: Record<string, unknown>): string {
     .replace(/[\r\n\t]+/g, " ")
     .replace(/\s{2,}/g, " ")
     .slice(0, 180);
+}
+
+function safeMidtransStatusMessage(payload: Record<string, unknown>): string {
+  return midtransMessage(payload)
+    .replace(/https?:\/\/\S+/gi, "[url]")
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
+    .replace(/\b(basic|bearer)\s+\S+/gi, "$1 [redacted]");
+}
+
+function midtransProviderStatusCode(payload: Record<string, unknown>): string {
+  return String(payload.status_code || payload.responseCode || "").trim();
+}
+
+function isMidtransProviderRejection(
+  payload: Record<string, unknown>,
+): boolean {
+  const httpStatus = Number(payload.__httpStatus || 0);
+  const providerStatus = Number(midtransProviderStatusCode(payload));
+  return (
+    (Number.isInteger(httpStatus) && (httpStatus < 200 || httpStatus >= 300)) ||
+    (Number.isInteger(providerStatus) && providerStatus >= 400)
+  );
 }
 
 function midtransStatus(
@@ -387,31 +409,85 @@ export class MidtransPaymentProvider implements PaymentProvider {
           )
           .filter(Boolean)
       : [];
+    const transactionStatus =
+      String(
+        midtransResponseValue(payload, "transaction_status") || "",
+      ).toLowerCase() || null;
 
     this.logger.warn(
       JSON.stringify({
         event: "midtrans_qris_response_rejected",
         reason,
         httpStatus: String(rawPayload.__httpStatus || ""),
-        providerStatusCode: String(
-          rawPayload.status_code || rawPayload.responseCode || "",
-        ),
+        providerStatusCode: midtransProviderStatusCode(rawPayload),
+        providerStatusMessage: safeMidtransStatusMessage(rawPayload) || null,
         responseShape: responseShape || "none",
+        wrapperType: responseShape || "none",
         localOrderId: maskedOrderId(input.invoiceNumber),
         responseOrderId: maskedOrderId(responseOrderId),
+        orderIdPresent: Boolean(responseOrderId),
         orderIdMatch: responseOrderId === input.invoiceNumber,
         localAmountIdr: input.amountIdr,
         responseAmountIdr,
+        amountPresent: responseAmountIdr > 0,
         amountMatch: responseAmountIdr === input.amountIdr,
         expectedPaymentType: "qris",
         responsePaymentType: responsePaymentType || null,
+        paymentTypePresent: Boolean(responsePaymentType),
         paymentTypeMatch: responsePaymentType === "qris",
-        transactionStatus: String(
-          midtransResponseValue(payload, "transaction_status") || "",
-        ).toLowerCase() || null,
+        transactionStatus,
+        acquirer: this.qrisAcquirer,
         actionNames,
         rootKeys: safeResponseKeys(rawPayload),
+        topLevelKeys: safeResponseKeys(rawPayload),
         responseKeys: safeResponseKeys(payload),
+        payloadKeys: safeResponseKeys(payload),
+      }),
+    );
+  }
+
+  private logQrisChargeResponse(rawPayload: Record<string, unknown>): void {
+    const selection = selectMidtransTransactionPayload(rawPayload);
+    const payload = selection?.payload || {};
+    const responseOrderId = String(
+      midtransResponseValue(payload, "order_id") || "",
+    ).trim();
+    const responseAmountIdr = midtransAmount(
+      midtransResponseValue(payload, "gross_amount"),
+    );
+    const responsePaymentType = String(
+      midtransResponseValue(payload, "payment_type") || "",
+    )
+      .trim()
+      .toLowerCase();
+    const actionNames = Array.isArray(payload.actions)
+      ? (payload.actions as Array<Record<string, unknown>>)
+          .map((item) =>
+            String(item.name || "")
+              .trim()
+              .toLowerCase(),
+          )
+          .filter(Boolean)
+      : [];
+
+    this.logger.log(
+      JSON.stringify({
+        event: "midtrans_qris_charge_response",
+        httpStatus: String(rawPayload.__httpStatus || ""),
+        providerStatusCode: midtransProviderStatusCode(rawPayload),
+        providerStatusMessage: safeMidtransStatusMessage(rawPayload) || null,
+        wrapperType: selection?.shape || "none",
+        topLevelKeys: safeResponseKeys(rawPayload),
+        payloadKeys: safeResponseKeys(payload),
+        orderIdPresent: Boolean(responseOrderId),
+        amountPresent: responseAmountIdr > 0,
+        paymentTypePresent: Boolean(responsePaymentType),
+        transactionStatus:
+          String(
+            midtransResponseValue(payload, "transaction_status") || "",
+          ).toLowerCase() || null,
+        acquirer: this.qrisAcquirer,
+        actionNames,
       }),
     );
   }
@@ -427,6 +503,7 @@ export class MidtransPaymentProvider implements PaymentProvider {
     url: string,
     init: RequestInit,
     acceptedErrorStatuses: number[] = [],
+    returnErrorPayload = false,
   ): Promise<Record<string, unknown>> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 30_000);
@@ -436,7 +513,11 @@ export class MidtransPaymentProvider implements PaymentProvider {
         string,
         unknown
       >;
-      if (!response.ok && !acceptedErrorStatuses.includes(response.status)) {
+      if (
+        !response.ok &&
+        !acceptedErrorStatuses.includes(response.status) &&
+        !returnErrorPayload
+      ) {
         const message = String(
           payload.status_message ||
             payload.error_messages ||
@@ -523,34 +604,54 @@ export class MidtransPaymentProvider implements PaymentProvider {
     if (this.notificationUrl) {
       headers["X-Override-Notification"] = this.notificationUrl;
     }
-    const rawPayload = await this.request(`${this.apiOrigin}/v2/charge`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        payment_type: "qris",
-        qris: {
-          // Core API requires the QRIS acquirer to be selected. The default
-          // is GoPay, which is also the documented QRIS Core API example.
-          acquirer: this.qrisAcquirer,
-        },
-        transaction_details: {
-          order_id: input.invoiceNumber,
-          gross_amount: input.amountIdr,
-        },
-        item_details: [
-          {
-            id: input.invoiceNumber,
-            price: input.amountIdr,
-            quantity: 1,
-            name: input.description.slice(0, 50),
+    const rawPayload = await this.request(
+      `${this.apiOrigin}/v2/charge`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          payment_type: "qris",
+          qris: {
+            // Core API requires the QRIS acquirer to be selected. The default
+            // is GoPay, which is also the documented QRIS Core API example.
+            acquirer: this.qrisAcquirer,
           },
-        ],
-        customer_details: {
-          first_name: input.customer.displayName.slice(0, 50),
-          email: input.customer.email,
-        },
-      }),
-    });
+          transaction_details: {
+            order_id: input.invoiceNumber,
+            gross_amount: input.amountIdr,
+          },
+          item_details: [
+            {
+              id: input.invoiceNumber,
+              price: input.amountIdr,
+              quantity: 1,
+              name: input.description.slice(0, 50),
+            },
+          ],
+          customer_details: {
+            first_name: input.customer.displayName.slice(0, 50),
+            email: input.customer.email,
+          },
+        }),
+      },
+      [],
+      true,
+    );
+    this.logQrisChargeResponse(rawPayload);
+    if (isMidtransProviderRejection(rawPayload)) {
+      this.logQrisResponseRejected(
+        "MIDTRANS_PROVIDER_REJECTED",
+        input,
+        rawPayload,
+        rawPayload,
+        "root",
+      );
+      const statusCode = midtransProviderStatusCode(rawPayload);
+      const message = safeMidtransStatusMessage(rawPayload);
+      throw new ServiceUnavailableException(
+        `Midtrans menolak pembuatan QRIS [MIDTRANS_PROVIDER_REJECTED]${statusCode ? ` (status ${statusCode})` : ""}${message ? `: ${message}` : "."}`,
+      );
+    }
     const responseSelection = selectMidtransTransactionPayload(rawPayload);
     if (!responseSelection) {
       this.logQrisResponseRejected(
