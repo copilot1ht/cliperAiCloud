@@ -127,4 +127,115 @@ describe("non-financial payment webhooks", () => {
     ).resolves.toMatchObject({ ok: true, processed: false, test: true });
     expect(providers.byCode).toHaveBeenCalledWith("xendit");
   });
+
+  it("acknowledges an old verified Xendit dashboard event for an unknown invoice", async () => {
+    const paymentLog = {
+      findUnique: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockResolvedValue({}),
+    };
+    const database = {
+      configured: () => true,
+      client: () => ({
+        $transaction: async (work: (tx: unknown) => Promise<unknown>) =>
+          work({
+            paymentLog,
+            paymentTransaction: { findUnique: vi.fn().mockResolvedValue(null) },
+          }),
+      }),
+    };
+    const providers = {
+      byCode: vi.fn().mockResolvedValue({
+        code: "xendit",
+        verifyWebhook: () => ({
+          verified: true,
+          payloadHash: "test-payload",
+          signature: "verified-token",
+          event: {
+            eventId: "xendit:payment.capture:dashboard-sample",
+            externalId: "pr-dashboard-sample",
+            invoiceNumber: "dashboard-sample-reference",
+            amountIdr: 10_000,
+            status: "paid",
+            occurredAt: "2025-02-13T00:00:00.000Z",
+          },
+        }),
+      }),
+    };
+    const service = new PaymentService(
+      database as never,
+      providers as never,
+      {} as never,
+    );
+
+    await expect(
+      service.processWebhook("xendit", Buffer.from("{}"), {}),
+    ).resolves.toMatchObject({
+      ok: true,
+      processed: false,
+      accepted: false,
+    });
+    expect(paymentLog.create).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a stale known payment before any wallet mutation", async () => {
+    const paymentLog = {
+      findUnique: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockResolvedValue({}),
+    };
+    const wallet = { upsert: vi.fn() };
+    const database = {
+      configured: () => true,
+      client: () => ({
+        $transaction: async (work: (tx: unknown) => Promise<unknown>) =>
+          work({
+            paymentLog,
+            userCreditAccount: wallet,
+            paymentTransaction: {
+              findUnique: vi.fn().mockResolvedValue({
+                id: "payment-1",
+                amountIdr: 17_000,
+                invoice: {
+                  id: "invoice-1",
+                  number: "CLP-20260809-STALE",
+                  totalIdr: 17_000,
+                },
+              }),
+            },
+          }),
+      }),
+    };
+    const providers = {
+      byCode: vi.fn().mockResolvedValue({
+        code: "xendit",
+        verifyWebhook: () => ({
+          verified: true,
+          payloadHash: "test-payload",
+          signature: "verified-token",
+          event: {
+            eventId: "xendit:payment.capture:stale",
+            externalId: "pr-stale",
+            invoiceNumber: "CLP-20260809-STALE",
+            amountIdr: 17_000,
+            status: "paid",
+            occurredAt: "2025-02-13T00:00:00.000Z",
+          },
+        }),
+      }),
+    };
+    const service = new PaymentService(
+      database as never,
+      providers as never,
+      {} as never,
+    );
+
+    await expect(
+      service.processWebhook("xendit", Buffer.from("{}"), {}),
+    ).resolves.toMatchObject({
+      ok: true,
+      processed: false,
+      accepted: false,
+      reason: "Webhook berada di luar replay window.",
+    });
+    expect(wallet.upsert).not.toHaveBeenCalled();
+  });
 });

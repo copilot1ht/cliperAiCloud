@@ -112,6 +112,19 @@ describe("validateRuntimeConfig", () => {
     expect(report.errors.join(" ")).toContain("PAYMENT_FALLBACK_ENABLED");
   });
 
+  it("rejects a Xendit public key where a server secret is required", () => {
+    const report = validateRuntimeConfig({
+      ...safeProduction,
+      PAYMENT_PRIMARY_PROVIDER: "xendit",
+      XENDIT_ENABLED: "true",
+      XENDIT_MODE: "test",
+      XENDIT_SECRET_KEY: "xnd_public_development_example_public_key_only",
+      XENDIT_WEBHOOK_TOKEN: "xendit-webhook-token-with-at-least-32-characters",
+    });
+    expect(report.ready).toBe(false);
+    expect(report.errors.join(" ")).toContain("Public API Key");
+  });
+
   it("reports an unconfigured dependency as unreachable", async () => {
     await expect(checkTcpUrl(undefined, 5432)).resolves.toBe(false);
   });

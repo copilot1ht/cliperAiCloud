@@ -1049,6 +1049,11 @@ export class XenditPaymentProvider implements PaymentProvider {
         "XENDIT_SECRET_KEY belum dikonfigurasi.",
       );
     }
+    if (/^xnd_public_/i.test(this.secretKey)) {
+      throw new ServiceUnavailableException(
+        "XENDIT_SECRET_KEY harus memakai Secret API Key, bukan Public API Key.",
+      );
+    }
     if (this.webhookToken.length < 16) {
       throw new ServiceUnavailableException(
         "XENDIT_WEBHOOK_TOKEN belum dikonfigurasi.",

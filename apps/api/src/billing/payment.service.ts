@@ -620,21 +620,12 @@ export class PaymentService {
     const eventAge = Math.abs(
       Date.now() - new Date(event.occurredAt).getTime(),
     );
-    if (eventAge > 24 * 60 * 60_000) {
-      await this.recordRejectedWebhook(
-        provider.code,
-        verified.payloadHash,
-        verified.signature,
-        "Webhook berada di luar replay window.",
-        event,
-      );
-      throw new UnauthorizedException("Webhook berada di luar replay window.");
-    }
     const result = await this.applyWebhook(
       provider.code,
       event,
       verified.payloadHash,
       verified.signature,
+      eventAge > 24 * 60 * 60_000,
     );
     if (result.accepted && event.status === "paid")
       await this.syncRuntimeBilling(provider.code, event.externalId);
@@ -1032,6 +1023,7 @@ export class PaymentService {
     event: PaymentWebhookEvent,
     payloadHash: string,
     signature?: string,
+    outsideReplayWindow = false,
   ) {
     return this.serializable(async (tx) => {
       const duplicate = await tx.paymentLog.findUnique({
@@ -1065,6 +1057,28 @@ export class PaymentService {
         };
       }
       const invoice = payment.invoice;
+      if (outsideReplayWindow) {
+        await tx.paymentLog.create({
+          data: {
+            ...this.paymentLogData(
+              provider,
+              event,
+              payloadHash,
+              signature,
+              false,
+              "Webhook untuk invoice yang dikenal berada di luar replay window.",
+            ),
+            invoiceId: invoice.id,
+          },
+        });
+        return {
+          ok: true,
+          duplicate: false,
+          accepted: false,
+          processed: false,
+          reason: "Webhook berada di luar replay window.",
+        };
+      }
       if (
         payment.amountIdr !== event.amountIdr ||
         invoice.totalIdr !== event.amountIdr

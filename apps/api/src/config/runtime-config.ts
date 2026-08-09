@@ -253,6 +253,11 @@ export function validateRuntimeConfig(
         production ? errors.push(message) : warnings.push(message);
       }
     }
+    if (/^xnd_public_/i.test(String(env.XENDIT_SECRET_KEY || "").trim())) {
+      errors.push(
+        "XENDIT_SECRET_KEY berisi Public API Key. Buat Secret API Key dengan izin Money-In Write di Xendit Dashboard lalu simpan hanya pada Railway @cliper/api.",
+      );
+    }
     const xenditMode = String(env.XENDIT_MODE || "test").trim().toLowerCase();
     if (!["test", "live"].includes(xenditMode)) {
       errors.push("XENDIT_MODE harus bernilai test atau live.");

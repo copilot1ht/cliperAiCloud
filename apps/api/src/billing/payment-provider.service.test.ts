@@ -664,6 +664,19 @@ describe("XenditPaymentProvider", () => {
     expect(result.event).toBeUndefined();
   });
 
+  it("rejects a public API key where Xendit requires a server secret", () => {
+    expect(
+      () =>
+        new XenditPaymentProvider({
+          secretKey: "xnd_public_development_example_public_key_only",
+          webhookToken: callbackToken,
+          mode: "test",
+          apiVersion: "2024-11-11",
+          notificationUrl: "https://api.example.com/api/payments/webhook/xendit",
+        }),
+    ).toThrow("Secret API Key");
+  });
+
   it("normalizes payment-request status sync", async () => {
     vi.stubGlobal(
       "fetch",
