@@ -21,6 +21,7 @@ MIDTRANS_IS_PRODUCTION=true
 MIDTRANS_MERCHANT_ID=<rotated-production-merchant-id>
 MIDTRANS_CLIENT_KEY=<rotated-production-client-key>
 MIDTRANS_SERVER_KEY=<rotated-production-server-key>
+MIDTRANS_QRIS_ACQUIRER=gopay
 API_PUBLIC_URL=https://api.cliperaicloud.online
 WEB_ORIGIN=https://www.cliperaicloud.online
 MIDTRANS_NOTIFICATION_URL=https://api.cliperaicloud.online/api/payments/webhook/midtrans

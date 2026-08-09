@@ -42,6 +42,7 @@ MIDTRANS_MERCHANT_ID=your-production-merchant-id
 MIDTRANS_CLIENT_KEY=your-production-client-key
 MIDTRANS_SERVER_KEY=your-production-server-key
 MIDTRANS_IS_PRODUCTION=true
+MIDTRANS_QRIS_ACQUIRER=gopay
 MIDTRANS_NOTIFICATION_URL=https://api.cliperaicloud.online/api/payments/webhook/midtrans
 MIDTRANS_FINISH_REDIRECT_URL=https://www.cliperaicloud.online/billing
 PAYMENT_MIN_TOPUP_IDR=17000

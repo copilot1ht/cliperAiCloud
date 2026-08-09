@@ -77,6 +77,9 @@ describe("MidtransPaymentProvider", () => {
         new Response(
           JSON.stringify({
             transaction_id: "trx-qris-1",
+            order_id: "CLP-20260715-TEST",
+            gross_amount: "25000.00",
+            payment_type: "qris",
             qr_string: "00020101021226610014COM.MIDTRANS.WWW",
             actions: [
               {
@@ -134,6 +137,9 @@ describe("MidtransPaymentProvider", () => {
         new Response(
           JSON.stringify({
             transaction_id: "trx-qris-invalid-image",
+            order_id: "CLP-20260715-INVALID-IMAGE",
+            gross_amount: "25000.00",
+            payment_type: "qris",
             actions: [
               {
                 name: "generate-qr-code",
@@ -172,6 +178,9 @@ describe("MidtransPaymentProvider", () => {
       new Response(
         JSON.stringify({
           transaction_id: "trx-qris-2",
+          order_id: "CLP-20260715-QRIS",
+          gross_amount: "25000.00",
+          payment_type: "qris",
           qr_string: "00020101021226610014COM.MIDTRANS.WWW",
         }),
         { status: 201 },
@@ -190,8 +199,46 @@ describe("MidtransPaymentProvider", () => {
     >;
     const body = JSON.parse(String(calls[0]?.[1]?.body || "{}")) as {
       payment_type?: string;
+      qris?: { acquirer?: string };
     };
     expect(body.payment_type).toBe("qris");
+    expect(body.qris?.acquirer).toBe("gopay");
+  });
+
+  it("uses a signed QR payload when the separate QR PNG is temporarily unavailable", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status_code: "201",
+            status_message: "QRIS transaction is created",
+            order_id: "CLP-20260715-FALLBACK",
+            gross_amount: "25000.00",
+            payment_type: "qris",
+            qr_string: "00020101021226610014COM.MIDTRANS.WWW",
+            actions: [
+              {
+                name: "generate-qr-code-v2",
+                url: "https://api.sandbox.midtrans.com/v4/qris/trx-fallback/qr-code",
+              },
+            ],
+          }),
+          { status: 201 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await provider.createPayment({
+      invoiceNumber: "CLP-20260715-FALLBACK",
+      amountIdr: 25_000,
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      customer: { id: "u1", email: "user@example.com", displayName: "User" },
+      description: "Top-up",
+    });
+
+    expect(result.qrImageBase64).toMatch(/^data:image\/png;base64,/);
   });
 
   it("validates Midtrans signature and maps settlement to paid", () => {

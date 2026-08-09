@@ -30,6 +30,24 @@ function midtransAmount(value: unknown): number {
   return Number.isSafeInteger(parsed) ? parsed : 0;
 }
 
+function midtransText(
+  payload: Record<string, unknown>,
+  keys: string[],
+): string {
+  for (const key of keys) {
+    const value = String(payload[key] ?? "").trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function midtransMessage(payload: Record<string, unknown>): string {
+  return midtransText(payload, ["status_message", "response_message"])
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .slice(0, 180);
+}
+
 function midtransStatus(
   value: unknown,
   fraudStatus?: unknown,
@@ -176,12 +194,30 @@ export class MidtransPaymentProvider implements PaymentProvider {
   readonly code = MIDTRANS_CODE;
   private readonly serverKey: string;
   private readonly apiOrigin: string;
+  private readonly qrisAcquirer: "gopay" | "airpay_shopee";
 
-  constructor(serverKey: string, _webOrigin: string, production = false) {
+  constructor(
+    serverKey: string,
+    _webOrigin: string,
+    production = false,
+    qrisAcquirer = "gopay",
+  ) {
     this.serverKey = String(serverKey || "").trim();
     this.apiOrigin = production
       ? "https://api.midtrans.com"
       : "https://api.sandbox.midtrans.com";
+    const normalizedAcquirer = String(qrisAcquirer || "gopay")
+      .trim()
+      .toLowerCase();
+    if (
+      normalizedAcquirer !== "gopay" &&
+      normalizedAcquirer !== "airpay_shopee"
+    ) {
+      throw new ServiceUnavailableException(
+        "MIDTRANS_QRIS_ACQUIRER harus bernilai gopay atau airpay_shopee.",
+      );
+    }
+    this.qrisAcquirer = normalizedAcquirer;
     if (this.serverKey.length < 20)
       throw new ServiceUnavailableException(
         "MIDTRANS_SERVER_KEY belum dikonfigurasi.",
@@ -308,6 +344,11 @@ export class MidtransPaymentProvider implements PaymentProvider {
         headers: this.headers(),
         body: JSON.stringify({
           payment_type: "qris",
+          qris: {
+            // Core API requires the QRIS acquirer to be selected. The default
+            // is GoPay, which is also the documented QRIS Core API example.
+            acquirer: this.qrisAcquirer,
+          },
           transaction_details: {
             order_id: input.invoiceNumber,
             gross_amount: input.amountIdr,
@@ -327,6 +368,20 @@ export class MidtransPaymentProvider implements PaymentProvider {
         }),
       },
     );
+    const responseOrderId = String(payload.order_id || "").trim();
+    const responseAmountIdr = midtransAmount(payload.gross_amount);
+    const responsePaymentType = String(payload.payment_type || "")
+      .trim()
+      .toLowerCase();
+    if (
+      responseOrderId !== input.invoiceNumber ||
+      responseAmountIdr !== input.amountIdr ||
+      (responsePaymentType && responsePaymentType !== "qris")
+    ) {
+      throw new ServiceUnavailableException(
+        "Respons Midtrans tidak cocok dengan invoice QRIS yang dibuat.",
+      );
+    }
     const actions = Array.isArray(payload.actions)
       ? (payload.actions as Array<Record<string, unknown>>)
       : [];
@@ -334,18 +389,40 @@ export class MidtransPaymentProvider implements PaymentProvider {
       actions.find((item) => item.name === "generate-qr-code-v2") ||
       actions.find((item) => item.name === "generate-qr-code");
     const qrImageUrl = String(qrAction?.url || "").trim();
-    const qrString = String(payload.qr_string || "").trim();
-    if (!qrImageUrl && !qrString)
+    const qrString = midtransText(payload, [
+      "qr_string",
+      "qrString",
+      "qr_content",
+      "qrContent",
+    ]);
+    if (!qrImageUrl && !qrString) {
+      const statusCode = String(payload.status_code || payload.__httpStatus || "");
+      const message = midtransMessage(payload);
       throw new ServiceUnavailableException(
-        "Midtrans tidak mengembalikan data QRIS.",
+        `Midtrans belum membuat QRIS${statusCode ? ` (status ${statusCode})` : ""}${message ? `: ${message}` : ". Pastikan channel QRIS Production aktif dan credential sudah benar."}`,
       );
-    const qrImageBase64 = qrImageUrl
-      ? await this.qrImageDataUrl(qrImageUrl)
-      : await QRCode.toDataURL(qrString, {
+    }
+    let qrImageBase64: string;
+    if (qrImageUrl) {
+      try {
+        qrImageBase64 = await this.qrImageDataUrl(qrImageUrl);
+      } catch (error) {
+        // The signed charge response can include a usable QR payload even when
+        // Midtrans's separate image endpoint is briefly unavailable.
+        if (!qrString) throw error;
+        qrImageBase64 = await QRCode.toDataURL(qrString, {
           errorCorrectionLevel: "M",
           margin: 2,
           width: 320,
         });
+      }
+    } else {
+      qrImageBase64 = await QRCode.toDataURL(qrString, {
+        errorCorrectionLevel: "M",
+        margin: 2,
+        width: 320,
+      });
+    }
     return {
       provider: this.code,
       externalId: input.invoiceNumber,
@@ -574,6 +651,7 @@ export class PaymentProviderService {
       credentials.serverKey,
       process.env.WEB_ORIGIN || "http://localhost:3000",
       credentials.isProduction,
+      process.env.MIDTRANS_QRIS_ACQUIRER || "gopay",
     );
   }
 
