@@ -15,9 +15,9 @@ import { AdminError, AdminLoading, LocalModeNotice } from "@/components/admin-ui
 import { adminFetch } from "@/lib/admin-api";
 
 interface PaymentSettings {
-  provider: "midtrans";
+  provider: "xendit" | "midtrans" | "sandbox";
   enabled: boolean;
-  environment: "production" | "sandbox";
+  environment: "production" | "sandbox" | "test" | "live";
   source: "admin-settings" | "railway-env" | "not-configured";
   sourceLabel: string;
   configured: boolean;
@@ -25,6 +25,9 @@ interface PaymentSettings {
   merchantIdMasked: string | null;
   clientKeyConfigured: boolean;
   serverKeyConfigured: boolean;
+  secretKeyConfigured?: boolean;
+  webhookTokenConfigured?: boolean;
+  apiVersion?: string | null;
   notificationUrl: string;
   finishRedirectUrl: string;
 }
@@ -35,8 +38,9 @@ interface ConnectionResult {
     ok: true;
     latencyMs: number;
     verification: "credentials-accepted";
-    environment: "production" | "sandbox";
+    environment: "production" | "sandbox" | "test" | "live";
     source: string;
+    provider: string;
   };
 }
 
@@ -51,7 +55,7 @@ function copyText(value: string, setMessage: (value: string) => void) {
 export function AdminPaymentSettings() {
   const [settings, setSettings] = useState<PaymentSettings | null>(null);
   const [enabled, setEnabled] = useState(false);
-  const [environment, setEnvironment] = useState<"production" | "sandbox">("sandbox");
+  const [environment, setEnvironment] = useState<"production" | "sandbox" | "test" | "live">("sandbox");
   const [merchantId, setMerchantId] = useState("");
   const [clientKey, setClientKey] = useState("");
   const [serverKey, setServerKey] = useState("");
@@ -123,9 +127,9 @@ export function AdminPaymentSettings() {
         body: "{}",
       });
       applySettings(result.configuration);
-      setNotice(`Koneksi ${result.connection.environment} diterima oleh Midtrans dalam ${result.connection.latencyMs} ms. Tidak ada transaksi dibuat.`);
+      setNotice(`Koneksi ${result.connection.provider} ${result.connection.environment} diterima dalam ${result.connection.latencyMs} ms. Tidak ada transaksi dibuat.`);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Uji koneksi Midtrans gagal.");
+      setError(reason instanceof Error ? reason.message : "Uji koneksi payment gateway gagal.");
     } finally {
       setTesting(false);
     }
@@ -135,6 +139,21 @@ export function AdminPaymentSettings() {
     return <><LocalModeNotice /><AdminError message={error} retry={load} /></>;
   }
   if (!settings) return <AdminLoading label="Memuat konfigurasi payment..." />;
+
+  if (settings.provider === "xendit") {
+    return <>
+      <LocalModeNotice />
+      {error && <AdminError message={error} retry={load} />}
+      {notice && <div className="callout success-callout"><CheckCircle2 size={17} /><span>{notice}</span></div>}
+      <section className="panel form-panel payment-settings-card">
+        <div className="panel-head"><div><p className="section-kicker">Payment gateway</p><h2>Xendit Payment Settings</h2><p>Credential dan callback token hanya dibaca di Railway @cliper/api; keduanya tidak pernah ditampilkan kembali oleh admin.</p></div><CreditCard size={20} /></div>
+        <div className="payment-config-summary"><span><small>Active source</small><strong>{settings.sourceLabel}</strong></span><span><small>Environment</small><strong>{settings.environment === "live" ? "Live" : "Test"}</strong></span><span><small>Gateway status</small><strong>{settings.enabled && settings.configured ? "Ready" : "Not active"}</strong></span></div>
+        <div className="callout info-callout"><ShieldCheck size={17} /><span><strong>Webhook token tersimpan server-side.</strong> Set `XENDIT_SECRET_KEY`, `XENDIT_WEBHOOK_TOKEN`, `XENDIT_MODE`, dan provider utama di Railway, lalu gunakan Test connection sebelum membuat QRIS.</span></div>
+        <div className="endpoint-list"><span><KeyRound size={15} /><strong>Payment Status & Payment Request Status</strong><code>{settings.notificationUrl || "API_PUBLIC_URL belum diatur"}</code></span><span><ExternalLink size={15} /><strong>API version</strong><code>{settings.apiVersion || "2024-11-11"}</code></span></div>
+        <div className="modal-actions"><button type="button" className="button button-secondary" onClick={testConnection} disabled={testing}><TestTube2 size={15} /> {testing ? "Testing..." : "Test connection"}</button></div>
+      </section>
+    </>;
+  }
 
   const keyHint = settings.source === "admin-settings"
     ? "Kosongkan field key untuk mempertahankan ciphertext yang sudah tersimpan."

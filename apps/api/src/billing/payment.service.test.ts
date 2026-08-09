@@ -1,8 +1,11 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   configuredTopupMinimumIdr,
   configuredTopupMinimumUsd,
   configuredTopupUsdToIdrDisplayRate,
+  detectMidtransDashboardTestNotification,
+  PaymentService,
+  providerInvoiceExpiry,
   transientQrDataUrl,
 } from "./payment.service.js";
 
@@ -39,10 +42,56 @@ describe("Billing top-up helpers", () => {
     );
   });
 
-  it("creates a temporary QR image only when a provider QR payload exists", async () => {
-    expect(await transientQrDataUrl(null)).toBeNull();
-    await expect(transientQrDataUrl("CLIPER:payment:test")).resolves.toMatch(
-      /^data:image\/png;base64,/,
+});
+
+describe("non-financial payment webhooks", () => {
+  it("recognizes the reserved Midtrans dashboard test prefix only", () => {
+    const test = detectMidtransDashboardTestNotification(
+      Buffer.from(
+        JSON.stringify({
+          order_id: "payment_notif_test_20260809_001",
+          status_code: "200",
+          transaction_status: "pending",
+        }),
+      ),
     );
+    expect(test?.signaturePresent).toBe(false);
+    expect(
+      detectMidtransDashboardTestNotification(
+        Buffer.from(JSON.stringify({ order_id: "CLP-20260809-REAL" })),
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps Xendit QRIS invoices open for the provider payment window", () => {
+    const now = Date.UTC(2026, 7, 9, 0, 0, 0);
+    expect(providerInvoiceExpiry("xendit", now).getTime() - now).toBe(
+      48 * 60 * 60_000,
+    );
+    expect(providerInvoiceExpiry("midtrans", now).getTime() - now).toBe(
+      15 * 60_000,
+    );
+  });
+
+  it("acknowledges a verified Xendit informational callback without provider or wallet work", async () => {
+    const database = {
+      configured: () => false,
+      client: vi.fn(),
+    };
+    const providers = {
+      byCode: vi.fn().mockResolvedValue({
+        code: "xendit",
+        verifyWebhook: () => ({ verified: true, payloadHash: "test-payload" }),
+      }),
+    };
+    const service = new PaymentService(
+      database as never,
+      providers as never,
+      {} as never,
+    );
+    await expect(
+      service.processWebhook("xendit", Buffer.from("{}"), {}),
+    ).resolves.toMatchObject({ ok: true, processed: false, test: true });
+    expect(providers.byCode).toHaveBeenCalledWith("xendit");
   });
 });

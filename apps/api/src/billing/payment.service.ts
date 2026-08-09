@@ -3,6 +3,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -67,6 +68,11 @@ const DEFAULT_TOPUP_MIN_IDR = 17_000;
 const DEFAULT_TOPUP_MAX_IDR = 10_000_000;
 const DEFAULT_TOPUP_MIN_USD = 1;
 const DEFAULT_TOPUP_USD_TO_IDR_DISPLAY_RATE = 17_700;
+const DEFAULT_INVOICE_EXPIRY_MS = 15 * 60_000;
+// Xendit's one-off QRIS payment requests remain payable for up to 48 hours.
+// Keep the local invoice open for that same window so a customer cannot pay a
+// still-valid provider QR after Cliper has already rejected the invoice.
+const XENDIT_QRIS_INVOICE_EXPIRY_MS = 48 * 60 * 60_000;
 
 function configuredTopupAmount(name: string, fallback: number): number {
   const value = Number(process.env[name] || fallback);
@@ -200,8 +206,63 @@ function asNumber(value: bigint): number {
   return result;
 }
 
+interface MidtransDashboardTestNotification {
+  eventId: string;
+  payloadHash: string;
+  statusCode: string | null;
+  transactionStatus: string | null;
+  signaturePresent: boolean;
+}
+
+export function providerInvoiceExpiry(
+  providerCode: string,
+  now = Date.now(),
+): Date {
+  const duration =
+    String(providerCode || "").trim().toLowerCase() === "xendit"
+      ? XENDIT_QRIS_INVOICE_EXPIRY_MS
+      : DEFAULT_INVOICE_EXPIRY_MS;
+  return new Date(now + duration);
+}
+
+/**
+ * The Midtrans dashboard sends a non-financial probe with this reserved order
+ * prefix. It is never a Cliper invoice (our invoices begin with CLP-), so it
+ * can be acknowledged without weakening signature checks for real payments.
+ */
+export function detectMidtransDashboardTestNotification(
+  rawBody: Buffer,
+): MidtransDashboardTestNotification | null {
+  if (rawBody.length > 64 * 1024) return null;
+  try {
+    const payload = JSON.parse(rawBody.toString("utf8")) as Record<
+      string,
+      unknown
+    >;
+    const orderId = String(payload.order_id || "").trim();
+    if (!/^payment_notif_test_[A-Za-z0-9._-]{4,}$/i.test(orderId))
+      return null;
+    const payloadHash = paymentPayloadHash(rawBody);
+    const statusCode = String(payload.status_code || "").trim();
+    const transactionStatus = String(payload.transaction_status || "")
+      .trim()
+      .toLowerCase();
+    return {
+      eventId: `midtrans:dashboard-test:${payloadHash}`,
+      payloadHash,
+      statusCode: statusCode || null,
+      transactionStatus: transactionStatus || null,
+      signaturePresent: Boolean(String(payload.signature_key || "").trim()),
+    };
+  } catch {
+    return null;
+  }
+}
+
 @Injectable()
 export class PaymentService {
+  private readonly logger = new Logger(PaymentService.name);
+
   constructor(
     @Inject(DatabaseService) private readonly database: DatabaseService,
     @Inject(PaymentProviderService)
@@ -225,8 +286,8 @@ export class PaymentService {
     const client = this.database.client();
     await this.expireOpenInvoices(identity.id);
     const number = invoiceNumber();
-    const expiresAt = new Date(Date.now() + 15 * 60_000);
     const provider = await this.providers.active();
+    const expiresAt = providerInvoiceExpiry(provider.code);
     const providerPayment = await provider.createPayment({
       invoiceNumber: number,
       amountIdr: plan.priceIdr,
@@ -346,8 +407,8 @@ export class PaymentService {
     const creditMicro = topupCreditMicro(amountIdr);
     await this.expireOpenInvoices(identity.id);
     const number = invoiceNumber();
-    const expiresAt = new Date(Date.now() + 15 * 60_000);
     const provider = await this.providers.active();
+    const expiresAt = providerInvoiceExpiry(provider.code);
     const providerPayment = await provider.createPayment({
       invoiceNumber: number,
       amountIdr,
@@ -434,9 +495,34 @@ export class PaymentService {
     rawBody: Buffer,
     headers: Record<string, string | string[] | undefined>,
   ) {
+    const dashboardTest =
+      providerCode.trim().toLowerCase() === "midtrans"
+        ? detectMidtransDashboardTestNotification(rawBody)
+        : null;
+    if (dashboardTest) {
+      await this.acknowledgeMidtransDashboardTest(dashboardTest);
+      return {
+        ok: true,
+        processed: false,
+        accepted: false,
+        test: true,
+      };
+    }
     const provider = await this.providers.byCode(providerCode);
     const verified = provider.verifyWebhook(rawBody, headers);
     if (!verified.verified || !verified.event) {
+      if (verified.verified) {
+        await this.acknowledgeInformationalWebhook(
+          provider.code,
+          verified.payloadHash,
+        );
+        return {
+          ok: true,
+          processed: false,
+          accepted: false,
+          test: true,
+        };
+      }
       await this.recordRejectedWebhook(
         provider.code,
         verified.payloadHash,
@@ -752,9 +838,15 @@ export class PaymentService {
       );
     }
     const provider = await this.providers.byCode(payment.provider);
-    const providerRefund = provider.refund
-      ? await provider.refund(payment.externalId, payment.amountIdr)
-      : undefined;
+    if (!provider.refund) {
+      throw new ConflictException(
+        "Provider payment ini belum mendukung refund yang telah direkonsiliasi. Wallet tidak diubah.",
+      );
+    }
+    const providerRefund = await provider.refund(
+      payment.externalId,
+      payment.amountIdr,
+    );
 
     const result = await this.serializable(async (tx) => {
       const current = await tx.paymentTransaction.findUnique({
@@ -869,9 +961,10 @@ export class PaymentService {
           ),
         });
         return {
-          ok: false,
+          ok: true,
           duplicate: false,
           accepted: false,
+          processed: false,
           reason: "Invoice tidak ditemukan.",
         };
       }
@@ -1222,6 +1315,99 @@ export class PaymentService {
         occurredAt: event.occurredAt,
       },
     };
+  }
+
+  private async acknowledgeMidtransDashboardTest(
+    notification: MidtransDashboardTestNotification,
+  ): Promise<void> {
+    const diagnostic = {
+      event: "MIDTRANS_WEBHOOK_TEST_OR_UNKNOWN_ORDER",
+      provider: "midtrans",
+      statusCode: notification.statusCode,
+      transactionStatus: notification.transactionStatus,
+      signaturePresent: notification.signaturePresent,
+    };
+    this.logger.log(JSON.stringify(diagnostic));
+    if (!this.database.configured()) return;
+    try {
+      await this.database.client().paymentLog.upsert({
+        where: {
+          provider_eventId: {
+            provider: "midtrans",
+            eventId: notification.eventId,
+          },
+        },
+        create: {
+          provider: "midtrans",
+          eventId: notification.eventId,
+          eventType: "payment.dashboard_test",
+          payloadHash: notification.payloadHash,
+          verified: false,
+          accepted: true,
+          reason: "MIDTRANS_WEBHOOK_TEST_OR_UNKNOWN_ORDER",
+          safePayload: {
+            kind: "dashboard_test",
+            statusCode: notification.statusCode,
+            transactionStatus: notification.transactionStatus,
+            signaturePresent: notification.signaturePresent,
+          },
+        },
+        update: {
+          accepted: true,
+          reason: "MIDTRANS_WEBHOOK_TEST_OR_UNKNOWN_ORDER",
+        },
+      });
+    } catch {
+      // A dashboard probe has no financial effect, so an audit-log outage
+      // must not make an otherwise public notification endpoint fail.
+      this.logger.warn(
+        JSON.stringify({
+          event: "MIDTRANS_WEBHOOK_TEST_LOG_UNAVAILABLE",
+          provider: "midtrans",
+        }),
+      );
+    }
+  }
+
+  private async acknowledgeInformationalWebhook(
+    provider: string,
+    payloadHash: string,
+  ): Promise<void> {
+    this.logger.log(
+      JSON.stringify({
+        event: "PAYMENT_WEBHOOK_INFORMATIONAL_ACKNOWLEDGED",
+        provider,
+      }),
+    );
+    if (!this.database.configured()) return;
+    try {
+      await this.database.client().paymentLog.upsert({
+        where: {
+          provider_eventId: {
+            provider,
+            eventId: `${provider}:informational:${payloadHash}`,
+          },
+        },
+        create: {
+          provider,
+          eventId: `${provider}:informational:${payloadHash}`,
+          eventType: "payment.informational",
+          payloadHash,
+          verified: true,
+          accepted: true,
+          reason: "Informational provider webhook acknowledged without financial mutation.",
+          safePayload: { kind: "informational" },
+        },
+        update: { accepted: true },
+      });
+    } catch {
+      this.logger.warn(
+        JSON.stringify({
+          event: "PAYMENT_WEBHOOK_INFORMATIONAL_LOG_UNAVAILABLE",
+          provider,
+        }),
+      );
+    }
   }
 
   private async recordRejectedWebhook(

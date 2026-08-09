@@ -20,10 +20,12 @@ import QRCode from "qrcode";
 import {
   PaymentConfigurationService,
   type MidtransCredentials,
+  type XenditCredentials,
 } from "./payment-configuration.service.js";
 
 const SANDBOX_CODE = "sandbox";
 const MIDTRANS_CODE = "midtrans";
+const XENDIT_CODE = "xendit";
 const LOCAL_SANDBOX_SECRET = "cliper-local-sandbox-secret-change-me";
 
 function midtransAmount(value: unknown): number {
@@ -981,6 +983,308 @@ export class MidtransPaymentProvider implements PaymentProvider {
   }
 }
 
+function xenditAmount(value: unknown): number {
+  const amount = Number(value);
+  return Number.isSafeInteger(amount) && amount > 0 ? amount : 0;
+}
+
+function xenditStatus(
+  eventName: unknown,
+  providerStatus: unknown,
+): PaymentWebhookEvent["status"] {
+  const event = String(eventName || "").trim().toLowerCase();
+  const status = String(providerStatus || "").trim().toUpperCase();
+  if (event === "payment.capture" || status === "SUCCEEDED") return "paid";
+  if (event === "payment_request.expiry" || status === "EXPIRED")
+    return "expired";
+  if (event === "payment.failure" || ["FAILED", "CANCELED"].includes(status))
+    return "failed";
+  if (event === "refund.succeeded" || status === "REFUNDED") return "refunded";
+  return "pending";
+}
+
+function xenditAction(
+  actions: unknown,
+  descriptor: string,
+): Record<string, unknown> | undefined {
+  if (!Array.isArray(actions)) return undefined;
+  return actions
+    .map((action) => asRecord(action))
+    .find(
+      (action) =>
+        action &&
+        String(action.type || "").trim().toUpperCase() ===
+          "PRESENT_TO_CUSTOMER" &&
+        String(action.descriptor || "").trim().toUpperCase() === descriptor,
+    ) || undefined;
+}
+
+function xenditPayload(
+  rawBody: Buffer,
+): { payload: Record<string, unknown>; data: Record<string, unknown> } | null {
+  try {
+    const payload = asRecord(JSON.parse(rawBody.toString("utf8")));
+    if (!payload) return null;
+    return { payload, data: asRecord(payload.data) || {} };
+  } catch {
+    return null;
+  }
+}
+
+export class XenditPaymentProvider implements PaymentProvider {
+  readonly code = XENDIT_CODE;
+  private readonly secretKey: string;
+  private readonly webhookToken: string;
+  private readonly apiVersion: string;
+  private readonly apiOrigin = "https://api.xendit.co";
+
+  constructor(credentials: XenditCredentials) {
+    this.secretKey = String(credentials.secretKey || "").trim();
+    this.webhookToken = String(credentials.webhookToken || "").trim();
+    this.apiVersion = String(credentials.apiVersion || "2024-11-11").trim();
+    if (this.secretKey.length < 20) {
+      throw new ServiceUnavailableException(
+        "XENDIT_SECRET_KEY belum dikonfigurasi.",
+      );
+    }
+    if (this.webhookToken.length < 16) {
+      throw new ServiceUnavailableException(
+        "XENDIT_WEBHOOK_TOKEN belum dikonfigurasi.",
+      );
+    }
+    if (!/^20\d{2}-\d{2}-\d{2}$/.test(this.apiVersion)) {
+      throw new ServiceUnavailableException(
+        "XENDIT_API_VERSION tidak valid.",
+      );
+    }
+  }
+
+  private headers(): Record<string, string> {
+    return {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "api-version": this.apiVersion,
+      Authorization: `Basic ${Buffer.from(`${this.secretKey}:`).toString("base64")}`,
+    };
+  }
+
+  private async request(
+    url: string,
+    init: RequestInit,
+    acceptedErrorStatuses: number[] = [],
+  ): Promise<{ payload: Record<string, unknown>; status: number }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30_000);
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      const payload = (await response.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+      if (!response.ok && !acceptedErrorStatuses.includes(response.status)) {
+        const errorCode = String(payload.error_code || "").trim();
+        const category =
+          response.status === 401 || response.status === 403
+            ? "XENDIT_CREDENTIALS_INVALID"
+            : response.status === 408 || response.status === 504
+              ? "XENDIT_TIMEOUT"
+              : response.status >= 500
+                ? "XENDIT_PROVIDER_UNAVAILABLE"
+                : errorCode === "CHANNEL_UNAVAILABLE"
+                  ? "XENDIT_CHANNEL_UNAVAILABLE"
+                  : "XENDIT_REQUEST_INVALID";
+        throw new ServiceUnavailableException(
+          `Xendit tidak dapat membuat pembayaran [${category}].`,
+        );
+      }
+      return { payload, status: response.status };
+    } catch (error) {
+      if (error instanceof ServiceUnavailableException) throw error;
+      throw new ServiceUnavailableException(
+        "Xendit tidak dapat dihubungi. Coba lagi beberapa saat.",
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async createPayment(
+    input: CreateProviderPaymentInput,
+  ): Promise<CreateProviderPaymentResult> {
+    const { payload } = await this.request(
+      `${this.apiOrigin}/v3/payment_requests`,
+      {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({
+          reference_id: input.invoiceNumber,
+          type: "PAY",
+          country: "ID",
+          currency: "IDR",
+          request_amount: input.amountIdr,
+          capture_method: "AUTOMATIC",
+          channel_code: "QRIS",
+          channel_properties: {},
+          description: input.description.slice(0, 1_000),
+          metadata: {
+            cliper_invoice_number: input.invoiceNumber,
+            payment_kind: "cliper_wallet",
+          },
+        }),
+      },
+    );
+    const paymentRequestId = String(payload.payment_request_id || "").trim();
+    const referenceId = String(payload.reference_id || "").trim();
+    const amountIdr = xenditAmount(payload.request_amount);
+    const channelCode = String(payload.channel_code || "").trim().toUpperCase();
+    if (
+      !paymentRequestId ||
+      referenceId !== input.invoiceNumber ||
+      amountIdr !== input.amountIdr ||
+      channelCode !== "QRIS"
+    ) {
+      throw new ServiceUnavailableException(
+        "Xendit mengembalikan respons pembayaran yang tidak cocok dengan invoice [XENDIT_RESPONSE_INVALID].",
+      );
+    }
+    const qrAction = xenditAction(payload.actions, "QR_STRING");
+    const qrString = String(qrAction?.value || "").trim();
+    if (!qrString) {
+      throw new ServiceUnavailableException(
+        "Xendit belum mengembalikan QRIS yang dapat ditampilkan [XENDIT_QR_ACTION_MISSING].",
+      );
+    }
+    const paymentUrl = String(xenditAction(payload.actions, "WEB_URL")?.value || "").trim();
+    return {
+      provider: this.code,
+      externalId: paymentRequestId,
+      status: "pending",
+      paymentUrl: paymentUrl || undefined,
+      qrString,
+      qrImageBase64: await QRCode.toDataURL(qrString, {
+        errorCorrectionLevel: "M",
+        margin: 2,
+        width: 320,
+      }),
+      safeMetadata: {
+        paymentRequestId,
+        channel: channelCode,
+        status: String(payload.status || "").trim().toUpperCase() || null,
+      },
+    };
+  }
+
+  verifyWebhook(
+    rawBody: Buffer,
+    headers: Record<string, string | string[] | undefined>,
+  ): VerifiedPaymentWebhook {
+    const payloadHash = paymentPayloadHash(rawBody);
+    const callbackToken = headerValue(headers, "x-callback-token");
+    if (!secureEqual(callbackToken, this.webhookToken)) {
+      return {
+        verified: false,
+        reason: "Xendit callback token tidak valid.",
+        payloadHash,
+      };
+    }
+    const normalized = xenditPayload(rawBody);
+    if (!normalized) {
+      return {
+        verified: false,
+        reason: "Payload webhook Xendit bukan JSON valid.",
+        payloadHash,
+      };
+    }
+    const { payload, data } = normalized;
+    const eventName = String(payload.event || "").trim().toLowerCase();
+    const paymentRequestId = String(data.payment_request_id || "").trim();
+    const referenceId = String(data.reference_id || "").trim();
+    const amountIdr = xenditAmount(data.request_amount);
+    if (!eventName || !paymentRequestId || !referenceId || !amountIdr) {
+      // A verified dashboard probe or informational event is acknowledged by
+      // PaymentService without becoming a financial mutation.
+      return { verified: true, payloadHash };
+    }
+    const paymentId = String(
+      data.capture_id || data.payment_id || paymentRequestId,
+    ).trim();
+    const event: PaymentWebhookEvent = {
+      eventId: `xendit:${eventName}:${paymentId}:${String(data.status || "pending").toLowerCase()}`,
+      externalId: paymentRequestId,
+      invoiceNumber: referenceId,
+      amountIdr,
+      status: xenditStatus(eventName, data.status),
+      occurredAt: String(data.updated || payload.created || new Date().toISOString()),
+    };
+    if (!validEvent(event)) {
+      return {
+        verified: false,
+        reason: "Payload webhook Xendit tidak valid.",
+        payloadHash,
+      };
+    }
+    return { verified: true, event, payloadHash };
+  }
+
+  async getTransactionStatus(
+    externalId: string,
+    expectedAmountIdr?: number,
+  ): Promise<PaymentWebhookEvent> {
+    const paymentRequestId = String(externalId || "").trim();
+    if (!paymentRequestId)
+      throw new BadRequestException("Xendit payment request ID kosong.");
+    const { payload, status } = await this.request(
+      `${this.apiOrigin}/v3/payment_requests/${encodeURIComponent(paymentRequestId)}`,
+      { method: "GET", headers: this.headers() },
+      [404],
+    );
+    if (status === 404) {
+      if (!Number.isSafeInteger(expectedAmountIdr) || Number(expectedAmountIdr) <= 0) {
+        throw new BadRequestException("Payment request Xendit tidak ditemukan.");
+      }
+      return {
+        eventId: `xendit:status:${paymentRequestId}:not-found`,
+        externalId: paymentRequestId,
+        invoiceNumber: paymentRequestId,
+        amountIdr: Number(expectedAmountIdr),
+        status: "pending",
+        occurredAt: new Date().toISOString(),
+      };
+    }
+    const referenceId = String(payload.reference_id || "").trim();
+    const amountIdr = xenditAmount(payload.request_amount);
+    if (!referenceId || !amountIdr) {
+      throw new BadRequestException("Respons status Xendit tidak cocok dengan invoice.");
+    }
+    return {
+      eventId: `xendit:status:${paymentRequestId}:${String(payload.status || "pending").toLowerCase()}`,
+      externalId: paymentRequestId,
+      invoiceNumber: referenceId,
+      amountIdr,
+      status: xenditStatus("payment_request.status", payload.status),
+      occurredAt: String(payload.updated || payload.created || new Date().toISOString()),
+    };
+  }
+
+  async testConnection(): Promise<{
+    ok: true;
+    latencyMs: number;
+    verification: "credentials-accepted";
+  }> {
+    const startedAt = Date.now();
+    await this.request(
+      `${this.apiOrigin}/v3/payment_requests/pr-00000000-0000-0000-0000-000000000000`,
+      { method: "GET", headers: this.headers() },
+      [404],
+    );
+    return {
+      ok: true,
+      latencyMs: Date.now() - startedAt,
+      verification: "credentials-accepted",
+    };
+  }
+}
+
 @Injectable()
 export class PaymentProviderService {
   private readonly sandbox: SandboxPaymentProvider;
@@ -1005,8 +1309,20 @@ export class PaymentProviderService {
     );
   }
 
+  private xendit(credentials: XenditCredentials): XenditPaymentProvider {
+    return new XenditPaymentProvider(credentials);
+  }
+
   async active(): Promise<PaymentProvider> {
     const active = await this.configuration.resolveActive();
+    if (active.provider === XENDIT_CODE) {
+      if (!active.enabled || !active.xendit) {
+        throw new ServiceUnavailableException(
+          "Xendit belum dikonfigurasi. Atur XENDIT_SECRET_KEY dan XENDIT_WEBHOOK_TOKEN pada Railway @cliper/api.",
+        );
+      }
+      return this.xendit(active.xendit);
+    }
     if (active.provider === MIDTRANS_CODE) {
       if (!active.enabled || !active.midtrans) {
         throw new ServiceUnavailableException(
@@ -1031,6 +1347,15 @@ export class PaymentProviderService {
     const normalized = String(code || "")
       .trim()
       .toLowerCase();
+    if (normalized === XENDIT_CODE) {
+      const saved = await this.configuration.resolveXenditForOperations();
+      if (!saved) {
+        throw new ServiceUnavailableException(
+          "Konfigurasi Xendit untuk invoice ini tidak tersedia. Periksa Railway Variables @cliper/api.",
+        );
+      }
+      return this.xendit(saved.credentials);
+    }
     if (normalized === MIDTRANS_CODE) {
       const saved = await this.configuration.resolveMidtransForOperations();
       if (!saved)
@@ -1069,6 +1394,23 @@ export class PaymentProviderService {
           ? "Encrypted Admin Settings"
           : "Railway ENV",
     };
+  }
+
+  async testActiveConnection() {
+    const active = await this.configuration.resolveActive();
+    if (active.provider === XENDIT_CODE) {
+      if (!active.enabled || !active.xendit) {
+        throw new ServiceUnavailableException("Xendit belum dikonfigurasi.");
+      }
+      return {
+        ...(await this.xendit(active.xendit).testConnection()),
+        provider: XENDIT_CODE,
+        environment: active.xendit.mode,
+        source: "Railway ENV",
+      };
+    }
+    const result = await this.testMidtransConnection();
+    return { ...result, provider: MIDTRANS_CODE };
   }
 
   sandboxEvent(event: PaymentWebhookEvent): {

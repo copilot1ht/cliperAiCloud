@@ -6,12 +6,19 @@ import { PaymentConfigurationService } from "./payment-configuration.service.js"
 const paymentEnv = [
   "PAYMENT_CONFIG_ENCRYPTION_KEY",
   "PAYMENT_PROVIDER",
+  "PAYMENT_PRIMARY_PROVIDER",
   "MIDTRANS_MERCHANT_ID",
   "MIDTRANS_CLIENT_KEY",
   "MIDTRANS_SERVER_KEY",
   "MIDTRANS_IS_PRODUCTION",
   "MIDTRANS_NOTIFICATION_URL",
   "MIDTRANS_FINISH_REDIRECT_URL",
+  "XENDIT_ENABLED",
+  "XENDIT_MODE",
+  "XENDIT_SECRET_KEY",
+  "XENDIT_WEBHOOK_TOKEN",
+  "XENDIT_API_VERSION",
+  "XENDIT_NOTIFICATION_URL",
   "API_PUBLIC_URL",
   "WEB_ORIGIN",
 ];
@@ -89,4 +96,27 @@ describe("PaymentConfigurationService operation resolver", () => {
       },
     });
   });
-});
+
+  it("uses Xendit Railway configuration when it is the primary provider", async () => {
+    process.env.PAYMENT_PRIMARY_PROVIDER = "xendit";
+    process.env.XENDIT_ENABLED = "true";
+    process.env.XENDIT_MODE = "test";
+    process.env.XENDIT_SECRET_KEY = "xendit-secret-key-with-at-least-32-characters";
+    process.env.XENDIT_WEBHOOK_TOKEN = "xendit-webhook-token-with-at-least-32-characters";
+    process.env.XENDIT_API_VERSION = "2024-11-11";
+    process.env.XENDIT_NOTIFICATION_URL = "https://api.example.com/api/payments/webhook/xendit";
+    const database = { configured: () => false, client: vi.fn() };
+    const service = new PaymentConfigurationService(database as unknown as DatabaseService);
+
+    await expect(service.resolveXenditForOperations()).resolves.toMatchObject({
+      source: "railway-env",
+      credentials: { mode: "test", apiVersion: "2024-11-11" },
+    });
+    await expect(service.status()).resolves.toMatchObject({
+      provider: "xendit",
+      enabled: true,
+      configured: true,
+      webhookTokenConfigured: true,
+    });
+  });
+});

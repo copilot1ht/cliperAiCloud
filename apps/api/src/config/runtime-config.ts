@@ -202,8 +202,11 @@ export function validateRuntimeConfig(
     warnings.push("Pemulihan password email belum dikonfigurasi. Set RESEND_API_KEY dan PASSWORD_RESET_FROM untuk mengaktifkannya.");
   }
   const paymentProvider = String(
-    env.PAYMENT_PROVIDER || "sandbox",
+    env.PAYMENT_PRIMARY_PROVIDER || env.PAYMENT_PROVIDER || "sandbox",
   ).toLowerCase();
+  if (!["sandbox", "midtrans", "xendit"].includes(paymentProvider)) {
+    errors.push("PAYMENT_PRIMARY_PROVIDER/PAYMENT_PROVIDER harus bernilai xendit, midtrans, atau sandbox.");
+  }
   const sandboxAllowed =
     String(env.ALLOW_SANDBOX_PAYMENTS || "false").toLowerCase() === "true";
   if (production && paymentProvider === "sandbox" && !sandboxAllowed) {
@@ -232,6 +235,28 @@ export function validateRuntimeConfig(
         const message = `${name} wajib dikonfigurasi ketika PAYMENT_PROVIDER=midtrans.`;
         production ? errors.push(message) : warnings.push(message);
       }
+    }
+  }
+  if (paymentProvider === "xendit") {
+    const requiredXenditFields: Array<[string, number]> = [
+      ["XENDIT_SECRET_KEY", 20],
+      ["XENDIT_WEBHOOK_TOKEN", 16],
+    ];
+    for (const [name, minimum] of requiredXenditFields) {
+      if (secretLength(env[name]) < minimum) {
+        const message = `${name} wajib dikonfigurasi ketika provider utama adalah xendit.`;
+        production ? errors.push(message) : warnings.push(message);
+      }
+    }
+    const xenditMode = String(env.XENDIT_MODE || "test").trim().toLowerCase();
+    if (!["test", "live"].includes(xenditMode)) {
+      errors.push("XENDIT_MODE harus bernilai test atau live.");
+    }
+    if (String(env.XENDIT_ENABLED || "true").toLowerCase() === "false") {
+      errors.push("XENDIT_ENABLED tidak boleh false ketika provider utama adalah xendit.");
+    }
+    if (production && xenditMode !== "live") {
+      warnings.push("Xendit masih TEST mode. Pembayaran nyata belum boleh diumumkan sebelum XENDIT_MODE=live dan QRIS live telah aktif.");
     }
   }
   if (paymentProvider === "midtrans" && !env.WEB_ORIGIN) {

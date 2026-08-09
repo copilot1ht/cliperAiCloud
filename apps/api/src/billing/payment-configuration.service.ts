@@ -8,6 +8,7 @@ import { decryptSecret, encryptSecret } from "@cliper/security";
 import { DatabaseService } from "../database/database.service.js";
 
 const MIDTRANS_PROVIDER = "midtrans";
+const XENDIT_PROVIDER = "xendit";
 const SANDBOX_PROVIDER = "sandbox";
 
 export type PaymentConfigurationSource =
@@ -24,11 +25,20 @@ export interface MidtransCredentials {
   finishRedirectUrl: string;
 }
 
+export interface XenditCredentials {
+  secretKey: string;
+  webhookToken: string;
+  mode: "test" | "live";
+  apiVersion: string;
+  notificationUrl: string;
+}
+
 export interface PaymentRuntimeConfiguration {
-  provider: "midtrans" | "sandbox";
+  provider: "xendit" | "midtrans" | "sandbox";
   source: PaymentConfigurationSource;
   enabled: boolean;
   midtrans?: MidtransCredentials;
+  xendit?: XenditCredentials;
 }
 
 export interface PaymentSettingsInput {
@@ -104,6 +114,15 @@ function defaultFinishRedirectUrl(): string {
   return origin ? `${origin}/billing` : "";
 }
 
+function defaultXenditNotificationUrl(): string {
+  const origin = text(process.env.API_PUBLIC_URL).replace(/\/$/, "");
+  return origin ? `${origin}/api/payments/webhook/xendit` : "";
+}
+
+function xenditMode(value: unknown): "test" | "live" {
+  return text(value).toLowerCase() === "live" ? "live" : "test";
+}
+
 @Injectable()
 export class PaymentConfigurationService {
   constructor(
@@ -137,6 +156,21 @@ export class PaymentConfigurationService {
         defaultFinishRedirectUrl(),
     };
     return configuredCredentials(credentials) ? credentials : undefined;
+  }
+
+  private environmentXenditCredentials(): XenditCredentials | undefined {
+    const secretKey = text(process.env.XENDIT_SECRET_KEY);
+    const webhookToken = text(process.env.XENDIT_WEBHOOK_TOKEN);
+    if (!secretKey || !webhookToken) return undefined;
+    return {
+      secretKey,
+      webhookToken,
+      mode: xenditMode(process.env.XENDIT_MODE),
+      apiVersion: text(process.env.XENDIT_API_VERSION) || "2024-11-11",
+      notificationUrl:
+        text(process.env.XENDIT_NOTIFICATION_URL) ||
+        defaultXenditNotificationUrl(),
+    };
   }
 
   private async storedCredentials(): Promise<
@@ -177,8 +211,22 @@ export class PaymentConfigurationService {
   }
 
   async resolveActive(): Promise<PaymentRuntimeConfiguration> {
+    const configuredProvider = text(
+      process.env.PAYMENT_PRIMARY_PROVIDER || process.env.PAYMENT_PROVIDER || SANDBOX_PROVIDER,
+    ).toLowerCase();
+    if (configuredProvider === XENDIT_PROVIDER) {
+      const xendit = this.environmentXenditCredentials();
+      const enabled = bool(process.env.XENDIT_ENABLED, true) && Boolean(xendit);
+      return {
+        provider: XENDIT_PROVIDER,
+        source: xendit ? "railway-env" : "not-configured",
+        enabled,
+        xendit,
+      };
+    }
+    const midtransEnabled = bool(process.env.MIDTRANS_ENABLED, true);
     const stored = await this.storedCredentials();
-    if (stored?.enabled && stored.credentials) {
+    if (midtransEnabled && stored?.enabled && stored.credentials) {
       return {
         provider: MIDTRANS_PROVIDER,
         source: "admin-settings",
@@ -187,13 +235,13 @@ export class PaymentConfigurationService {
       };
     }
 
-    const paymentProvider = text(process.env.PAYMENT_PROVIDER || SANDBOX_PROVIDER).toLowerCase();
+    const paymentProvider = configuredProvider;
     if (paymentProvider === MIDTRANS_PROVIDER) {
       const midtrans = this.environmentCredentials();
       return {
         provider: MIDTRANS_PROVIDER,
         source: midtrans ? "railway-env" : "not-configured",
-        enabled: Boolean(midtrans),
+        enabled: midtransEnabled && Boolean(midtrans),
         midtrans,
       };
     }
@@ -203,6 +251,25 @@ export class PaymentConfigurationService {
       source: "not-configured",
       enabled: true,
     };
+  }
+
+  async resolveXenditForOperations(): Promise<
+    | {
+        source: Exclude<PaymentConfigurationSource, "not-configured">;
+        credentials: XenditCredentials;
+      }
+    | undefined
+  > {
+    const active = await this.resolveActive();
+    if (
+      active.provider !== XENDIT_PROVIDER ||
+      !active.enabled ||
+      !active.xendit ||
+      active.source === "not-configured"
+    ) {
+      return undefined;
+    }
+    return { source: active.source, credentials: active.xendit };
   }
 
   async resolveMidtransForOperations(): Promise<
@@ -223,8 +290,9 @@ export class PaymentConfigurationService {
 
   async status() {
     const active = await this.resolveActive();
-    const credentials = active.provider === MIDTRANS_PROVIDER ? active.midtrans : undefined;
-    const source = active.provider === MIDTRANS_PROVIDER ? active.source : "not-configured";
+    const midtrans = active.provider === MIDTRANS_PROVIDER ? active.midtrans : undefined;
+    const xendit = active.provider === XENDIT_PROVIDER ? active.xendit : undefined;
+    const source = active.provider === SANDBOX_PROVIDER ? "not-configured" : active.source;
     const sourceLabel =
       source === "admin-settings"
         ? "Encrypted Admin Settings"
@@ -232,18 +300,31 @@ export class PaymentConfigurationService {
           ? "Railway ENV"
           : "Not configured";
     return {
-      provider: MIDTRANS_PROVIDER,
-      enabled: active.provider === MIDTRANS_PROVIDER && active.enabled,
-      environment: credentials?.isProduction ? "production" : "sandbox",
+      provider: active.provider,
+      enabled: active.enabled,
+      environment:
+        active.provider === XENDIT_PROVIDER
+          ? xendit?.mode || "test"
+          : midtrans?.isProduction
+            ? "production"
+            : "sandbox",
       source,
       sourceLabel,
-      configured: Boolean(credentials),
+      configured: Boolean(midtrans || xendit),
       databaseSupported: this.database.configured(),
-      merchantIdMasked: credentials ? mask(credentials.merchantId) : null,
-      clientKeyConfigured: Boolean(credentials?.clientKey),
-      serverKeyConfigured: Boolean(credentials?.serverKey),
-      notificationUrl: credentials?.notificationUrl || defaultNotificationUrl(),
-      finishRedirectUrl: credentials?.finishRedirectUrl || defaultFinishRedirectUrl(),
+      merchantIdMasked: midtrans ? mask(midtrans.merchantId) : null,
+      clientKeyConfigured: Boolean(midtrans?.clientKey),
+      serverKeyConfigured: Boolean(midtrans?.serverKey),
+      secretKeyConfigured: Boolean(xendit?.secretKey),
+      webhookTokenConfigured: Boolean(xendit?.webhookToken),
+      apiVersion: xendit?.apiVersion || null,
+      notificationUrl:
+        xendit?.notificationUrl ||
+        midtrans?.notificationUrl ||
+        (active.provider === XENDIT_PROVIDER
+          ? defaultXenditNotificationUrl()
+          : defaultNotificationUrl()),
+      finishRedirectUrl: midtrans?.finishRedirectUrl || defaultFinishRedirectUrl(),
     };
   }
 

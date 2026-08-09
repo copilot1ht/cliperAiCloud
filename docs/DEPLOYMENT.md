@@ -69,6 +69,24 @@ REDIS_URL=${{Redis.REDIS_URL}}
 
 Untuk uji lokal gunakan Sandbox Access Keys. API membuat QRIS melalui Midtrans Core API dan menampilkan gambar QR di web. Set `MIDTRANS_IS_PRODUCTION=true` hanya setelah Production Access Keys dan notification URL HTTPS siap. Jangan menaruh Server Key di GitHub, browser, atau log.
 
+## Xendit QRIS (Payments API V3)
+
+Xendit dapat menjadi provider utama tanpa mengubah invoice, wallet, atau ledger. Masukkan credential hanya pada Railway service `@cliper/api`:
+
+```text
+PAYMENT_PRIMARY_PROVIDER=xendit
+PAYMENT_PROVIDER=xendit
+XENDIT_ENABLED=true
+XENDIT_MODE=test
+XENDIT_SECRET_KEY=<server-side Xendit key>
+XENDIT_WEBHOOK_TOKEN=<Xendit callback token>
+XENDIT_API_VERSION=2024-11-11
+XENDIT_NOTIFICATION_URL=https://api.cliperaicloud.online/api/payments/webhook/xendit
+MIDTRANS_ENABLED=false
+```
+
+Set **Payment Status** dan **Payment Request Status** in the Xendit dashboard to the Xendit notification URL above. The API validates `x-callback-token`; a browser redirect never grants balance. Keep `XENDIT_MODE=test` for a complete controlled test, then change only `XENDIT_MODE=live` and rotate/set the live key and live callback token after the Xendit QRIS live channel is enabled. Do not switch to live until a test QR, verified webhook, and exactly-once wallet credit have passed.
+
 Atur Payment Notification URL di Midtrans MAP ke `https://api.cliperaicloud.online/api/payments/webhook/midtrans` dan Finish Redirect URL ke `https://www.cliperaicloud.online/billing`. Endpoint notification harus dapat diakses publik melalui HTTPS. Redirect user tidak menggantikan notification URL: saldo hanya diberikan dari callback yang signature-nya valid.
 
 Untuk aktivasi pertama, simpan credential hanya pada Railway service `@cliper/api`. Sesudah database Production sehat, admin dapat memasukkan rotasi key melalui **Admin > Settings > Payment Settings**; nilai akan dienkripsi dan UI hanya menampilkan status/mask. Jangan menaruh Midtrans key pada Vercel atau `@cliper/web`.

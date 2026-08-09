@@ -94,14 +94,19 @@ export class AdminController {
     const desktopSessionSummary = await this.desktopSessions.summary();
     const memory = process.memoryUsage();
     const paymentSettings = await this.paymentConfiguration.status();
-    const midtransConfigured = paymentSettings.enabled && paymentSettings.configured;
-    const midtrans = {
-      mode: paymentSettings.environment === "production" ? "Production" : "Sandbox",
-      configuration: midtransConfigured ? "Ready" : "Missing",
+    const paymentConfigured = paymentSettings.enabled && paymentSettings.configured;
+    const payment = {
+      provider: paymentSettings.provider,
+      label: paymentSettings.provider === "xendit" ? "Xendit" : paymentSettings.provider === "midtrans" ? "Midtrans" : "Sandbox",
+      mode:
+        paymentSettings.environment === "production" || paymentSettings.environment === "live"
+          ? "Production"
+          : "Sandbox/Test",
+      configuration: paymentConfigured ? "Ready" : "Missing",
       source: paymentSettings.sourceLabel,
       webhookUrl: paymentSettings.notificationUrl || "Not configured",
       finishRedirectUrl: paymentSettings.finishRedirectUrl || "Not configured",
-      apiReachability: midtransConfigured ? "Configured" : "Not configured",
+      apiReachability: paymentConfigured ? "Configured" : "Not configured",
       lastWebhookAt: null as string | null,
       lastSuccessfulPaymentAt: null as string | null,
       failedWebhookCount: 0,
@@ -111,16 +116,16 @@ export class AdminController {
       try {
         const client = this.database.client();
         const [lastWebhook, lastPayment, failedWebhookCount] = await Promise.all([
-          client.paymentLog.findFirst({ where: { provider: "midtrans" }, orderBy: { createdAt: "desc" }, select: { createdAt: true, verified: true } }),
-          client.paymentLog.findFirst({ where: { provider: "midtrans", eventType: "payment.paid", accepted: true }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
-          client.paymentLog.count({ where: { provider: "midtrans", verified: false } }),
+          client.paymentLog.findFirst({ where: { provider: paymentSettings.provider }, orderBy: { createdAt: "desc" }, select: { createdAt: true, verified: true } }),
+          client.paymentLog.findFirst({ where: { provider: paymentSettings.provider, eventType: "payment.paid", accepted: true }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
+          client.paymentLog.count({ where: { provider: paymentSettings.provider, verified: false } }),
         ]);
-        midtrans.lastWebhookAt = lastWebhook?.createdAt.toISOString() || null;
-        midtrans.lastSuccessfulPaymentAt = lastPayment?.createdAt.toISOString() || null;
-        midtrans.failedWebhookCount = failedWebhookCount;
-        midtrans.signatureVerification = lastWebhook ? (lastWebhook.verified ? "Valid" : "Rejected") : "No webhook received";
+        payment.lastWebhookAt = lastWebhook?.createdAt.toISOString() || null;
+        payment.lastSuccessfulPaymentAt = lastPayment?.createdAt.toISOString() || null;
+        payment.failedWebhookCount = failedWebhookCount;
+        payment.signatureVerification = lastWebhook ? (lastWebhook.verified ? "Valid" : "Rejected") : "No webhook received";
       } catch {
-        midtrans.apiReachability = "Database check unavailable";
+        payment.apiReachability = "Database check unavailable";
       }
     }
     return {
@@ -138,10 +143,12 @@ export class AdminController {
         { code: "redis", label: "Redis", status: dependencies.redis ? "healthy" : report.infrastructure.redis ? "offline" : "not-configured", detail: dependencies.redis ? "TCP connection reachable" : "Distributed cache/rate limit is not active" },
         { code: "providers", label: "AI Providers", status: providers.some((item) => item.status === "healthy") ? "healthy" : "not-configured", detail: `${providers.filter((item) => item.status === "healthy").length}/${providers.length} provider healthy` },
         { code: "queue", label: "Queue", status: "not-configured", detail: "BullMQ worker has not been deployed" },
-        { code: "midtrans", label: "Midtrans", status: midtransConfigured ? "healthy" : "not-configured", detail: `${midtrans.mode} · ${midtrans.configuration} · ${midtrans.source}` },
+        { code: "payment", label: `${payment.label} payment`, status: paymentConfigured ? "healthy" : "not-configured", detail: `${payment.mode} · ${payment.configuration} · ${payment.source}` },
         { code: "license", label: "Desktop Sessions", status: "healthy", detail: `${desktopSessionSummary.active} active signed sessions` },
       ],
-      midtrans,
+      payment,
+      // Kept temporarily for older Web clients during the Xendit rollout.
+      midtrans: payment,
       providers,
       warnings: report.warnings,
       errors: report.errors,
@@ -386,7 +393,7 @@ export class AdminController {
   async testPaymentSettings() {
     const [configuration, connection] = await Promise.all([
       this.paymentConfiguration.status(),
-      this.paymentProviders.testMidtransConnection(),
+      this.paymentProviders.testActiveConnection(),
     ]);
     return { configuration, connection };
   }

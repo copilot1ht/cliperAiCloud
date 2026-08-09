@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import {
   MidtransPaymentProvider,
   SandboxPaymentProvider,
+  XenditPaymentProvider,
 } from "./payment-provider.service.js";
 
 describe("SandboxPaymentProvider", () => {
@@ -536,5 +537,152 @@ describe("MidtransPaymentProvider", () => {
       externalId: "CLP-20260715-NOT-OPENED",
       status: "pending",
     });
+  });
+});
+
+describe("XenditPaymentProvider", () => {
+  const secretKey = "xendit-secret-key-with-at-least-32-characters";
+  const callbackToken = "xendit-webhook-token-with-at-least-32-characters";
+  const provider = new XenditPaymentProvider({
+    secretKey,
+    webhookToken: callbackToken,
+    mode: "test",
+    apiVersion: "2024-11-11",
+    notificationUrl: "https://api.example.com/api/payments/webhook/xendit",
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("creates a QRIS payment request and extracts QR_STRING semantically", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            payment_request_id: "pr-00000000-0000-0000-0000-000000000001",
+            reference_id: "CLP-20260809-XENDIT",
+            request_amount: 17_000,
+            channel_code: "QRIS",
+            status: "REQUIRES_ACTION",
+            actions: [
+              {
+                type: "PRESENT_TO_CUSTOMER",
+                descriptor: "QR_STRING",
+                value: "00020101021226610014COM.XENDIT.QRIS",
+              },
+            ],
+          }),
+          { status: 201 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await provider.createPayment({
+      invoiceNumber: "CLP-20260809-XENDIT",
+      amountIdr: 17_000,
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      customer: { id: "u1", email: "user@example.com", displayName: "User" },
+      description: "Cliper top-up",
+    });
+
+    expect(result).toMatchObject({
+      provider: "xendit",
+      externalId: "pr-00000000-0000-0000-0000-000000000001",
+      qrString: "00020101021226610014COM.XENDIT.QRIS",
+    });
+    expect(result.qrImageBase64).toMatch(/^data:image\/png;base64,/);
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls[0]?.[0]).toBe("https://api.xendit.co/v3/payment_requests");
+    const request = calls[0]?.[1] || {};
+    expect(String(request.body)).toContain('"channel_code":"QRIS"');
+    expect(String((request.headers as Record<string, string>).Authorization)).not.toContain(secretKey);
+  });
+
+  it("rejects a response without a QR action", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              payment_request_id: "pr-00000000-0000-0000-0000-000000000002",
+              reference_id: "CLP-20260809-NO-QR",
+              request_amount: 17_000,
+              channel_code: "QRIS",
+              actions: [],
+            }),
+            { status: 201 },
+          ),
+      ),
+    );
+
+    await expect(
+      provider.createPayment({
+        invoiceNumber: "CLP-20260809-NO-QR",
+        amountIdr: 17_000,
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+        customer: { id: "u1", email: "user@example.com", displayName: "User" },
+        description: "Cliper top-up",
+      }),
+    ).rejects.toThrow("XENDIT_QR_ACTION_MISSING");
+  });
+
+  it("verifies a callback token and normalizes a successful payment", () => {
+    const raw = Buffer.from(
+      JSON.stringify({
+        event: "payment.capture",
+        created: "2026-08-09T00:00:00.000Z",
+        data: {
+          payment_id: "py-00000000-0000-0000-0000-000000000001",
+          payment_request_id: "pr-00000000-0000-0000-0000-000000000001",
+          reference_id: "CLP-20260809-XENDIT",
+          request_amount: 17_000,
+          status: "SUCCEEDED",
+          updated: "2026-08-09T00:01:00.000Z",
+        },
+      }),
+    );
+    expect(
+      provider.verifyWebhook(raw, { "x-callback-token": callbackToken }),
+    ).toMatchObject({
+      verified: true,
+      event: {
+        externalId: "pr-00000000-0000-0000-0000-000000000001",
+        invoiceNumber: "CLP-20260809-XENDIT",
+        amountIdr: 17_000,
+        status: "paid",
+      },
+    });
+    expect(provider.verifyWebhook(raw, { "x-callback-token": "invalid" }).verified).toBe(false);
+  });
+
+  it("acknowledges a verified informational webhook without creating an event", () => {
+    const raw = Buffer.from(JSON.stringify({ event: "payment_request.status", data: {} }));
+    const result = provider.verifyWebhook(raw, {
+      "x-callback-token": callbackToken,
+    });
+    expect(result.verified).toBe(true);
+    expect(result.event).toBeUndefined();
+  });
+
+  it("normalizes payment-request status sync", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              payment_request_id: "pr-00000000-0000-0000-0000-000000000003",
+              reference_id: "CLP-20260809-SYNC",
+              request_amount: 17_000,
+              status: "SUCCEEDED",
+              updated: "2026-08-09T00:01:00.000Z",
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+    await expect(
+      provider.getTransactionStatus("pr-00000000-0000-0000-0000-000000000003", 17_000),
+    ).resolves.toMatchObject({ invoiceNumber: "CLP-20260809-SYNC", status: "paid" });
   });
 });
