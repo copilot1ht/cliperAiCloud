@@ -66,6 +66,8 @@ describe("MidtransPaymentProvider", () => {
     serverKey,
     "https://cliper.example",
     false,
+    "gopay",
+    "https://api.cliper.example/api/payments/webhook/midtrans",
   );
 
   afterEach(() => vi.unstubAllGlobals());
@@ -127,6 +129,9 @@ describe("MidtransPaymentProvider", () => {
       ),
     ).not.toContain(serverKey);
     expect(String(request.body)).toContain("25000");
+    expect(
+      (request.headers as Record<string, string>)["X-Override-Notification"],
+    ).toBe("https://api.cliper.example/api/payments/webhook/midtrans");
     const qrRequest = calls[1]?.[1] || {};
     expect(qrRequest.redirect).toBe("error");
   });

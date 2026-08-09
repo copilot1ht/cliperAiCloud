@@ -136,6 +136,21 @@ function maskedOrderId(value: unknown): string | null {
   const normalized = String(value || "").trim();
   return normalized ? "***" + normalized.slice(-8) : null;
 }
+function normalizedMidtransNotificationUrl(value: unknown): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "https:" || !parsed.hostname) {
+      throw new Error("notification URL must be HTTPS");
+    }
+    return parsed.toString();
+  } catch {
+    throw new ServiceUnavailableException(
+      "MIDTRANS_NOTIFICATION_URL harus berupa URL HTTPS publik.",
+    );
+  }
+}
 function midtransText(
   payload: Record<string, unknown>,
   keys: string[],
@@ -302,12 +317,14 @@ export class MidtransPaymentProvider implements PaymentProvider {
   private readonly serverKey: string;
   private readonly apiOrigin: string;
   private readonly qrisAcquirer: "gopay" | "airpay_shopee";
+  private readonly notificationUrl: string;
 
   constructor(
     serverKey: string,
     _webOrigin: string,
     production = false,
     qrisAcquirer = "gopay",
+    notificationUrl = "",
   ) {
     this.serverKey = String(serverKey || "").trim();
     this.apiOrigin = production
@@ -325,6 +342,7 @@ export class MidtransPaymentProvider implements PaymentProvider {
       );
     }
     this.qrisAcquirer = normalizedAcquirer;
+    this.notificationUrl = normalizedMidtransNotificationUrl(notificationUrl);
     if (this.serverKey.length < 20)
       throw new ServiceUnavailableException(
         "MIDTRANS_SERVER_KEY belum dikonfigurasi.",
@@ -501,9 +519,13 @@ export class MidtransPaymentProvider implements PaymentProvider {
   async createPayment(
     input: CreateProviderPaymentInput,
   ): Promise<CreateProviderPaymentResult> {
+    const headers = this.headers();
+    if (this.notificationUrl) {
+      headers["X-Override-Notification"] = this.notificationUrl;
+    }
     const rawPayload = await this.request(`${this.apiOrigin}/v2/charge`, {
       method: "POST",
-      headers: this.headers(),
+      headers,
       body: JSON.stringify({
         payment_type: "qris",
         qris: {
@@ -878,6 +900,7 @@ export class PaymentProviderService {
       process.env.WEB_ORIGIN || "http://localhost:3000",
       credentials.isProduction,
       process.env.MIDTRANS_QRIS_ACQUIRER || "gopay",
+      credentials.notificationUrl,
     );
   }
 
