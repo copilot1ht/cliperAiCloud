@@ -28,6 +28,8 @@ export interface RouterOptions {
   planRoutes?: Record<string, Partial<Record<AiModule, string[]>>>;
   circuitFailureThreshold?: number;
   circuitCooldownMs?: number;
+  /** API hosts can supply a shared cross-replica provider guard. */
+  withProviderCapacity?: <T>(providerCode: string, work: () => Promise<T>) => Promise<T>;
   fetchImpl?: typeof fetch;
 }
 
@@ -83,6 +85,20 @@ function retryableProviderError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   if (/HTTP (400|401|403|404|409|422):/i.test(message)) return false;
   return true;
+}
+
+function providerCapacityError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const response = "getResponse" in error && typeof error.getResponse === "function"
+    ? error.getResponse()
+    : undefined;
+  return Boolean(
+    response
+    && typeof response === "object"
+    && ["PROVIDER_CONCURRENCY_LIMIT", "PROVIDER_RATE_LIMITED"].includes(
+      String((response as Record<string, unknown>).code || ""),
+    ),
+  );
 }
 
 function retryDelayMs(attempt: number): number {
@@ -256,6 +272,7 @@ export class AiRouter {
   private readonly planRoutes: Record<string, Partial<Record<AiModule, string[]>>>;
   private readonly circuitFailureThreshold: number;
   private readonly circuitCooldownMs: number;
+  private readonly withProviderCapacity?: RouterOptions["withProviderCapacity"];
 
   constructor(options: RouterOptions) {
     this.providers = options.providers.map((provider) => ({ ...provider, nextKey: 0, failures: 0 }));
@@ -263,6 +280,7 @@ export class AiRouter {
     this.retries = Math.max(1, options.retriesPerProvider ?? 2);
     this.circuitFailureThreshold = Math.max(1, options.circuitFailureThreshold ?? 3);
     this.circuitCooldownMs = Math.max(1_000, options.circuitCooldownMs ?? 30_000);
+    this.withProviderCapacity = options.withProviderCapacity;
     this.allowModelOverride = options.allowModelOverride === true;
     this.moduleMaxTokens = {
       highlight: 1800,
@@ -325,18 +343,28 @@ export class AiRouter {
     if (!candidates.length) throw new Error("Tidak ada AI provider aktif. Tambahkan dan uji API key melalui Provider Manager.");
 
     const errors: string[] = [];
+    const capacityLimitedProviders = new Set<string>();
+    let lastCapacityError: unknown;
     let failedAttempts = 0;
     for (let providerIndex = 0; providerIndex < candidates.length; providerIndex += 1) {
       const provider = candidates[providerIndex]!;
       for (let attempt = 0; attempt < this.retries; attempt += 1) {
         try {
-          const response = await this.callProvider(provider, request, module);
+          const response = this.withProviderCapacity
+            ? await this.withProviderCapacity(provider.code, () => this.callProvider(provider, request, module))
+            : await this.callProvider(provider, request, module);
           response.routing = {
             retry_count: failedAttempts,
             fallback_count: providerIndex,
           };
           return response;
         } catch (error) {
+          if (providerCapacityError(error)) {
+            capacityLimitedProviders.add(provider.code);
+            lastCapacityError = error;
+            errors.push(`${provider.code}: capacity limited`);
+            break;
+          }
           failedAttempts += 1;
           provider.failures += 1;
           provider.lastError = error instanceof Error ? error.message : String(error);
@@ -349,6 +377,9 @@ export class AiRouter {
           await wait(retryDelayMs(attempt));
         }
       }
+    }
+    if (lastCapacityError && capacityLimitedProviders.size === candidates.length) {
+      throw lastCapacityError;
     }
     throw new Error(`Semua AI provider gagal. ${errors.join(" | ")}`);
   }

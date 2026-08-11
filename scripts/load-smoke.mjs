@@ -1,6 +1,8 @@
 const target = String(process.env.LOAD_TEST_URL || "http://127.0.0.1:4100/health/live").trim();
 const durationSeconds = Math.max(1, Math.min(120, Number(process.env.LOAD_TEST_DURATION_SECONDS || 15)));
-const concurrency = Math.max(1, Math.min(100, Math.floor(Number(process.env.LOAD_TEST_CONCURRENCY || 20))));
+// Keep this high enough for staged local/staging burst checks. Production
+// remains explicitly blocked below unless an operator approves the window.
+const concurrency = Math.max(1, Math.min(1_000, Math.floor(Number(process.env.LOAD_TEST_CONCURRENCY || 20))));
 
 if (/cliperaicloud\.online/i.test(target) && process.env.ALLOW_PRODUCTION_LOAD_TEST !== "true") {
   throw new Error("Refusing to load test production. Use a staging URL, or set ALLOW_PRODUCTION_LOAD_TEST=true after an approved capacity window.");

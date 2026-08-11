@@ -91,6 +91,41 @@ export class RateLimitService {
     }
   }
 
+  async withProviderCapacity<T>(providerCode: string, work: () => Promise<T>): Promise<T> {
+    const provider = String(providerCode || "unknown").trim().toLowerCase();
+    const rateLimit = this.providerRateLimit(provider);
+    const rate = await this.consume(this.redisKey(`ai-provider-rate:${provider}`), rateLimit, 1_000);
+    if (rate.count > rateLimit) {
+      throw new HttpException(
+        {
+          statusCode: 429,
+          code: "PROVIDER_RATE_LIMITED",
+          message: "Provider AI sedang mencapai batas throughput. Coba lagi sesaat.",
+          retryAfter: Math.max(1, Math.ceil(rate.ttlMs / 1_000)),
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    const key = this.redisKey(`ai-provider-concurrency:${provider}`);
+    const acquired = await this.acquireLease(key, this.providerConcurrencyLimit(provider));
+    if (!acquired) {
+      throw new HttpException(
+        {
+          statusCode: 429,
+          code: "PROVIDER_CONCURRENCY_LIMIT",
+          message: "Provider AI sedang penuh. Coba lagi sesaat.",
+          retryAfter: 3,
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    try {
+      return await work();
+    } finally {
+      await this.releaseLease(key);
+    }
+  }
+
   limits() {
     return {
       free: this.planLimit("free"),
@@ -102,6 +137,10 @@ export class RateLimitService {
         starter: this.aiConcurrencyLimit("starter"),
         pro: this.aiConcurrencyLimit("pro"),
         enterprise: this.aiConcurrencyLimit("enterprise"),
+      },
+      provider: {
+        requestsPerSecond: this.providerRateLimit("default"),
+        concurrency: this.providerConcurrencyLimit("default"),
       },
       distributed: this.redis.configured(),
     };
@@ -169,6 +208,22 @@ export class RateLimitService {
     const normalized = String(plan || "free").toUpperCase();
     const defaults: Record<string, number> = { FREE: 1, STARTER: 2, PRO: 4, TEAM: 6, ENTERPRISE: 10 };
     return this.configuredLimit(`AI_CONCURRENCY_${normalized}`, defaults[normalized] || defaults.FREE!);
+  }
+
+  private providerRateLimit(provider: string): number {
+    const normalized = provider.replace(/[^A-Z0-9]/gi, "_").toUpperCase();
+    return this.configuredLimit(
+      `AI_PROVIDER_RPS_${normalized}`,
+      this.configuredLimit("AI_PROVIDER_RPS", 30),
+    );
+  }
+
+  private providerConcurrencyLimit(provider: string): number {
+    const normalized = provider.replace(/[^A-Z0-9]/gi, "_").toUpperCase();
+    return this.configuredLimit(
+      `AI_PROVIDER_CONCURRENCY_${normalized}`,
+      this.configuredLimit("AI_PROVIDER_CONCURRENCY", 20),
+    );
   }
 
   private configuredLimit(name: string, fallback: number): number {

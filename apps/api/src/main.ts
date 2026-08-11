@@ -13,6 +13,12 @@ import { PrismaExceptionFilter } from "./database/prisma-exception.filter.js";
 
 loadWorkspaceEnv();
 
+function successLogSampleRate(): number {
+  const fallback = String(process.env.NODE_ENV).toLowerCase() === "production" ? 0.05 : 1;
+  const parsed = Number(process.env.HTTP_SUCCESS_LOG_SAMPLE_RATE || fallback);
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : fallback;
+}
+
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true, rawBody: true });
   // Encrypted admin backups are intentionally bounded again in BackupService.
@@ -21,6 +27,7 @@ async function bootstrap(): Promise<void> {
   app.useBodyParser("json", { limit: bodySizeLimit });
   app.useBodyParser("urlencoded", { limit: bodySizeLimit, extended: true });
   const runtimeConfig = app.get(RuntimeConfigService);
+  const requestLogSampleRate = successLogSampleRate();
   app.useGlobalFilters(new PrismaExceptionFilter());
   runtimeConfig.assertProductionSafe();
   for (const warning of runtimeConfig.report().warnings) console.warn(`[config] ${warning}`);
@@ -49,6 +56,9 @@ async function bootstrap(): Promise<void> {
     const startedAt = Date.now();
     response.setHeader("X-Request-ID", requestId);
     response.on("finish", () => {
+      // Keep failures fully observable, but do not turn successful burst traffic
+      // into a CPU and log-volume bottleneck.
+      if (response.statusCode < 400 && Math.random() >= requestLogSampleRate) return;
       console.log(JSON.stringify({
         type: "http_request",
         requestId,

@@ -90,10 +90,17 @@ AI_CONCURRENCY_PRO=4
 AI_CONCURRENCY_TEAM=6
 AI_CONCURRENCY_ENTERPRISE=10
 AI_CONCURRENCY_TTL_MS=90000
+# Global guard per provider across all API replicas. Override individual
+# providers only after their documented quota has been verified.
+AI_PROVIDER_RPS=30
+AI_PROVIDER_CONCURRENCY=20
 PROVIDER_RETRIES=2
 PROVIDER_CIRCUIT_FAILURE_THRESHOLD=3
 PROVIDER_CIRCUIT_COOLDOWN_MS=30000
 ADMIN_CONFIG_REFRESH_MS=60000
+# Errors are always logged. Sample routine success logs to keep burst traffic
+# from consuming CPU and Railway log volume.
+HTTP_SUCCESS_LOG_SAMPLE_RATE=0.05
 
 # Reduce PostgreSQL write amplification from normal desktop activity.
 KEY_ACTIVITY_WRITE_INTERVAL_MS=600000
@@ -118,6 +125,9 @@ pnpm test:load
 
 The command rejects the Cliper production domain unless an operator explicitly
 sets `ALLOW_PRODUCTION_LOAD_TEST=true` during an approved capacity window.
+For a staged non-financial test, use 50, 100, 250, 500, then 1,000 concurrent
+workers against localhost or staging and stop at the first error-rate or p95
+regression. This tool is not for payment, wallet, or provider endpoints.
 
 Untuk uji lokal gunakan Sandbox Access Keys. API membuat QRIS melalui Midtrans Core API dan menampilkan gambar QR di web. Set `MIDTRANS_IS_PRODUCTION=true` hanya setelah Production Access Keys dan notification URL HTTPS siap. Jangan menaruh Server Key di GitHub, browser, atau log.
 
@@ -144,7 +154,12 @@ Atur Payment Notification URL di Midtrans MAP ke `https://api.cliperaicloud.onli
 
 Untuk aktivasi pertama, simpan credential hanya pada Railway service `@cliper/api`. Sesudah database Production sehat, admin dapat memasukkan rotasi key melalui **Admin > Settings > Payment Settings**; nilai akan dienkripsi dan UI hanya menampilkan status/mask. Jangan menaruh Midtrans key pada Vercel atau `@cliper/web`.
 
-Implementasi control-plane MVP saat ini masih memakai store proses untuk beberapa data. Jangan menaikkan replica lebih dari satu sebelum repository persistence Prisma selesai diintegrasikan.
+Konfigurasi routing/admin memakai cache proses yang direkonsiliasi melalui
+PostgreSQL dan revision Redis; wallet, payment, API key, license, dan session
+tetap memiliki source of truth di PostgreSQL. Karena itu API siap dijalankan
+lebih dari satu replica. Tetap mulai dari satu replica pada trafik rendah;
+naikkan ke dua hanya setelah staging/load test dan batas koneksi PostgreSQL
+ditinjau.
 
 Pricing gateway memakai provider token cost aktual. `MINIMUM_MARGIN_BPS=5000` berarti gross margin minimum 50% (markup efektif minimum 100%); `MINIMUM_CLIP_CHARGE_MICRO_USD=5000` hanya lantai estimasi job highlight, bukan harga palsu per kartu. Sesuaikan rate provider di environment API sebelum membuka akses user.
 

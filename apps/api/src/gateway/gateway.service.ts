@@ -107,6 +107,7 @@ export class GatewayService {
       };
     } catch (error) {
       await this.credits.release(reservation);
+      if (error instanceof HttpException) throw error;
       throw new ServiceUnavailableException(error instanceof Error ? error.message : "AI gateway gagal.");
     }
   }
@@ -122,6 +123,8 @@ export class GatewayService {
         allowModelOverride: String(process.env.ALLOW_CLIENT_MODEL_OVERRIDE || "").toLowerCase() === "true",
         planRoutes: this.adminStore.planRoutes(),
         moduleMaxTokens: this.adminStore.moduleMaxTokens(),
+        withProviderCapacity: (provider, work) =>
+          this.rateLimits.withProviderCapacity(provider, work),
       });
       this.routerRevision = revision;
     }

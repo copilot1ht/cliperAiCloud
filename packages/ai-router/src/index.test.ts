@@ -24,6 +24,33 @@ describe("AiRouter", () => {
     expect(router.health().find((provider) => provider.code === "first")?.status).toBe("degraded");
   });
 
+  it("uses a fallback without opening a circuit when a provider is capacity-limited", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: "fallback healthy" } }],
+    }), { status: 200 }));
+    const router = new AiRouter({
+      retriesPerProvider: 1,
+      fetchImpl,
+      withProviderCapacity: async (provider, work) => {
+        if (provider === "busy") {
+          const error = Object.assign(new Error("provider busy"), {
+            getResponse: () => ({ code: "PROVIDER_CONCURRENCY_LIMIT" }),
+          });
+          throw error;
+        }
+        return work();
+      },
+      providers: [
+        { code: "busy", displayName: "Busy", baseUrl: "https://busy.test/v1", model: "busy", apiKeys: ["a"] },
+        { code: "healthy", displayName: "Healthy", baseUrl: "https://healthy.test/v1", model: "healthy", apiKeys: ["b"] },
+      ],
+    });
+
+    await expect(router.route({ messages: [{ role: "user", content: "test" }] })).resolves.toMatchObject({ provider: "healthy" });
+    expect(router.health().find((provider) => provider.code === "busy")?.status).toBe("healthy");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to the next provider when the first returns empty content", async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "" } }] }), { status: 200 }))

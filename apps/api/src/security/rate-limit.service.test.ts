@@ -36,4 +36,21 @@ describe("RateLimitService", () => {
     await expect(first).resolves.toBe("complete");
     await expect(service.withAiConcurrency("account-a", "key-a", "free", async () => "again")).resolves.toBe("again");
   });
+
+  it("caps provider work independently from per-account AI leases", async () => {
+    const service = memoryRateLimiter();
+    const original = process.env.AI_PROVIDER_CONCURRENCY;
+    process.env.AI_PROVIDER_CONCURRENCY = "1";
+    let releaseFirst: (() => void) | undefined;
+    const first = service.withProviderCapacity("gemini", () => new Promise<string>((resolve) => {
+      releaseFirst = () => resolve("first");
+    }));
+    await expect(service.withProviderCapacity("gemini", async () => "second")).rejects.toMatchObject({
+      response: expect.objectContaining({ code: "PROVIDER_CONCURRENCY_LIMIT" }),
+    });
+    releaseFirst?.();
+    await expect(first).resolves.toBe("first");
+    if (original === undefined) delete process.env.AI_PROVIDER_CONCURRENCY;
+    else process.env.AI_PROVIDER_CONCURRENCY = original;
+  });
 });
