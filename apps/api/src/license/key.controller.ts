@@ -3,6 +3,7 @@ import { SessionGuard, type SessionAuthenticatedRequest } from "../security/sess
 import { AuthService } from "../auth/auth.service.js";
 import { LicenseService } from "./license.service.js";
 import { AccountWriteGuard } from "../security/account-write.guard.js";
+import { RateLimitService } from "../security/rate-limit.service.js";
 
 @Controller("v1/keys")
 @UseGuards(SessionGuard)
@@ -10,6 +11,7 @@ export class KeyController {
   constructor(
     @Inject(LicenseService) private readonly licenses: LicenseService,
     @Inject(AuthService) private readonly auth: AuthService,
+    @Inject(RateLimitService) private readonly rateLimits: RateLimitService,
   ) {}
 
   @Get()
@@ -21,6 +23,7 @@ export class KeyController {
   @UseGuards(AccountWriteGuard)
   async create(@Body() input: { label?: string }, @Req() request: SessionAuthenticatedRequest) {
     const ownerId = request.cliperSession?.userId || "";
+    await this.rateLimits.assertKeyCreate(ownerId);
     const user = await this.auth.userById(ownerId);
     return this.licenses.createKey({ label: input.label, ownerId, plan: user.plan, deviceLimit: user.deviceLimit });
   }

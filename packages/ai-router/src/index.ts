@@ -26,6 +26,8 @@ export interface RouterOptions {
   allowModelOverride?: boolean;
   moduleMaxTokens?: Partial<Record<AiModule, number>>;
   planRoutes?: Record<string, Partial<Record<AiModule, string[]>>>;
+  circuitFailureThreshold?: number;
+  circuitCooldownMs?: number;
   fetchImpl?: typeof fetch;
 }
 
@@ -34,6 +36,7 @@ type ProviderState = ProviderDefinition & {
   failures: number;
   lastError?: string;
   latencyMs?: number;
+  circuitOpenUntil?: number;
 };
 
 function splitKeys(value?: string): string[] {
@@ -74,6 +77,20 @@ function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function retryableProviderError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/HTTP (400|401|403|404|409|422):/i.test(message)) return false;
+  return true;
+}
+
+function retryDelayMs(attempt: number): number {
+  return Math.min(2_000, 200 * 2 ** attempt) + Math.floor(Math.random() * 100);
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function normalizedUsage(
@@ -237,11 +254,15 @@ export class AiRouter {
   private readonly allowModelOverride: boolean;
   private readonly moduleMaxTokens: Record<AiModule, number>;
   private readonly planRoutes: Record<string, Partial<Record<AiModule, string[]>>>;
+  private readonly circuitFailureThreshold: number;
+  private readonly circuitCooldownMs: number;
 
   constructor(options: RouterOptions) {
     this.providers = options.providers.map((provider) => ({ ...provider, nextKey: 0, failures: 0 }));
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.retries = Math.max(1, options.retriesPerProvider ?? 2);
+    this.circuitFailureThreshold = Math.max(1, options.circuitFailureThreshold ?? 3);
+    this.circuitCooldownMs = Math.max(1_000, options.circuitCooldownMs ?? 30_000);
     this.allowModelOverride = options.allowModelOverride === true;
     this.moduleMaxTokens = {
       highlight: 1800,
@@ -279,7 +300,7 @@ export class AiRouter {
     return this.providers.map((provider) => ({
       code: provider.code,
       displayName: provider.displayName,
-      status: provider.enabled === false || provider.apiKeys.length === 0 ? "disabled" : provider.failures >= 3 ? "degraded" : "healthy",
+      status: provider.enabled === false || provider.apiKeys.length === 0 ? "disabled" : provider.failures >= this.circuitFailureThreshold || this.circuitIsOpen(provider) ? "degraded" : "healthy",
       model: provider.model,
       keyCount: provider.apiKeys.length,
       latencyMs: provider.latencyMs,
@@ -293,7 +314,7 @@ export class AiRouter {
     const plan = String(request.metadata?.plan || "free").toLowerCase();
     const preferredOrder = this.planRoutes[plan]?.[module] ?? this.planRoutes.free?.[module] ?? [];
     const candidates = this.providers
-      .filter((provider) => provider.enabled !== false && provider.apiKeys.length > 0 && (!provider.modules || provider.modules.includes(module)))
+      .filter((provider) => provider.enabled !== false && provider.apiKeys.length > 0 && !this.circuitIsOpen(provider) && (!provider.modules || provider.modules.includes(module)))
       .sort((a, b) => {
         const aPlanRank = preferredOrder.indexOf(a.code);
         const bPlanRank = preferredOrder.indexOf(b.code);
@@ -320,6 +341,12 @@ export class AiRouter {
           provider.failures += 1;
           provider.lastError = error instanceof Error ? error.message : String(error);
           errors.push(`${provider.code}: ${provider.lastError}`);
+          if (provider.failures >= this.circuitFailureThreshold) {
+            provider.circuitOpenUntil = Date.now() + this.circuitCooldownMs;
+            break;
+          }
+          if (!retryableProviderError(error) || attempt + 1 >= this.retries) break;
+          await wait(retryDelayMs(attempt));
         }
       }
     }
@@ -396,7 +423,8 @@ export class AiRouter {
       }
       const content = protocol === "anthropic-messages" ? extractAnthropicContent(payload) : extractContent(payload);
       if (!content) throw new Error("Provider mengembalikan content kosong.");
-      provider.failures = Math.max(0, provider.failures - 1);
+      provider.failures = 0;
+      provider.circuitOpenUntil = undefined;
       provider.latencyMs = Date.now() - started;
       provider.lastError = undefined;
 
@@ -451,12 +479,21 @@ export class AiRouter {
       clearTimeout(timer);
     }
   }
+
+  private circuitIsOpen(provider: ProviderState): boolean {
+    if (!provider.circuitOpenUntil) return false;
+    if (provider.circuitOpenUntil > Date.now()) return true;
+    provider.circuitOpenUntil = undefined;
+    return false;
+  }
 }
 
 export function createRouterFromEnv(env: NodeJS.ProcessEnv = process.env, fetchImpl?: typeof fetch): AiRouter {
   return new AiRouter({
     providers: providersFromEnv(env),
     retriesPerProvider: numberFromEnv(env.PROVIDER_RETRIES, 2),
+    circuitFailureThreshold: numberFromEnv(env.PROVIDER_CIRCUIT_FAILURE_THRESHOLD, 3),
+    circuitCooldownMs: numberFromEnv(env.PROVIDER_CIRCUIT_COOLDOWN_MS, 30_000),
     allowModelOverride: String(env.ALLOW_CLIENT_MODEL_OVERRIDE || "").toLowerCase() === "true",
     fetchImpl,
   });

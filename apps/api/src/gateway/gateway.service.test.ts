@@ -11,10 +11,10 @@ describe("GatewayService billing boundary", () => {
       billing: { provider_cost_usd: 0.1, service_cost_usd: 0.11, billed_cost_usd: 0.165, gross_profit_usd: 0.055, credit_charge_micro: 1650, markup_bps: 5000, markup_percent: 50 },
     };
     const usage = { record: vi.fn().mockResolvedValue({ persisted: true, jobCostAggregated: false }) };
-    const store = { revision: () => 1 };
+    const store = { revision: () => 1, refreshIfStale: vi.fn() };
     const pricing = { estimateRequest: () => ({ creditChargeMicro: 2000n }), moduleForRequest: () => "test", priceResponse: () => internal };
     const credits = { reserve: () => ({ id: "reservation-a", amountMicro: 2000 }), increaseReservation: vi.fn(), settle: vi.fn(), release: vi.fn() };
-    const rateLimits = { assertAllowed: vi.fn() };
+    const rateLimits = { assertAllowed: vi.fn(), withAiConcurrency: vi.fn((_account, _key, _plan, work) => work()) };
     const jobs = { assertProviderCallAllowed: vi.fn(), recordProviderUsage: vi.fn() };
     const service = new GatewayService(usage as never, store as never, pricing as never, credits as never, rateLimits as never, jobs as never);
     (service as unknown as { router: { route: () => Promise<CliperInternalChatResponse> }; routerRevision: number }).router = { route: async () => internal };
@@ -38,13 +38,13 @@ describe("GatewayService billing boundary", () => {
     const estimateRequest = vi.fn().mockReturnValue({ creditChargeMicro: 100n });
     const moduleForRequest = vi.fn().mockReturnValue("title");
     const usage = { record: vi.fn().mockResolvedValue({ persisted: true, jobCostAggregated: false }) };
-    const store = { revision: () => 1 };
+    const store = { revision: () => 1, refreshIfStale: vi.fn() };
     const pricing = { estimateRequest, moduleForRequest, priceResponse: () => internal };
     const credits = {
       reserve: vi.fn().mockResolvedValue({ id: "reservation-plan", amountMicro: 100, unlimited: true }),
       settle: vi.fn(), release: vi.fn(),
     };
-    const rateLimits = { assertAllowed: vi.fn() };
+    const rateLimits = { assertAllowed: vi.fn(), withAiConcurrency: vi.fn((_account, _key, _plan, work) => work()) };
     const jobs = { assertProviderCallAllowed: vi.fn(), recordProviderUsage: vi.fn() };
     const service = new GatewayService(usage as never, store as never, pricing as never, credits as never, rateLimits as never, jobs as never);
     (service as unknown as { router: { route: typeof route }; routerRevision: number }).router = { route };
@@ -72,14 +72,14 @@ describe("GatewayService billing boundary", () => {
       billing: { provider_cost_usd: 0.01, service_cost_usd: 0.02, billed_cost_usd: 0.04, gross_profit_usd: 0.02, credit_charge_micro: 40_000, markup_bps: 10_000, markup_percent: 100 },
     };
     const usage = { record: vi.fn().mockResolvedValue({ persisted: true, jobCostAggregated: false }) };
-    const store = { revision: () => 1 };
+    const store = { revision: () => 1, refreshIfStale: vi.fn() };
     const pricing = {
       estimateRequest: () => ({ creditChargeMicro: 2_000n, providerCostMicroUsd: 500n }),
       moduleForRequest: () => "highlight",
       priceResponse: () => internal,
     };
     const credits = { reserve: vi.fn() };
-    const rateLimits = { assertAllowed: vi.fn() };
+    const rateLimits = { assertAllowed: vi.fn(), withAiConcurrency: vi.fn((_account, _key, _plan, work) => work()) };
     const jobs = { assertProviderCallAllowed: vi.fn(), recordProviderUsage: vi.fn() };
     const service = new GatewayService(usage as never, store as never, pricing as never, credits as never, rateLimits as never, jobs as never);
     (service as unknown as { router: { route: () => Promise<CliperInternalChatResponse> }; routerRevision: number }).router = { route: async () => internal };

@@ -9,6 +9,11 @@ import { UsageService } from "../usage/usage.service.js";
 import { RateLimitService } from "../security/rate-limit.service.js";
 import { AnalysisJobService } from "../billing/analysis-job.service.js";
 
+function boundedInteger(value: string | undefined, fallback: number, minimum: number, maximum: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, Math.round(parsed))) : fallback;
+}
+
 @Injectable()
 export class GatewayService {
   private router?: AiRouter;
@@ -28,8 +33,15 @@ export class GatewayService {
   }
 
   async chat(request: CliperChatRequest, accountId = "development-account", plan = "starter", apiKeyId?: string): Promise<CliperChatResponse> {
+    await this.rateLimits.assertAllowed(accountId, plan);
+    return this.rateLimits.withAiConcurrency(accountId, apiKeyId, plan, () =>
+      this.executeChat(request, accountId, plan, apiKeyId),
+    );
+  }
+
+  private async executeChat(request: CliperChatRequest, accountId: string, plan: string, apiKeyId?: string): Promise<CliperChatResponse> {
+    await this.adminStore.refreshIfStale();
     const started = Date.now();
-    this.rateLimits.assertAllowed(accountId, plan);
     // The authenticated plan is server-owned. Forward it to the router and all
     // pricing/job checks instead of trusting (or omitting) client metadata.
     // Without this normalization every desktop request silently used the
@@ -104,7 +116,9 @@ export class GatewayService {
     if (!this.router || revision !== this.routerRevision) {
       this.router = new AiRouter({
         providers: this.adminStore.providersForRouter(),
-        retriesPerProvider: Number(process.env.PROVIDER_RETRIES || 2),
+        retriesPerProvider: boundedInteger(process.env.PROVIDER_RETRIES, 2, 1, 4),
+        circuitFailureThreshold: boundedInteger(process.env.PROVIDER_CIRCUIT_FAILURE_THRESHOLD, 3, 1, 10),
+        circuitCooldownMs: boundedInteger(process.env.PROVIDER_CIRCUIT_COOLDOWN_MS, 30_000, 1_000, 5 * 60_000),
         allowModelOverride: String(process.env.ALLOW_CLIENT_MODEL_OVERRIDE || "").toLowerCase() === "true",
         planRoutes: this.adminStore.planRoutes(),
         moduleMaxTokens: this.adminStore.moduleMaxTokens(),

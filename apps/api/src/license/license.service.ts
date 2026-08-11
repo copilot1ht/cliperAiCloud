@@ -10,6 +10,15 @@ const DEFAULT_DEVICE_LIMIT = 2;
 const DEFAULT_EXPIRE_DAYS = 365;
 const UNLIMITED_CREDIT_DISPLAY_MICRO = Number.MAX_SAFE_INTEGER;
 
+function activityWriteIntervalMs(): number {
+  const value = Number(process.env.KEY_ACTIVITY_WRITE_INTERVAL_MS || 10 * 60_000);
+  return Number.isFinite(value) ? Math.max(60_000, Math.min(value, 24 * 60 * 60_000)) : 10 * 60_000;
+}
+
+function activityWriteDue(lastActivityAt: Date | null | undefined, now: Date): boolean {
+  return !lastActivityAt || now.getTime() - lastActivityAt.getTime() >= activityWriteIntervalMs();
+}
+
 function keyPepper(): string {
   return String(process.env.LICENSE_KEY_PEPPER || process.env.PROVIDER_ENCRYPTION_KEY || "development-license-pepper-000000000000000000000");
 }
@@ -154,7 +163,10 @@ export class LicenseService {
       include: { user: { select: { isActive: true } } },
     });
     if (!key || key.status !== KeyStatus.ACTIVE || !key.user.isActive || (key.expiresAt && key.expiresAt.getTime() <= Date.now())) return undefined;
-    await this.database!.client().apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } });
+    const now = new Date();
+    if (activityWriteDue(key.lastUsedAt, now)) {
+      await this.database!.client().apiKey.update({ where: { id: key.id }, data: { lastUsedAt: now } });
+    }
     return { apiKeyId: key.id, accountId: key.userId, plan: planLabel(key.plan) };
   }
 
@@ -202,7 +214,7 @@ export class LicenseService {
       where: { secretHash: hashCliperApiKey(request.key, keyPepper()) },
       include: {
         user: { select: { isActive: true, unlimitedCredits: true } },
-        devices: { where: { revokedAt: null }, select: { id: true, fingerprint: true } },
+        devices: { where: { revokedAt: null }, select: { id: true, fingerprint: true, lastSeenAt: true } },
       },
     });
     if (!key || !key.user.isActive) return { valid: false, status: "revoked", reason: "License key tidak valid atau akun sudah dinonaktifkan." };
@@ -219,10 +231,13 @@ export class LicenseService {
         create: { userId: key.userId, apiKeyId: key.id, fingerprint: request.deviceFingerprint, name: "Cliper Desktop" },
         update: { apiKeyId: key.id, revokedAt: null, lastSeenAt: new Date() },
       });
-    } else {
+    } else if (activityWriteDue(existing.lastSeenAt, new Date())) {
       await client.device.update({ where: { id: existing.id }, data: { lastSeenAt: new Date() } });
     }
-    await client.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } });
+    const now = new Date();
+    if (activityWriteDue(key.lastUsedAt, now)) {
+      await client.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: now } });
+    }
     const account = await client.userCreditAccount.findUnique({ where: { userId: key.userId }, select: { balanceMicro: true, reservedMicro: true } });
     const available = account ? account.balanceMicro - account.reservedMicro : 0n;
     return {

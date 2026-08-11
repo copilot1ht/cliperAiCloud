@@ -7,6 +7,7 @@ import { decryptSecret, encryptSecret } from "@cliper/security";
 import { getProviderPreset, isSupportedProvider } from "./provider-catalog.js";
 import type { ProviderConnectionResult } from "./provider-connection.service.js";
 import { DatabaseService } from "../database/database.service.js";
+import { RedisService } from "../security/redis.service.js";
 
 export type AdminPlan = "free" | "starter" | "pro" | "enterprise";
 
@@ -91,6 +92,7 @@ const moduleBudgets: Partial<Record<AiModule, number>> = {
   caption: 700,
   metadata: 500,
 };
+const CONFIG_REVISION_KEY = "cliper:admin-config:revision";
 
 function finiteNumber(value: unknown, fallback: number, minimum = 0): number {
   const parsed = Number(value);
@@ -104,8 +106,14 @@ export class AdminStoreService implements OnModuleInit {
   private readonly paymentsValue = new Map<string, PaymentRecord>();
   private pricingPolicyValue: PricingPolicyState;
   private revisionValue = 1;
+  private distributedRevision?: string;
+  private lastConfigCheckAt = 0;
+  private refreshInFlight?: Promise<void>;
 
-  constructor(@Optional() @Inject(DatabaseService) private readonly database?: DatabaseService) {
+  constructor(
+    @Optional() @Inject(DatabaseService) private readonly database?: DatabaseService,
+    @Optional() @Inject(RedisService) private readonly redis?: RedisService,
+  ) {
     const legacyMarkupPercent = finiteNumber(process.env.DEFAULT_MARKUP_PERCENT, 50);
     this.pricingPolicyValue = {
       markupBps: Math.round(finiteNumber(process.env.DEFAULT_MARKUP_BPS, legacyMarkupPercent * 100)),
@@ -277,6 +285,30 @@ export class AdminStoreService implements OnModuleInit {
       await this.persistPricingPolicy();
     }
     this.touch();
+    this.lastConfigCheckAt = Date.now();
+  }
+
+  async refreshIfStale(): Promise<void> {
+    if (!this.database?.configured()) return;
+    const now = Date.now();
+    const intervalMs = Math.min(
+      10 * 60_000,
+      finiteNumber(process.env.ADMIN_CONFIG_REFRESH_MS, 60_000, 5_000),
+    );
+    if (now - this.lastConfigCheckAt < intervalMs) return;
+    if (this.refreshInFlight) return this.refreshInFlight;
+    this.refreshInFlight = (async () => {
+      const remoteRevision = await this.redis?.get(CONFIG_REVISION_KEY);
+      if (remoteRevision && remoteRevision === this.distributedRevision) {
+        this.lastConfigCheckAt = Date.now();
+        return;
+      }
+      await this.reloadFromDatabase();
+      this.distributedRevision = remoteRevision;
+    })().finally(() => {
+      this.refreshInFlight = undefined;
+    });
+    return this.refreshInFlight;
   }
 
   revision(): number {
@@ -701,11 +733,13 @@ export class AdminStoreService implements OnModuleInit {
         lastModelSyncAt: provider.lastHealthAt ? new Date(provider.lastHealthAt) : null,
       },
     });
+    await this.publishConfigRevision();
   }
 
   async persistProviderDeletion(id: string): Promise<void> {
     if (!this.database?.configured()) return;
     await this.database.client().aiProvider.deleteMany({ where: { id } });
+    await this.publishConfigRevision();
   }
 
   async persistRoute(id: string): Promise<void> {
@@ -729,6 +763,7 @@ export class AdminStoreService implements OnModuleInit {
         enabled: route.enabled,
       },
     });
+    await this.publishConfigRevision();
   }
 
   async persistPricingPolicy(): Promise<void> {
@@ -801,6 +836,14 @@ export class AdminStoreService implements OnModuleInit {
         isDefault: true,
       },
     });
+    await this.publishConfigRevision();
+  }
+
+  private async publishConfigRevision(): Promise<void> {
+    const revision = `${Date.now()}:${randomUUID()}`;
+    this.distributedRevision = revision;
+    this.lastConfigCheckAt = Date.now();
+    await this.redis?.set(CONFIG_REVISION_KEY, revision, 24 * 60 * 60_000);
   }
 
   private safeProvider(provider: StoredProvider) {

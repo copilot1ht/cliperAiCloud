@@ -149,8 +149,10 @@ export class DesktopSessionService {
   async heartbeat(context: DesktopSessionContext): Promise<DesktopHeartbeatResponse> {
     const session = await this.findById(context.sessionId);
     if (!session || session.revokedAt) throw new UnauthorizedException("Desktop session tidak aktif.");
-    session.lastHeartbeatAt = Date.now();
-    if (this.usesPersistence()) {
+    const now = Date.now();
+    const shouldPersist = now - session.lastHeartbeatAt >= milliseconds("DESKTOP_HEARTBEAT_PERSIST_MS", 10 * 60_000);
+    session.lastHeartbeatAt = now;
+    if (this.usesPersistence() && shouldPersist) {
       await this.databaseClient().desktopSession.update({
         where: { id: session.id },
         data: { lastHeartbeatAt: new Date(session.lastHeartbeatAt) },

@@ -126,4 +126,15 @@ describe("AdminStoreService", () => {
     const store = new AdminStoreService();
     expect(() => store.updatePricingPolicy({ minimumMarginBps: 4_999 })).toThrow("Pricing basis points");
   });
+
+  it("skips a database reload when this replica already has the shared config revision", async () => {
+    const database = { configured: () => true };
+    const redis = { get: async () => "shared-revision" };
+    const store = new AdminStoreService(database as never, redis as never);
+    const internal = store as unknown as { distributedRevision?: string; lastConfigCheckAt: number };
+    internal.distributedRevision = "shared-revision";
+    internal.lastConfigCheckAt = 0;
+
+    await expect(store.refreshIfStale()).resolves.toBeUndefined();
+  });
 });

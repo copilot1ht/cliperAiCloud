@@ -29,6 +29,7 @@
     "backup:postgres": "powershell -ExecutionPolicy Bypass -File scripts/backup-postgres.ps1",
     "qa:signed-session": "powershell -ExecutionPolicy Bypass -File scripts/qa-signed-session.ps1",
     "qa:payment-local": "powershell -ExecutionPolicy Bypass -File scripts/qa-payment-local.ps1",
+    "test:load": "node scripts/load-smoke.mjs",
     "qa": "pnpm typecheck && pnpm test && pnpm build"
   },
   "devDependencies": {

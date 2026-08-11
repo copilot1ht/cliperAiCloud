@@ -67,6 +67,58 @@ PostgreSQL wajib untuk Payment Engine. Redis direkomendasikan dan dapat direfere
 REDIS_URL=${{Redis.REDIS_URL}}
 ```
 
+### Capacity baseline
+
+Untuk tahap 100 sampai 1.000 pengguna terdaftar, gunakan API stateless dengan
+PostgreSQL dan Redis managed. Media tetap diproses di Electron pengguna; jangan
+menambahkan worker render ke Railway.
+
+```text
+# Start with two API replicas. Set DB_POOL_MAX per replica, not globally.
+DB_POOL_MAX=5
+DB_CONNECTION_TIMEOUT_MS=5000
+
+# Distributed abuse and AI work protection.
+RATE_LIMIT_AUTH_LOGIN_PER_MINUTE=5
+RATE_LIMIT_PASSWORD_RESET_PER_15_MINUTES=3
+RATE_LIMIT_KEY_CREATE_PER_HOUR=5
+RATE_LIMIT_PAYMENT_CREATE_PER_10_MINUTES=5
+RATE_LIMIT_PAYMENT_SYNC_PER_MINUTE=20
+AI_CONCURRENCY_FREE=1
+AI_CONCURRENCY_STARTER=2
+AI_CONCURRENCY_PRO=4
+AI_CONCURRENCY_TEAM=6
+AI_CONCURRENCY_ENTERPRISE=10
+AI_CONCURRENCY_TTL_MS=90000
+PROVIDER_RETRIES=2
+PROVIDER_CIRCUIT_FAILURE_THRESHOLD=3
+PROVIDER_CIRCUIT_COOLDOWN_MS=30000
+ADMIN_CONFIG_REFRESH_MS=60000
+
+# Reduce PostgreSQL write amplification from normal desktop activity.
+KEY_ACTIVITY_WRITE_INTERVAL_MS=600000
+DESKTOP_HEARTBEAT_PERSIST_MS=600000
+```
+
+Keep the API at two replicas before adding more. Monitor CPU, memory, HTTP 5xx,
+PostgreSQL connections, Redis availability, provider latency, and payment
+webhook results. Add a third replica only after a staging load test shows that
+the traffic is sustained and `DB_POOL_MAX` has been reviewed against the
+PostgreSQL connection limit. Never enable Railway sleeping for the payment API:
+Xendit callbacks must remain low-latency and reliable.
+
+Run non-financial local or staging smoke load only with:
+
+```powershell
+$env:LOAD_TEST_URL="http://127.0.0.1:4100/health/live"
+$env:LOAD_TEST_DURATION_SECONDS="15"
+$env:LOAD_TEST_CONCURRENCY="20"
+pnpm test:load
+```
+
+The command rejects the Cliper production domain unless an operator explicitly
+sets `ALLOW_PRODUCTION_LOAD_TEST=true` during an approved capacity window.
+
 Untuk uji lokal gunakan Sandbox Access Keys. API membuat QRIS melalui Midtrans Core API dan menampilkan gambar QR di web. Set `MIDTRANS_IS_PRODUCTION=true` hanya setelah Production Access Keys dan notification URL HTTPS siap. Jangan menaruh Server Key di GitHub, browser, atau log.
 
 ## Xendit QRIS (Payments API V3)

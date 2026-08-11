@@ -4,6 +4,7 @@ import { AuthService } from "../auth/auth.service.js";
 import { SessionGuard, type SessionAuthenticatedRequest } from "../security/session.guard.js";
 import { PaymentService } from "./payment.service.js";
 import { AccountWriteGuard } from "../security/account-write.guard.js";
+import { RateLimitService } from "../security/rate-limit.service.js";
 
 type WebhookRequest = Request & { rawBody?: Buffer };
 
@@ -12,6 +13,7 @@ export class PaymentController {
   constructor(
     @Inject(PaymentService) private readonly payments: PaymentService,
     @Inject(AuthService) private readonly auth: AuthService,
+    @Inject(RateLimitService) private readonly rateLimits: RateLimitService,
   ) {}
 
   @Get("plans")
@@ -29,6 +31,7 @@ export class PaymentController {
   @UseGuards(SessionGuard, AccountWriteGuard)
   async createInvoice(@Req() request: SessionAuthenticatedRequest, @Body() input: { plan?: string }) {
     const userId = request.cliperSession?.userId || "";
+    await this.rateLimits.assertPaymentCreate(userId);
     const user = await this.auth.userById(userId);
     return this.payments.createInvoice({
       id: user.id,
@@ -41,6 +44,7 @@ export class PaymentController {
   @UseGuards(SessionGuard, AccountWriteGuard)
   async createTopup(@Req() request: SessionAuthenticatedRequest, @Body() input: { amountIdr?: number }) {
     const userId = request.cliperSession?.userId || "";
+    await this.rateLimits.assertPaymentCreate(userId);
     const user = await this.auth.userById(userId);
     return this.payments.createTopupInvoice({
       id: user.id,
@@ -57,7 +61,8 @@ export class PaymentController {
 
   @Post("invoices/:number/sync")
   @UseGuards(SessionGuard, AccountWriteGuard)
-  syncInvoice(@Req() request: SessionAuthenticatedRequest, @Param("number") number: string) {
+  async syncInvoice(@Req() request: SessionAuthenticatedRequest, @Param("number") number: string) {
+    await this.rateLimits.assertPaymentSync(request.cliperSession?.userId || "", number);
     return this.payments.syncInvoiceStatus(request.cliperSession?.userId || "", number);
   }
 

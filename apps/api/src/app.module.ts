@@ -35,9 +35,10 @@ import { BackupService } from "./admin/backup.service.js";
 import { ReleaseCatalogService } from "./admin/release-catalog.service.js";
 import { ReleaseController } from "./admin/release.controller.js";
 import { PaymentConfigurationService } from "./billing/payment-configuration.service.js";
+import { RedisService } from "./security/redis.service.js";
 
 @Module({
   controllers: [HealthController, GatewayController, AnalysisJobController, LicenseController, DesktopAuthController, KeyController, AuthController, AdminController, MemberController, PaymentController, ReleaseController],
-  providers: [AdminStoreService, ProviderConnectionService, BackupService, ReleaseCatalogService, PricingService, CreditAccountService, DirectCreditService, AnalysisJobService, GatewayService, ApiKeyGuard, SessionGuard, AdminSessionGuard, AccountWriteGuard, LicenseService, UsageService, RuntimeConfigService, AuthService, DesktopSessionService, DesktopSessionGuard, RateLimitService, SecurityEventService, DatabaseService, PaymentConfigurationService, PaymentProviderService, PaymentService],
+  providers: [AdminStoreService, ProviderConnectionService, BackupService, ReleaseCatalogService, PricingService, CreditAccountService, DirectCreditService, AnalysisJobService, GatewayService, ApiKeyGuard, SessionGuard, AdminSessionGuard, AccountWriteGuard, LicenseService, UsageService, RuntimeConfigService, AuthService, DesktopSessionService, DesktopSessionGuard, RedisService, RateLimitService, SecurityEventService, DatabaseService, PaymentConfigurationService, PaymentProviderService, PaymentService],
 })
 export class AppModule {}

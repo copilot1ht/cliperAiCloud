@@ -2,6 +2,28 @@ import { describe, expect, it, vi } from "vitest";
 import { AiRouter } from "./index.js";
 
 describe("AiRouter", () => {
+  it("opens a failed provider circuit and uses a healthy fallback", async () => {
+    const first = vi.fn(() => new Response(JSON.stringify({ error: { message: "provider unavailable" } }), { status: 503 }));
+    const second = vi.fn(() => new Response(JSON.stringify({ id: "fallback", model: "fallback", choices: [{ message: { content: "OK" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), { status: 200 }));
+    const fetchImpl = vi.fn(async (url: string) => url.includes("first.test") ? first() : second()) as never;
+    const router = new AiRouter({
+      retriesPerProvider: 1,
+      circuitFailureThreshold: 1,
+      circuitCooldownMs: 60_000,
+      fetchImpl,
+      providers: [
+        { code: "first", displayName: "First", baseUrl: "https://first.test/v1", model: "first", apiKeys: ["one"] },
+        { code: "second", displayName: "Second", baseUrl: "https://second.test/v1", model: "second", apiKeys: ["two"] },
+      ],
+    });
+
+    await expect(router.route({ messages: [{ role: "user", content: "hello" }] })).resolves.toMatchObject({ provider: "second" });
+    await expect(router.route({ messages: [{ role: "user", content: "again" }] })).resolves.toMatchObject({ provider: "second" });
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(2);
+    expect(router.health().find((provider) => provider.code === "first")?.status).toBe("degraded");
+  });
+
   it("falls back to the next provider when the first returns empty content", async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "" } }] }), { status: 200 }))

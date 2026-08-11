@@ -20,7 +20,8 @@ afterEach(() => {
 function persistentDatabase() {
   const sessions = new Map<string, Record<string, unknown>>();
   const nonces = new Map<string, number>();
-  return {
+  let heartbeatUpdates = 0;
+  const database = {
     configured: () => true,
     client: () => ({
       desktopSession: {
@@ -37,6 +38,7 @@ function persistentDatabase() {
             : null;
         },
         update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+          if ("lastHeartbeatAt" in data) heartbeatUpdates += 1;
           const current = sessions.get(where.id);
           if (!current) throw new Error("missing session");
           const next = { ...current, ...data };
@@ -59,6 +61,7 @@ function persistentDatabase() {
       },
     }),
   };
+  return { database, heartbeatUpdates: () => heartbeatUpdates };
 }
 
 async function setup() {
@@ -122,14 +125,34 @@ describe("DesktopSessionService", () => {
     const credits = new CreditAccountService();
     const licenses = new LicenseService(credits);
     const events = new SecurityEventService();
-    const database = persistentDatabase();
-    const firstProcess = new DesktopSessionService(licenses, credits, events, database as never);
+    const persistence = persistentDatabase();
+    const firstProcess = new DesktopSessionService(licenses, credits, events, persistence.database as never);
     const generated = await licenses.createKey({ ownerId: "desktop-owner", plan: "starter", deviceLimit: 1 });
     credits.initialize("desktop-owner", 100_000_000);
     const activation = await firstProcess.activate({ key: generated.rawKey, deviceFingerprint: "device-a", deviceName: "Desktop A" });
 
-    const restartedProcess = new DesktopSessionService(licenses, credits, events, database as never);
+    const restartedProcess = new DesktopSessionService(licenses, credits, events, persistence.database as never);
     const request = signedRequest(activation, { healthy: true }, "nonce-persistent-session-001");
     await expect(restartedProcess.authenticateSigned(activation.accessToken, request)).resolves.toMatchObject({ accountId: "desktop-owner", plan: "starter" });
+  });
+
+  it("does not persist every desktop heartbeat", async () => {
+    process.env.DESKTOP_SESSION_STORAGE = "postgres";
+    process.env.PROVIDER_ENCRYPTION_KEY = "p".repeat(32);
+    process.env.CLIPER_DEV_CREDIT_BALANCE_MICRO = "100000000";
+    const credits = new CreditAccountService();
+    const licenses = new LicenseService(credits);
+    const events = new SecurityEventService();
+    const persistence = persistentDatabase();
+    const sessions = new DesktopSessionService(licenses, credits, events, persistence.database as never);
+    const generated = await licenses.createKey({ ownerId: "desktop-owner", plan: "starter", deviceLimit: 1 });
+    credits.initialize("desktop-owner", 100_000_000);
+    const activation = await sessions.activate({ key: generated.rawKey, deviceFingerprint: "device-a", deviceName: "Desktop A" });
+    const context = await sessions.authenticateSigned(activation.accessToken, signedRequest(activation, { healthy: true }, "nonce-heartbeat-write-001"));
+
+    await sessions.heartbeat(context);
+    await sessions.heartbeat(context);
+
+    expect(persistence.heartbeatUpdates()).toBe(0);
   });
 });
