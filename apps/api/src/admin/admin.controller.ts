@@ -96,6 +96,7 @@ export class AdminController {
     const paymentSettings = await this.paymentConfiguration.status();
     const paymentConnection = await this.paymentProviders.activeConnectionStatus();
     const paymentConfigured = paymentSettings.enabled && paymentSettings.configured;
+    let hasVerifiedPaymentActivity = false;
     const payment = {
       provider: paymentSettings.provider,
       label: paymentSettings.provider === "xendit" ? "Xendit" : paymentSettings.provider === "midtrans" ? "Midtrans" : "Sandbox",
@@ -120,6 +121,7 @@ export class AdminController {
       lastSuccessfulPaymentAt: null as string | null,
       failedWebhookCount: 0,
       signatureVerification: "No webhook received",
+      operationalState: "not-tested" as "healthy" | "failed" | "not-tested",
     };
     if (paymentSettings.configured && this.database.configured()) {
       try {
@@ -133,9 +135,20 @@ export class AdminController {
         payment.lastSuccessfulPaymentAt = lastPayment?.createdAt.toISOString() || null;
         payment.failedWebhookCount = failedWebhookCount;
         payment.signatureVerification = lastWebhook ? (lastWebhook.verified ? "Valid" : "Rejected") : "No webhook received";
+        hasVerifiedPaymentActivity = Boolean(lastPayment || lastWebhook?.verified);
       } catch {
         payment.apiReachability = "Database check unavailable";
       }
+    }
+    payment.operationalState = !paymentConfigured
+      ? "not-tested"
+      : paymentConnection.state === "healthy" || hasVerifiedPaymentActivity
+        ? "healthy"
+        : paymentConnection.state === "failed"
+          ? "failed"
+          : "not-tested";
+    if (payment.operationalState === "healthy" && paymentConnection.state !== "healthy") {
+      payment.apiReachability = "Verified by successful payment or webhook";
     }
     return {
       mode: authStorageMode(),
@@ -157,9 +170,9 @@ export class AdminController {
           label: `${payment.label} payment`,
           status: !paymentConfigured
             ? "not-configured"
-            : paymentConnection.state === "healthy"
+            : payment.operationalState === "healthy"
               ? "healthy"
-              : paymentConnection.state === "failed"
+              : payment.operationalState === "failed"
                 ? "offline"
                 : "not-configured",
           detail: `${payment.mode} · ${payment.configuration} · ${payment.apiReachability}`,

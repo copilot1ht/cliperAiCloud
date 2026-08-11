@@ -35,6 +35,16 @@ export function AppShell({ children, title, eyebrow, actions, role = "member" }:
   const [open, setOpen] = useState(false);
   const [gatewayStatus, setGatewayStatus] = useState<"checking" | "ready" | "setup" | "offline">("checking");
   const [account, setAccount] = useState<AccountSession | null>(null);
+  const [deploymentLabel, setDeploymentLabel] = useState("Beta");
+
+  useEffect(() => {
+    const hostname = window.location.hostname;
+    setDeploymentLabel(
+      hostname === "localhost" || hostname === "127.0.0.1"
+        ? "Local development"
+        : "Production beta",
+    );
+  }, []);
 
   useEffect(() => {
     if (role !== "admin" || pathname !== "/admin/overview") return;
@@ -144,7 +154,7 @@ export function AppShell({ children, title, eyebrow, actions, role = "member" }:
         <header className="topbar">
           <div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1></div>
           <div className="topbar-actions">
-            <span className="status-pill alpha-pill">Local beta</span>
+            <span className="status-pill alpha-pill">{deploymentLabel}</span>
             <span className="status-pill"><span className={`status-dot ${gatewayStatus}`} /> {gatewayLabel}</span>
             {readOnly ? <span className="status-pill investor-pill">Investor · Read only</span> : actions}
             <Link className="avatar" href={accountTarget} aria-label={`Buka akun ${account.displayName}`} title={`${account.displayName} · ${account.email}`}>{accountInitials(account.displayName)}</Link>

@@ -107,7 +107,7 @@ export function MemberBilling({
   const [error, setError] = useState("");
   const [now, setNow] = useState(Date.now());
   const [topupOpen, setTopupOpen] = useState(false);
-  const [topupAmount, setTopupAmount] = useState(53_100);
+  const [topupAmount, setTopupAmount] = useState(17_000);
   const autoOpenHandled = useRef(false);
   const load = useCallback(async () => {
     setError("");
@@ -282,17 +282,17 @@ export function MemberBilling({
       )}
       <div className="stats-grid compact-stats">
         <div className="metric-block">
-          <small>Available AI credits</small>
+          <small>Available balance</small>
           <strong>{creditLabel(data.wallet.availableMicro)}</strong>
           <span>Credits siap dipakai Cliper Studio</span>
         </div>
         <div className="metric-block">
-          <small>Reserved credits</small>
+          <small>Reserved balance</small>
           <strong>{creditLabel(data.wallet.reservedMicro)}</strong>
           <span>Dipakai request yang sedang berjalan</span>
         </div>
         <div className="metric-block">
-          <small>Total purchased</small>
+          <small>Lifetime purchased</small>
           <strong>{creditLabel(data.wallet.lifetimeGrantedMicro)}</strong>
           <span>Credit dari pembayaran tervalidasi</span>
         </div>
@@ -309,9 +309,9 @@ export function MemberBilling({
       <section className="panel topup-panel">
         <div>
           <p className="section-kicker">Flexible wallet</p>
-          <h2>Isi saldo credit</h2>
+          <h2>Isi saldo Cliper</h2>
           <p>
-            Tambahkan Cliper Credits melalui QRIS Midtrans. Saldo masuk otomatis
+            Tambahkan Cliper Credits melalui QRIS Xendit. Saldo masuk otomatis
             setelah pembayaran tervalidasi.
           </p>
         </div>
@@ -327,7 +327,7 @@ export function MemberBilling({
               <p className="section-kicker">Payment status</p>
               <h2>{selected.number}</h2>
               <p>
-                TOP-UP SALDO · {selected.credits.toLocaleString("id-ID")}{" "}
+                Top-up saldo · {selected.credits.toLocaleString("id-ID")}{" "}
                 credits · QRIS
               </p>
             </div>
@@ -370,7 +370,7 @@ export function MemberBilling({
               <span>
                 {selected.provider === "sandbox"
                   ? "QR ini hanya untuk pengujian lokal. Gunakan tombol simulasi, bukan aplikasi bank."
-                  : "Scan dengan aplikasi bank atau e-wallet. Saldo masuk setelah callback Midtrans tervalidasi."}
+                  : "Scan dengan aplikasi bank atau e-wallet. Saldo masuk setelah callback Xendit tervalidasi."}
               </span>
             </div>
           </div>
@@ -404,7 +404,7 @@ export function MemberBilling({
                 onClick={() => void syncStatus()}
               >
                 <ShieldCheck size={15} />{" "}
-                {busy === "status" ? "Checking..." : "Check Midtrans status"}
+                {busy === "status" ? "Checking..." : "Check payment status"}
               </button>
             )}
             <button
@@ -504,7 +504,7 @@ export function MemberBilling({
               <div>
                 <h2>Top-up saldo</h2>
                 <p>
-                  Bayar aman melalui Midtrans. Nominal akhir dibayar dalam
+                  Bayar aman melalui Xendit. Nominal akhir dibayar dalam
                   Rupiah.
                 </p>
               </div>
