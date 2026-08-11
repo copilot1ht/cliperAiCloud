@@ -177,12 +177,21 @@ export class AdminController {
                 : "not-configured",
           detail: `${payment.mode} · ${payment.configuration} · ${payment.apiReachability}`,
         },
+        {
+          code: "password-recovery",
+          label: "Password Recovery",
+          status: "healthy",
+          detail: report.passwordRecovery.mode === "admin_assisted"
+            ? "Admin-assisted · email delivery not required"
+            : "Email-link recovery configured separately",
+        },
         { code: "license", label: "Desktop Sessions", status: "healthy", detail: `${desktopSessionSummary.active} active signed sessions` },
       ],
       payment,
       // Kept temporarily for older Web clients during the Xendit rollout.
       midtrans: payment,
       providers,
+      passwordRecovery: report.passwordRecovery,
       warnings: report.warnings,
       errors: report.errors,
     };
@@ -241,13 +250,14 @@ export class AdminController {
     return this.auth.updateMember(id, input);
   }
 
-  @Patch("users/:id/password")
-  resetUserPassword(
+  @Post("users/:id/password-reset")
+  async resetUserPassword(
     @Param("id") id: string,
-    @Body() input: { password?: string },
     @Req() request: AdminAuthenticatedRequest,
   ) {
-    return this.auth.resetPassword(id, String(input.password || ""), request.cliperAdminSession?.userId);
+    const actorId = request.cliperAdminSession?.userId || "admin-session";
+    await this.rateLimits.assertAdminPasswordReset(actorId, id);
+    return this.auth.issueAdminTemporaryPassword(id, request.cliperAdminSession?.userId);
   }
 
   @Delete("users/:id")

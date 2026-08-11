@@ -1,7 +1,14 @@
 import { Body, Controller, Headers, Inject, Post, Req, Res } from "@nestjs/common";
 import type { Request } from "express";
 import type { Response } from "express";
-import { clearSessionCookie, sessionCookie, sessionToken } from "../security/session-cookie.js";
+import {
+  clearPasswordResetSessionCookie,
+  clearSessionCookie,
+  passwordResetSessionCookie,
+  passwordResetSessionToken,
+  sessionCookie,
+  sessionToken,
+} from "../security/session-cookie.js";
 import { AuthService } from "./auth.service.js";
 import { RateLimitService } from "../security/rate-limit.service.js";
 
@@ -13,7 +20,7 @@ export class AuthController {
   async register(@Body() input: { email?: string; password?: string; displayName?: string }, @Req() request: Request, @Res({ passthrough: true }) response: Response) {
     await this.rateLimits.assertAuthLogin(request.ip || "unknown", input.email);
     const result = await this.auth.register(input);
-    response.setHeader("Set-Cookie", sessionCookie(result.token, result.expiresAt));
+    response.setHeader("Set-Cookie", [sessionCookie(result.token, result.expiresAt), clearPasswordResetSessionCookie()]);
     return result;
   }
 
@@ -21,7 +28,12 @@ export class AuthController {
   async login(@Body() input: { email?: string; password?: string }, @Req() request: Request, @Res({ passthrough: true }) response: Response) {
     await this.rateLimits.assertAuthLogin(request.ip || "unknown", input.email);
     const result = await this.auth.login(input);
-    response.setHeader("Set-Cookie", sessionCookie(result.token, result.expiresAt));
+    if ("authState" in result) {
+      response.setHeader("Set-Cookie", [clearSessionCookie(), passwordResetSessionCookie(result.resetToken, result.expiresAt)]);
+      const { resetToken: _resetToken, ...safeResult } = result;
+      return safeResult;
+    }
+    response.setHeader("Set-Cookie", [sessionCookie(result.token, result.expiresAt), clearPasswordResetSessionCookie()]);
     return result;
   }
 
@@ -32,7 +44,7 @@ export class AuthController {
 
   @Post("logout")
   async logout(@Res({ passthrough: true }) response: Response, @Headers("authorization") authorization?: string, @Headers("cookie") cookie?: string) {
-    response.setHeader("Set-Cookie", clearSessionCookie());
+    response.setHeader("Set-Cookie", [clearSessionCookie(), clearPasswordResetSessionCookie()]);
     return this.auth.logout(sessionToken(authorization, cookie));
   }
 
@@ -45,5 +57,24 @@ export class AuthController {
   @Post("password-reset/confirm")
   async confirmPasswordReset(@Body() input: { token?: string; password?: string }) {
     return this.auth.confirmPasswordReset(input);
+  }
+
+  @Post("password-reset/session")
+  async passwordResetSession(@Headers("cookie") cookie?: string) {
+    return this.auth.passwordResetSession(passwordResetSessionToken(cookie));
+  }
+
+  @Post("password-reset/change")
+  async changePasswordAfterTemporaryLogin(
+    @Body() input: { password?: string },
+    @Req() request: Request,
+    @Headers("cookie") cookie: string | undefined,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const resetToken = passwordResetSessionToken(cookie);
+    await this.rateLimits.assertPasswordChange(request.ip || "unknown", resetToken);
+    const result = await this.auth.completeTemporaryPasswordReset(resetToken, String(input.password || ""));
+    response.setHeader("Set-Cookie", [sessionCookie(result.token, result.expiresAt), clearPasswordResetSessionCookie()]);
+    return result;
   }
 }

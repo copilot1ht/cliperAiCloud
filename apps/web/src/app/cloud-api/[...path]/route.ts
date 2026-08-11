@@ -48,10 +48,16 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
 
     const responseHeaders = new Headers();
     upstream.headers.forEach((value, name) => {
-      if (!hopByHopHeaders.has(name.toLowerCase()) && !name.toLowerCase().startsWith("access-control-")) {
+      if (name.toLowerCase() !== "set-cookie" && !hopByHopHeaders.has(name.toLowerCase()) && !name.toLowerCase().startsWith("access-control-")) {
         responseHeaders.append(name, value);
       }
     });
+    // Login and restricted password recovery can each clear one cookie while
+    // setting another. Preserve every Set-Cookie header independently rather
+    // than joining cookies into an invalid comma-separated value.
+    const cookieHeaders = (upstream.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.()
+      ?? (upstream.headers.get("set-cookie") ? [upstream.headers.get("set-cookie")!] : []);
+    for (const cookie of cookieHeaders) responseHeaders.append("set-cookie", cookie);
     responseHeaders.set("cache-control", "no-store");
     return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
   } catch (error) {

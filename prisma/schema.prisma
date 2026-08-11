@@ -102,11 +102,15 @@ model User {
   isActive        Boolean              @default(true)
   lastActiveAt    DateTime?
   passwordChangedAt DateTime             @default(now())
+  passwordResetRequiredAt DateTime?
   memberships     Subscription[]
   apiKeys         ApiKey[]
   devices         Device[]
   sessions        Session[]
   passwordResetTokens PasswordResetToken[]
+  passwordResetCredentials PasswordResetCredential[] @relation("PasswordResetCredentialUser")
+  issuedPasswordResetCredentials PasswordResetCredential[] @relation("PasswordResetCredentialAdmin")
+  passwordResetSessions PasswordResetSession[]
   desktopSessions DesktopSession[]
   payments        PaymentTransaction[]
   invoices        Invoice[]
@@ -154,6 +158,46 @@ model PasswordResetToken {
   @@index([userId, expiresAt])
   @@index([expiresAt])
   @@map("password_reset_tokens")
+}
+
+// Admin-assisted recovery credentials are distinct from email-link tokens.
+// Only the Argon2id hash is persisted; the readable temporary password exists
+// in the admin response once and is never written to a log or database field.
+model PasswordResetCredential {
+  id               String   @id @default(cuid())
+  userId           String
+  credentialHash   String
+  expiresAt        DateTime
+  usedAt           DateTime?
+  revokedAt        DateTime?
+  createdByAdminId String?
+  createdAt        DateTime @default(now())
+  user             User     @relation("PasswordResetCredentialUser", fields: [userId], references: [id], onDelete: Cascade)
+  createdByAdmin   User?    @relation("PasswordResetCredentialAdmin", fields: [createdByAdminId], references: [id], onDelete: SetNull)
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+  @@index([usedAt])
+  @@map("password_reset_credentials")
+}
+
+// A reset session is deliberately not a normal browser Session. It can only be
+// exchanged for a new password, so it cannot reach wallet, API-key, or admin
+// routes while recovery is in progress.
+model PasswordResetSession {
+  id           String   @id @default(cuid())
+  userId       String
+  tokenHash    String   @unique
+  credentialId String
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  revokedAt    DateTime?
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+  @@map("password_reset_sessions")
 }
 
 // Desktop work sessions are intentionally separate from browser sessions.

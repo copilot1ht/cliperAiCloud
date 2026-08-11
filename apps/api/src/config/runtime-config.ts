@@ -21,6 +21,10 @@ export interface RuntimeConfigReport {
     analysisBillingStorage: "memory" | "postgres";
     desktopSessionStorage: "memory" | "postgres";
   };
+  passwordRecovery: {
+    mode: "admin_assisted" | "email_link";
+    emailRequired: boolean;
+  };
 }
 
 function secretLength(value?: string): number {
@@ -198,7 +202,10 @@ export function validateRuntimeConfig(
   const secureOrigins = Boolean(origins) && origins !== "*";
   if (production && !secureOrigins)
     errors.push("WEB_ORIGIN production wajib eksplisit dan tidak boleh '*'.");
-  if (!env.RESEND_API_KEY || !env.PASSWORD_RESET_FROM) {
+  const passwordRecovery = String(env.PASSWORD_RECOVERY_MODE || "admin_assisted").trim().toLowerCase() === "email_link"
+    ? "email_link" as const
+    : "admin_assisted" as const;
+  if (passwordRecovery === "email_link" && (!env.RESEND_API_KEY || !env.PASSWORD_RESET_FROM)) {
     warnings.push("Pemulihan password email belum dikonfigurasi. Set RESEND_API_KEY dan PASSWORD_RESET_FROM untuk mengaktifkannya.");
   }
   const paymentProvider = String(
@@ -413,6 +420,10 @@ export function validateRuntimeConfig(
       secureOrigins,
       analysisBillingStorage,
       desktopSessionStorage,
+    },
+    passwordRecovery: {
+      mode: passwordRecovery,
+      emailRequired: passwordRecovery === "email_link",
     },
   };
 }

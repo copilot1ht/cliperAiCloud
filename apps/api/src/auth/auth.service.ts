@@ -1,9 +1,9 @@
 import { BadRequestException, HttpException, HttpStatus, Inject, Injectable, Optional, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
 import { Algorithm, hash, verify } from "@node-rs/argon2";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { CreditAccountService } from "../billing/credit-account.service.js";
 import { DatabaseService } from "../database/database.service.js";
-import { PlanCode, UserRole } from "../generated/prisma/client.js";
+import { PlanCode, Prisma, UserRole } from "../generated/prisma/client.js";
 import { SecurityEventService } from "../security/security-event.service.js";
 
 export type AuthRole = "admin" | "investor" | "member";
@@ -24,6 +24,7 @@ interface MemoryUser {
   deviceLimit: number;
   createdAt: string;
   lastActiveAt: string;
+  passwordResetRequiredAt?: number;
 }
 
 interface DatabaseUserRecord {
@@ -37,8 +38,10 @@ interface DatabaseUserRecord {
   unlimitedCredits: boolean;
   isActive: boolean;
   lastActiveAt: Date | null;
+  passwordResetRequiredAt: Date | null;
   createdAt: Date;
   creditAccount: { balanceMicro: bigint } | null;
+  passwordResetCredentials?: Array<{ expiresAt: Date }>;
 }
 
 export interface MemorySession {
@@ -59,10 +62,53 @@ export interface AuthResult {
   redirectTo: string;
 }
 
+export interface PasswordResetLoginResult {
+  ok: true;
+  mode: AuthStorageMode;
+  authState: "PASSWORD_RESET_REQUIRED";
+  resetToken: string;
+  expiresAt: string;
+  redirectTo: "/change-password";
+}
+
+export type LoginResult = AuthResult | PasswordResetLoginResult;
+
+export interface PasswordResetSessionResult {
+  ok: true;
+  authState: "PASSWORD_RESET_REQUIRED";
+  expiresAt: string;
+}
+
 interface MemoryPasswordResetToken {
   userId: string;
   expiresAt: number;
   consumedAt?: number;
+}
+
+interface MemoryPasswordResetCredential {
+  id: string;
+  userId: string;
+  credentialHash: string;
+  expiresAt: number;
+  usedAt?: number;
+  revokedAt?: number;
+  createdByAdminId?: string;
+}
+
+interface MemoryPasswordResetSession {
+  userId: string;
+  credentialId: string;
+  expiresAt: number;
+  consumedAt?: number;
+  revokedAt?: number;
+}
+
+export interface AdminPasswordResetResult {
+  ok: true;
+  temporaryPassword: string;
+  expiresAt: string;
+  resetId: string;
+  sessionsRevoked: true;
 }
 
 export interface PasswordResetRequestResult {
@@ -110,6 +156,29 @@ async function passwordMatches(passwordHash: string, password: string): Promise<
   } catch {
     return false;
   }
+}
+
+function passwordRecoveryMode(): "admin_assisted" | "email_link" {
+  return String(process.env.PASSWORD_RECOVERY_MODE || "admin_assisted").trim().toLowerCase() === "email_link"
+    ? "email_link"
+    : "admin_assisted";
+}
+
+function configuredResetTtlMinutes(): number {
+  const value = Number(process.env.PASSWORD_RESET_TEMP_TTL_MINUTES || "30");
+  return Number.isFinite(value) ? Math.max(5, Math.min(120, Math.round(value))) : 30;
+}
+
+function temporaryPassword(): string {
+  // randomInt uses the system CSPRNG and avoids modulo bias while keeping the
+  // password readable enough for an administrator to relay once.
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const section = () => Array.from({ length: 4 }, () => alphabet[randomInt(alphabet.length)]).join("");
+  return `Clp-${section()}-${section()}-${section()}`;
+}
+
+function validNewPassword(password: string): boolean {
+  return password.length >= 12 && password.length <= 128 && /\S/.test(password);
 }
 
 export function authStorageMode(): AuthStorageMode {
@@ -165,6 +234,8 @@ export class AuthService {
   private readonly users = new Map<string, MemoryUser>();
   private readonly sessions = new Map<string, MemorySession>();
   private readonly passwordResetTokens = new Map<string, MemoryPasswordResetToken>();
+  private readonly passwordResetCredentials = new Map<string, MemoryPasswordResetCredential>();
+  private readonly passwordResetSessions = new Map<string, MemoryPasswordResetSession>();
   private readonly loginAttempts = new Map<string, { count: number; resetAt: number; blockedUntil: number }>();
 
   constructor(
@@ -176,11 +247,12 @@ export class AuthService {
   async register(input: { email?: string; password?: string; displayName?: string }): Promise<AuthResult> {
     await this.createMember(input);
     const result = await this.login({ email: input.email, password: input.password });
+    if ("authState" in result) throw new ServiceUnavailableException("Sesi pendaftaran tidak dapat dibuat.");
     this.securityEvents?.record({ event: "web_registration", severity: "info", accountId: result.user.id, detail: "Member account registered." });
     return result;
   }
 
-  async login(input: { email?: string; password?: string }): Promise<AuthResult> {
+  async login(input: { email?: string; password?: string }): Promise<LoginResult> {
     const email = normalizeEmail(input.email || "");
     const password = String(input.password || "");
     this.assertLoginAllowed(email);
@@ -192,11 +264,18 @@ export class AuthService {
         include: { creditAccount: { select: { balanceMicro: true } } },
       }) as DatabaseUserRecord | null;
       if (user) {
-        if (!(await passwordMatches(user.passwordHash, password))) this.rejectLogin(email);
         if (!user.isActive) {
           this.securityEvents?.record({ event: "web_login_suspended", severity: "warning", accountId: user.id, detail: "Login rejected for suspended account." });
           throw new UnauthorizedException("Akun sedang dinonaktifkan oleh administrator.");
         }
+        if (user.passwordResetRequiredAt) {
+          const resetLogin = await this.createDatabasePasswordResetSession(user, password);
+          if (!resetLogin) this.rejectLogin(email);
+          this.loginAttempts.delete(email);
+          this.securityEvents?.record({ event: "password_reset_temp_used", severity: "info", accountId: user.id, detail: "Temporary password accepted; restricted reset session created." });
+          return resetLogin;
+        }
+        if (!(await passwordMatches(user.passwordHash, password))) this.rejectLogin(email);
         await this.database!.client().user.update({ where: { id: user.id }, data: { lastActiveAt: new Date() } });
         this.loginAttempts.delete(email);
         this.securityEvents?.record({ event: "web_login_success", severity: "info", accountId: user.id, detail: `${roleFromDatabase(user.role)} login successful.` });
@@ -220,11 +299,18 @@ export class AuthService {
     }
 
     const user = this.users.get(email);
-    if (!user || !(await passwordMatches(user.passwordHash, password))) this.rejectLogin(email);
+    if (!user) this.rejectLogin(email);
     if (user.status !== "active") {
       this.securityEvents?.record({ event: "web_login_suspended", severity: "warning", accountId: user.id, detail: "Login rejected for suspended account." });
       throw new UnauthorizedException("Akun sedang dinonaktifkan oleh administrator.");
     }
+    if (user.passwordResetRequiredAt) {
+      const resetLogin = await this.createMemoryPasswordResetSession(user, password);
+      if (!resetLogin) this.rejectLogin(email);
+      this.loginAttempts.delete(email);
+      return resetLogin;
+    }
+    if (!(await passwordMatches(user.passwordHash, password))) this.rejectLogin(email);
     user.lastActiveAt = new Date().toISOString();
     this.loginAttempts.delete(email);
     this.securityEvents?.record({ event: "web_login_success", severity: "info", accountId: user.id, detail: `${user.role} login successful.` });
@@ -237,7 +323,7 @@ export class AuthService {
         where: { refreshTokenHash: sessionHash(token) },
         include: { user: true },
       });
-      if (!stored || stored.revokedAt || stored.expiresAt.getTime() <= Date.now() || !stored.user.isActive) {
+      if (!stored || stored.revokedAt || stored.expiresAt.getTime() <= Date.now() || !stored.user.isActive || stored.user.passwordResetRequiredAt) {
         throw new UnauthorizedException("Session tidak valid atau sudah berakhir.");
       }
       return {
@@ -249,7 +335,8 @@ export class AuthService {
       };
     }
     const session = this.sessions.get(token);
-    if (!session || session.expiresAt <= Date.now()) {
+    const memoryUser = session ? Array.from(this.users.values()).find((item) => item.id === session.userId) : undefined;
+    if (!session || session.expiresAt <= Date.now() || Boolean(memoryUser?.passwordResetRequiredAt)) {
       if (session) this.sessions.delete(token);
       throw new UnauthorizedException("Session tidak valid atau sudah berakhir.");
     }
@@ -272,6 +359,14 @@ export class AuthService {
   async requestPasswordReset(input: { email?: string }): Promise<PasswordResetRequestResult> {
     const email = normalizeEmail(input.email || "");
     const genericMessage = "Jika akun terdaftar, tautan pemulihan telah dikirim ke email Anda.";
+    if (passwordRecoveryMode() === "admin_assisted") {
+      // Do not inspect the account in this public flow. It intentionally gives
+      // the same answer to every identifier and has no email dependency.
+      return {
+        ok: true,
+        message: "Pemulihan password dilakukan melalui admin. Hubungi support untuk mendapatkan password sementara.",
+      };
+    }
     if (!validEmail(email)) return { ok: true, message: genericMessage };
 
     const testMode = this.allowsTestResetToken();
@@ -323,6 +418,9 @@ export class AuthService {
   }
 
   async confirmPasswordReset(input: { token?: string; password?: string }): Promise<{ ok: true }> {
+    if (passwordRecoveryMode() === "admin_assisted") {
+      throw new BadRequestException("Pemulihan melalui tautan email tidak aktif. Hubungi admin untuk mendapatkan password sementara.");
+    }
     const rawToken = String(input.token || "").trim();
     const password = String(input.password || "");
     if (!rawToken || rawToken.length < 32) throw new BadRequestException("Tautan pemulihan tidak valid atau sudah kedaluwarsa.");
@@ -365,8 +463,17 @@ export class AuthService {
 
   async listUsers() {
     if (this.usesPostgres()) {
+      const now = new Date();
       const users = await this.database!.client().user.findMany({
-        include: { creditAccount: { select: { balanceMicro: true } } },
+        include: {
+          creditAccount: { select: { balanceMicro: true } },
+          passwordResetCredentials: {
+            where: { usedAt: null, revokedAt: null, expiresAt: { gt: now } },
+            select: { expiresAt: true },
+            take: 1,
+            orderBy: { createdAt: "desc" },
+          },
+        },
         orderBy: { createdAt: "asc" },
       }) as DatabaseUserRecord[];
       return users.map((user) => this.safeDatabaseUser(user));
@@ -452,34 +559,197 @@ export class AuthService {
     return this.safeMemoryUser(user);
   }
 
-  async resetPassword(id: string, password: string, actorId?: string) {
-    const nextPassword = String(password || "");
-    if (nextPassword.length < 10) throw new BadRequestException("Password minimal 10 karakter.");
-    const passwordHash = await hash(nextPassword, ARGON_OPTIONS);
+  async issueAdminTemporaryPassword(id: string, actorId?: string): Promise<AdminPasswordResetResult> {
+    const rawPassword = temporaryPassword();
+    const credentialHash = await hash(rawPassword, ARGON_OPTIONS);
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + configuredResetTtlMinutes() * 60_000);
+
     if (this.usesPostgres()) {
-      const user = await this.database!.client().user.findUnique({ where: { id }, select: { id: true } });
-      if (!user) throw new BadRequestException("User tidak ditemukan.");
-      await this.database!.client().$transaction(async (tx) => {
-        await tx.user.update({ where: { id }, data: { passwordHash, passwordChangedAt: new Date() } });
-        await tx.session.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } });
-        const actorExists = actorId ? await tx.user.findUnique({ where: { id: actorId }, select: { id: true } }) : null;
+      const client = this.database!.client();
+      const target = await client.user.findUnique({ where: { id }, select: { id: true } });
+      if (!target) throw new BadRequestException("Akun tidak ditemukan.");
+      const result = await this.serializableTransaction(async (tx) => {
+        const actor = actorId
+          ? await tx.user.findUnique({ where: { id: actorId }, select: { id: true } })
+          : null;
+        await tx.passwordResetCredential.updateMany({
+          where: { userId: id, usedAt: null, revokedAt: null },
+          data: { revokedAt: now },
+        });
+        await tx.passwordResetSession.updateMany({
+          where: { userId: id, consumedAt: null, revokedAt: null },
+          data: { revokedAt: now },
+        });
+        await tx.session.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: now } });
+        await tx.desktopSession.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: now } });
+        await tx.user.update({ where: { id }, data: { passwordResetRequiredAt: now } });
+        const credential = await tx.passwordResetCredential.create({
+          data: {
+            userId: id,
+            credentialHash,
+            expiresAt,
+            createdByAdminId: actor?.id,
+          },
+        });
         await tx.auditLog.create({
           data: {
-            actorId: actorExists?.id,
-            action: "account.password_reset",
+            actorId: actor?.id,
+            action: "account.password_reset_initiated_by_admin",
             entityType: "user",
             entityId: id,
+            metadata: { expiresAt: expiresAt.toISOString(), sessionsRevoked: true },
+          },
+        });
+        return credential.id;
+      });
+      // Keep sensitive credential tables bounded without losing recent audit
+      // information. Raw secrets are never stored in either table.
+      await client.passwordResetCredential.deleteMany({
+        where: { expiresAt: { lt: new Date(now.getTime() - 30 * 24 * 60 * 60_000) } },
+      });
+      this.securityEvents?.record({ event: "password_reset_initiated_by_admin", severity: "warning", accountId: id, detail: "Admin-issued temporary password; sessions revoked." });
+      return { ok: true, temporaryPassword: rawPassword, expiresAt: expiresAt.toISOString(), resetId: result, sessionsRevoked: true };
+    }
+
+    const user = Array.from(this.users.values()).find((item) => item.id === id);
+    if (!user) throw new BadRequestException("Akun tidak ditemukan.");
+    for (const credential of this.passwordResetCredentials.values()) {
+      if (credential.userId === id && !credential.usedAt && !credential.revokedAt) credential.revokedAt = now.getTime();
+    }
+    for (const session of this.passwordResetSessions.values()) {
+      if (session.userId === id && !session.consumedAt && !session.revokedAt) session.revokedAt = now.getTime();
+    }
+    const resetId = randomUUID();
+    this.passwordResetCredentials.set(resetId, {
+      id: resetId,
+      userId: id,
+      credentialHash,
+      expiresAt: expiresAt.getTime(),
+      createdByAdminId: actorId,
+    });
+    user.passwordResetRequiredAt = now.getTime();
+    await this.revokeUserSessions(id);
+    this.securityEvents?.record({ event: "password_reset_initiated_by_admin", severity: "warning", accountId: id, detail: "Admin-issued temporary password; sessions revoked." });
+    return { ok: true, temporaryPassword: rawPassword, expiresAt: expiresAt.toISOString(), resetId, sessionsRevoked: true };
+  }
+
+  async passwordResetSession(token: string): Promise<PasswordResetSessionResult> {
+    const tokenHash = sessionHash(token);
+    if (!token) throw new UnauthorizedException("Sesi reset password tidak valid atau sudah berakhir.");
+    if (this.usesPostgres()) {
+      const stored = await this.database!.client().passwordResetSession.findUnique({
+        where: { tokenHash },
+        include: { user: { select: { isActive: true, passwordResetRequiredAt: true } } },
+      });
+      if (!stored || stored.consumedAt || stored.revokedAt || stored.expiresAt.getTime() <= Date.now() || !stored.user.isActive || !stored.user.passwordResetRequiredAt) {
+        throw new UnauthorizedException("Sesi reset password tidak valid atau sudah berakhir.");
+      }
+      return { ok: true, authState: "PASSWORD_RESET_REQUIRED", expiresAt: stored.expiresAt.toISOString() };
+    }
+    const stored = this.passwordResetSessions.get(tokenHash);
+    const user = stored ? Array.from(this.users.values()).find((item) => item.id === stored.userId) : undefined;
+    if (!stored || stored.consumedAt || stored.revokedAt || stored.expiresAt <= Date.now() || !user?.passwordResetRequiredAt || user.status !== "active") {
+      throw new UnauthorizedException("Sesi reset password tidak valid atau sudah berakhir.");
+    }
+    return { ok: true, authState: "PASSWORD_RESET_REQUIRED", expiresAt: new Date(stored.expiresAt).toISOString() };
+  }
+
+  async completeTemporaryPasswordReset(token: string, password: string): Promise<AuthResult> {
+    if (!validNewPassword(password)) throw new BadRequestException("Password baru minimal 12 karakter dan maksimal 128 karakter.");
+    const tokenHash = sessionHash(token);
+    if (!token) throw new UnauthorizedException("Sesi reset password tidak valid atau sudah berakhir.");
+    const passwordHash = await hash(password, ARGON_OPTIONS);
+    const now = new Date();
+
+    if (this.usesPostgres()) {
+      const client = this.database!.client();
+      const resetSession = await client.passwordResetSession.findUnique({
+        where: { tokenHash },
+        include: { user: true },
+      });
+      if (!resetSession || resetSession.consumedAt || resetSession.revokedAt || resetSession.expiresAt.getTime() <= now.getTime() || !resetSession.user.isActive || !resetSession.user.passwordResetRequiredAt) {
+        throw new UnauthorizedException("Sesi reset password tidak valid atau sudah berakhir.");
+      }
+      const temporaryCredential = await client.passwordResetCredential.findUnique({
+        where: { id: resetSession.credentialId },
+        select: { credentialHash: true, usedAt: true, revokedAt: true, expiresAt: true },
+      });
+      if (!temporaryCredential || temporaryCredential.revokedAt || temporaryCredential.expiresAt.getTime() <= now.getTime()) {
+        throw new UnauthorizedException("Sesi reset password tidak valid atau sudah berakhir.");
+      }
+      if (await passwordMatches(temporaryCredential.credentialHash, password)) {
+        throw new BadRequestException("Password baru harus berbeda dari password sementara.");
+      }
+      const normalToken = `clip_sess_${randomBytes(32).toString("base64url")}`;
+      const expiresAt = new Date(now.getTime() + 12 * 60 * 60_000);
+      const user = await this.serializableTransaction(async (tx) => {
+        const consumed = await tx.passwordResetSession.updateMany({
+          where: { id: resetSession.id, consumedAt: null, revokedAt: null, expiresAt: { gt: now } },
+          data: { consumedAt: now },
+        });
+        if (consumed.count !== 1) throw new UnauthorizedException("Sesi reset password sudah digunakan atau berakhir.");
+        const updatedUser = await tx.user.updateMany({
+          where: {
+            id: resetSession.userId,
+            isActive: true,
+            passwordResetRequiredAt: { not: null },
+          },
+          data: { passwordHash, passwordChangedAt: now, passwordResetRequiredAt: null, lastActiveAt: now },
+        });
+        if (updatedUser.count !== 1) throw new UnauthorizedException("Sesi reset password sudah digunakan atau berakhir.");
+        const updated = await tx.user.findUnique({ where: { id: resetSession.userId } });
+        if (!updated) throw new UnauthorizedException("Sesi reset password sudah berakhir.");
+        await tx.session.updateMany({ where: { userId: updated.id, revokedAt: null }, data: { revokedAt: now } });
+        await tx.desktopSession.updateMany({ where: { userId: updated.id, revokedAt: null }, data: { revokedAt: now } });
+        await tx.passwordResetCredential.updateMany({ where: { userId: updated.id, revokedAt: null }, data: { revokedAt: now } });
+        await tx.passwordResetSession.updateMany({ where: { userId: updated.id, id: { not: resetSession.id }, revokedAt: null }, data: { revokedAt: now } });
+        await tx.session.create({
+          data: { userId: updated.id, tokenFamily: randomUUID(), refreshTokenHash: sessionHash(normalToken), expiresAt },
+        });
+        await tx.auditLog.create({
+          data: {
+            actorId: updated.id,
+            action: "account.password_changed_after_admin_reset",
+            entityType: "user",
+            entityId: updated.id,
             metadata: { sessionsRevoked: true },
           },
         });
+        return updated;
       });
-      return { ok: true, sessionsRevoked: true };
+      this.securityEvents?.record({ event: "password_changed_after_reset", severity: "info", accountId: user.id, detail: "Temporary credential consumed and normal session issued." });
+      const role = roleFromDatabase(user.role);
+      return {
+        ok: true,
+        mode: "postgresql",
+        token: normalToken,
+        expiresAt: expiresAt.toISOString(),
+        user: { id: user.id, email: user.email, displayName: user.displayName, role },
+        redirectTo: role === "member" ? "/dashboard" : "/admin/overview",
+      };
     }
-    const user = Array.from(this.users.values()).find((item) => item.id === id);
-    if (!user) throw new BadRequestException("Password bootstrap diatur melalui secret server dan tidak dapat diubah dari UI.");
+
+    const resetSession = this.passwordResetSessions.get(tokenHash);
+    const user = resetSession ? Array.from(this.users.values()).find((item) => item.id === resetSession.userId) : undefined;
+    if (!resetSession || resetSession.consumedAt || resetSession.revokedAt || resetSession.expiresAt <= now.getTime() || !user?.passwordResetRequiredAt || user.status !== "active") {
+      throw new UnauthorizedException("Sesi reset password tidak valid atau sudah berakhir.");
+    }
+    const temporaryCredential = this.passwordResetCredentials.get(resetSession.credentialId);
+    if (!temporaryCredential || temporaryCredential.revokedAt || temporaryCredential.expiresAt <= now.getTime()) {
+      throw new UnauthorizedException("Sesi reset password tidak valid atau sudah berakhir.");
+    }
+    if (await passwordMatches(temporaryCredential.credentialHash, password)) {
+      throw new BadRequestException("Password baru harus berbeda dari password sementara.");
+    }
+    resetSession.consumedAt = now.getTime();
+    for (const credential of this.passwordResetCredentials.values()) if (credential.userId === user.id && !credential.revokedAt) credential.revokedAt = now.getTime();
+    for (const session of this.passwordResetSessions.values()) if (session.userId === user.id && session !== resetSession && !session.revokedAt) session.revokedAt = now.getTime();
     user.passwordHash = passwordHash;
-    await this.revokeUserSessions(id);
-    return { ok: true, sessionsRevoked: true };
+    user.passwordResetRequiredAt = undefined;
+    user.lastActiveAt = now.toISOString();
+    await this.revokeUserSessions(user.id);
+    return this.createMemorySession(user);
   }
 
   async deleteMember(id: string) {
@@ -499,9 +769,18 @@ export class AuthService {
 
   async userById(id: string) {
     if (this.usesPostgres()) {
+      const now = new Date();
       const user = await this.database!.client().user.findUnique({
         where: { id },
-        include: { creditAccount: { select: { balanceMicro: true } } },
+        include: {
+          creditAccount: { select: { balanceMicro: true } },
+          passwordResetCredentials: {
+            where: { usedAt: null, revokedAt: null, expiresAt: { gt: now } },
+            select: { expiresAt: true },
+            take: 1,
+            orderBy: { createdAt: "desc" },
+          },
+        },
       }) as DatabaseUserRecord | null;
       if (!user) throw new UnauthorizedException("User session tidak lagi tersedia.");
       return this.safeDatabaseUser(user);
@@ -545,7 +824,7 @@ export class AuthService {
     const password = String(input.password || "");
     const displayName = this.validDisplayName(input.displayName || "");
     if (!validEmail(email)) throw new BadRequestException("Format email tidak valid.");
-    if (password.length < 10) throw new BadRequestException("Password minimal 10 karakter.");
+    if (!validNewPassword(password)) throw new BadRequestException("Password minimal 12 karakter dan maksimal 128 karakter.");
     const plan = this.validPlan(input.plan || (role === "member" ? "free" : "enterprise"));
     const credits = this.nonNegative(input.credits, this.defaultPlanCredits(plan));
     const deviceLimit = Math.max(1, Math.round(this.nonNegative(input.deviceLimit, role === "member" ? 1 : 2)));
@@ -588,6 +867,96 @@ export class AuthService {
     this.users.set(email, user);
     this.creditAccounts?.initialize(user.id, Math.round(user.credits * 1_000_000));
     return this.safeMemoryUser(user);
+  }
+
+  private async createDatabasePasswordResetSession(user: DatabaseUserRecord, password: string): Promise<PasswordResetLoginResult | null> {
+    const client = this.database!.client();
+    const now = new Date();
+    const credential = await client.passwordResetCredential.findFirst({
+      where: { userId: user.id, usedAt: null, revokedAt: null, expiresAt: { gt: now } },
+      orderBy: { createdAt: "desc" },
+    });
+    if (!credential || !(await passwordMatches(credential.credentialHash, password))) return null;
+    const token = `clip_reset_${randomBytes(32).toString("base64url")}`;
+    const result = await this.serializableTransaction(async (tx) => {
+      const used = await tx.passwordResetCredential.updateMany({
+        where: { id: credential.id, usedAt: null, revokedAt: null, expiresAt: { gt: now } },
+        data: { usedAt: now },
+      });
+      if (used.count !== 1) return null;
+      await tx.passwordResetSession.create({
+        data: { userId: user.id, credentialId: credential.id, tokenHash: sessionHash(token), expiresAt: credential.expiresAt },
+      });
+      await tx.user.update({ where: { id: user.id }, data: { lastActiveAt: now } });
+      await tx.auditLog.create({
+        data: {
+          actorId: user.id,
+          action: "account.password_reset_temp_used",
+          entityType: "user",
+          entityId: user.id,
+          metadata: { expiresAt: credential.expiresAt.toISOString() },
+        },
+      });
+      return { expiresAt: credential.expiresAt };
+    });
+    if (!result) return null;
+    return {
+      ok: true,
+      mode: "postgresql",
+      authState: "PASSWORD_RESET_REQUIRED",
+      resetToken: token,
+      expiresAt: result.expiresAt.toISOString(),
+      redirectTo: "/change-password",
+    };
+  }
+
+  private async createMemoryPasswordResetSession(user: MemoryUser, password: string): Promise<PasswordResetLoginResult | null> {
+    const now = Date.now();
+    const credential = Array.from(this.passwordResetCredentials.values())
+      .filter((item) => item.userId === user.id && !item.usedAt && !item.revokedAt && item.expiresAt > now)
+      .sort((left, right) => right.expiresAt - left.expiresAt)[0];
+    if (!credential || !(await passwordMatches(credential.credentialHash, password))) return null;
+    credential.usedAt = now;
+    const token = `clip_reset_${randomBytes(32).toString("base64url")}`;
+    this.passwordResetSessions.set(sessionHash(token), {
+      userId: user.id,
+      credentialId: credential.id,
+      expiresAt: credential.expiresAt,
+    });
+    user.lastActiveAt = new Date(now).toISOString();
+    return {
+      ok: true,
+      mode: authStorageMode(),
+      authState: "PASSWORD_RESET_REQUIRED",
+      resetToken: token,
+      expiresAt: new Date(credential.expiresAt).toISOString(),
+      redirectTo: "/change-password",
+    };
+  }
+
+  private async serializableTransaction<T>(
+    work: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    const client = this.database!.client();
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await client.$transaction(work, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 5_000,
+          timeout: 10_000,
+        });
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === "P2034" &&
+          attempt < 3
+        ) {
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new ServiceUnavailableException("Reset password tidak dapat diproses. Silakan coba lagi.");
   }
 
   private async createDatabaseSession(user: DatabaseUserRecord): Promise<AuthResult> {
@@ -646,10 +1015,21 @@ export class AuthService {
 
   private safeMemoryUser(user: MemoryUser) {
     const { passwordHash: _passwordHash, ...safe } = user;
-    return { ...safe, protected: false };
+    const activeCredential = Array.from(this.passwordResetCredentials.values())
+      .find((item) => item.userId === user.id && !item.usedAt && !item.revokedAt && item.expiresAt > Date.now());
+    return {
+      ...safe,
+      passwordRecovery: {
+        mode: "admin-assisted" as const,
+        status: user.passwordResetRequiredAt ? "reset_required" as const : "normal" as const,
+        expiresAt: activeCredential ? new Date(activeCredential.expiresAt).toISOString() : null,
+      },
+      protected: false,
+    };
   }
 
   private safeDatabaseUser(user: DatabaseUserRecord) {
+    const activeCredential = user.passwordResetCredentials?.[0];
     return {
       id: user.id,
       email: user.email,
@@ -662,6 +1042,11 @@ export class AuthService {
       deviceLimit: user.deviceLimit,
       createdAt: user.createdAt.toISOString(),
       lastActiveAt: user.lastActiveAt?.toISOString() || "",
+      passwordRecovery: {
+        mode: "admin-assisted" as const,
+        status: user.passwordResetRequiredAt ? "reset_required" as const : "normal" as const,
+        expiresAt: activeCredential?.expiresAt.toISOString() || null,
+      },
       protected: user.role === UserRole.SUPER_ADMIN,
     };
   }

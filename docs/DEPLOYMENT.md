@@ -205,19 +205,20 @@ Hapus `NEXT_PUBLIC_API_URL` pada production. Browser akan memakai `/cloud-api`; 
 
 ### Password recovery
 
-Pemulihan password berjalan melalui API Railway, bukan browser. Tambahkan ke
-service `@cliper/api` setelah domain pengirim email sudah tervalidasi di Resend:
+Pemulihan password production berjalan melalui API Railway, bukan browser.
+Mode default tidak memerlukan email provider:
 
 ```text
-APP_URL=https://www.cliperaicloud.online
-RESEND_API_KEY=<server-side-only>
-PASSWORD_RESET_FROM=Cliper AI Cloud <no-reply@your-verified-domain>
-PASSWORD_RESET_REPLY_TO=support@your-domain
+PASSWORD_RECOVERY_MODE=admin_assisted
+PASSWORD_RESET_TEMP_TTL_MINUTES=30
+RATE_LIMIT_ADMIN_PASSWORD_RESET_PER_HOUR=5
+RATE_LIMIT_PASSWORD_CHANGE_PER_15_MINUTES=5
 ```
 
-Jangan set `PASSWORD_RESET_EXPOSE_TOKEN_FOR_TESTS=true` pada production. Tanpa
-`RESEND_API_KEY` dan alamat pengirim tervalidasi, endpoint akan menolak reset
-secara jelas daripada berpura-pura mengirim email.
+Admin membuat password sementara sekali pakai dari **Users & Access**. User
+masuk memakai password tersebut dan hanya dapat mengakses `/change-password`
+sampai password baru tersimpan. Mode email dapat ditambahkan nanti dengan
+`PASSWORD_RECOVERY_MODE=email_link` serta kredensial Resend di Railway API.
 
 ## 3. Urutan Deploy
 

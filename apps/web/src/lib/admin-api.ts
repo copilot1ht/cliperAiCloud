@@ -12,6 +12,11 @@ export interface AdminUser {
   deviceLimit: number;
   createdAt: string;
   lastActiveAt: string;
+  passwordRecovery?: {
+    mode: "admin-assisted";
+    status: "normal" | "reset_required";
+    expiresAt: string | null;
+  };
   protected: boolean;
 }
 

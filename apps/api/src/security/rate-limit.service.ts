@@ -61,6 +61,24 @@ export class RateLimitService {
     return this.assertScope("password-reset", `${ip}:${email || "anonymous"}`, this.configuredLimit("RATE_LIMIT_PASSWORD_RESET_PER_15_MINUTES", 3), 15 * 60_000);
   }
 
+  async assertAdminPasswordReset(adminId: string, userId: string): Promise<LimitResult> {
+    return this.assertScope(
+      "admin-password-reset",
+      `${adminId}:${userId}`,
+      this.configuredLimit("RATE_LIMIT_ADMIN_PASSWORD_RESET_PER_HOUR", 5),
+      60 * 60_000,
+    );
+  }
+
+  async assertPasswordChange(ip: string, resetSession: string): Promise<LimitResult> {
+    return this.assertScope(
+      "password-change",
+      `${ip}:${resetSession || "anonymous"}`,
+      this.configuredLimit("RATE_LIMIT_PASSWORD_CHANGE_PER_15_MINUTES", 5),
+      15 * 60_000,
+    );
+  }
+
   async assertKeyCreate(userId: string): Promise<LimitResult> {
     return this.assertScope("key-create", userId, this.configuredLimit("RATE_LIMIT_KEY_CREATE_PER_HOUR", 5), 60 * 60_000);
   }
@@ -141,6 +159,10 @@ export class RateLimitService {
       provider: {
         requestsPerSecond: this.providerRateLimit("default"),
         concurrency: this.providerConcurrencyLimit("default"),
+      },
+      passwordRecovery: {
+        adminResetPerHour: this.configuredLimit("RATE_LIMIT_ADMIN_PASSWORD_RESET_PER_HOUR", 5),
+        passwordChangePer15Minutes: this.configuredLimit("RATE_LIMIT_PASSWORD_CHANGE_PER_15_MINUTES", 5),
       },
       distributed: this.redis.configured(),
     };

@@ -23,6 +23,14 @@ describe("validateRuntimeConfig", () => {
     const report = validateRuntimeConfig(safeProduction);
     expect(report.ready).toBe(true);
     expect(report.errors).toEqual([]);
+    expect(report.passwordRecovery).toEqual({ mode: "admin_assisted", emailRequired: false });
+    expect(report.warnings.join(" ")).not.toContain("Pemulihan password email");
+  });
+
+  it("only requires Resend when email-link recovery is explicitly enabled", () => {
+    const report = validateRuntimeConfig({ ...safeProduction, PASSWORD_RECOVERY_MODE: "email_link" });
+    expect(report.passwordRecovery).toEqual({ mode: "email_link", emailRequired: true });
+    expect(report.warnings.join(" ")).toContain("Pemulihan password email");
   });
 
   it("fails closed when production uses the development API key", () => {

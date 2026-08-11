@@ -32,24 +32,20 @@ export function AuthLogin() {
     const data = new FormData(event.currentTarget);
     const apiUrl = apiBase();
     try {
-      const recovery = mode === "forgot";
-      const response = await fetch(`${apiUrl}/api/auth/${recovery ? "password-reset/request" : mode === "login" ? "login" : "register"}`, {
+      const response = await fetch(`${apiUrl}/api/auth/${mode === "login" ? "login" : "register"}`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(recovery
-          ? { email: String(data.get("email") || "") }
-          : {
-              displayName: String(data.get("displayName") || ""),
-              email: String(data.get("email") || ""),
-              password: String(data.get("password") || ""),
-            }),
+        body: JSON.stringify({
+          displayName: String(data.get("displayName") || ""),
+          email: String(data.get("email") || ""),
+          password: String(data.get("password") || ""),
+        }),
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload?.message || (recovery ? "Pemulihan password belum dapat diproses." : "Autentikasi gagal."));
-      if (recovery) {
-        setMessage(payload?.message || "Jika akun terdaftar, tautan pemulihan telah dikirim ke email Anda.");
-        setMessageTone("success");
+      if (!response.ok) throw new Error(payload?.message || "Autentikasi gagal.");
+      if (payload?.authState === "PASSWORD_RESET_REQUIRED") {
+        window.location.assign("/change-password");
         return;
       }
       if (!payload?.token) throw new Error("Autentikasi gagal.");
@@ -130,9 +126,17 @@ export function AuthLogin() {
             <span className="auth-role"><LockKeyhole size={18} /></span>
             <p className="section-kicker">Secure account access</p>
             <h1>{mode === "login" ? "Welcome to Cliper AI Cloud" : mode === "register" ? "Create your Cliper account" : "Pulihkan password Anda"}</h1>
-            <p>{mode === "login" ? "Secure access to your AI workspace." : mode === "register" ? "Mulai kelola API key, credits, dan penggunaan Cliper Studio." : "Masukkan email akun Anda. Kami akan mengirim tautan pemulihan yang berlaku terbatas."}</p>
+            <p>{mode === "login" ? "Secure access to your AI workspace." : mode === "register" ? "Mulai kelola API key, credits, dan penggunaan Cliper Studio." : "Pemulihan password saat ini dilakukan melalui bantuan admin."}</p>
           </div>
-          <form className="auth-form" onSubmit={submit} aria-busy={loading}>
+          {mode === "forgot" ? <div className="auth-form auth-recovery-info">
+            <ol>
+              <li>Hubungi admin atau support Cliper.</li>
+              <li>Berikan email akun Anda.</li>
+              <li>Gunakan password sementara yang diberikan untuk masuk.</li>
+              <li>Buat password baru sebelum melanjutkan ke workspace.</li>
+            </ol>
+            <button type="button" className="button button-primary auth-submit" onClick={() => changeMode("login")}>Kembali ke masuk</button>
+          </div> : <form className="auth-form" onSubmit={submit} aria-busy={loading}>
             {mode === "register" && (
               <label>
                 Nama lengkap
@@ -141,22 +145,21 @@ export function AuthLogin() {
             )}
             <label>
               Email
-              <span className="auth-input-shell"><Mail size={17} /><input name="email" type="email" autoComplete="email" required placeholder="you@company.com" value={email} onChange={(event) => setEmail(event.target.value)} /></span>
+              <span className="auth-input-shell"><Mail size={17} /><input name="email" type="email" autoComplete="username" required placeholder="you@company.com" value={email} onChange={(event) => setEmail(event.target.value)} /></span>
             </label>
-            {mode !== "forgot" && <label>
+            <label>
               Password
-              <span className="auth-input-shell password-field"><LockKeyhole size={17} /><input name="password" type={showPassword ? "text" : "password"} autoComplete={mode === "login" ? "current-password" : "new-password"} required minLength={mode === "login" ? 8 : 10} placeholder={mode === "login" ? "Masukkan password" : "Minimal 10 karakter"} /><button type="button" className="icon-button" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? "Sembunyikan password" : "Tampilkan password"}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></span>
-            </label>}
+              <span className="auth-input-shell password-field"><LockKeyhole size={17} /><input name="password" type={showPassword ? "text" : "password"} autoComplete={mode === "login" ? "current-password" : "new-password"} required minLength={mode === "login" ? 1 : 12} maxLength={128} placeholder={mode === "login" ? "Masukkan password" : "Minimal 12 karakter"} /><button type="button" className="icon-button" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? "Sembunyikan password" : "Tampilkan password"}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></span>
+            </label>
             {mode === "login" && (
               <div className="auth-options">
                 <label><input type="checkbox" checked={rememberEmail} onChange={(event) => setRememberEmail(event.target.checked)} /> Ingat email</label>
                 <button type="button" className="auth-text-button" onClick={explainPasswordRecovery}>Lupa password?</button>
               </div>
             )}
-            {mode === "forgot" && <button type="button" className="auth-text-button auth-back-button" onClick={() => changeMode("login")}>Kembali ke masuk</button>}
-            <button className="button button-primary auth-submit" type="submit" disabled={loading}><span>{loading ? "Memproses..." : mode === "login" ? "Masuk" : mode === "register" ? "Daftar sekarang" : "Kirim tautan pemulihan"}</span>{!loading && <ArrowRight size={16} />}</button>
+            <button className="button button-primary auth-submit" type="submit" disabled={loading}><span>{loading ? "Memproses..." : mode === "login" ? "Masuk" : "Daftar sekarang"}</span>{!loading && <ArrowRight size={16} />}</button>
             {message && <p className={`auth-message ${messageTone === "success" ? "success" : ""}`} role="status" aria-live="polite">{message}</p>}
-          </form>
+          </form>}
           <footer className="auth-footer"><ShieldCheck size={14} /><span>Role dan akses ditentukan aman oleh server</span></footer>
         </section>
         <footer className="auth-page-footer">

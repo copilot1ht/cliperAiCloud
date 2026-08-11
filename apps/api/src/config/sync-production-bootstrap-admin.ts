@@ -66,6 +66,7 @@ export async function syncProductionBootstrapAdmin(
     update: {
       passwordHash: admin.passwordHash,
       passwordChangedAt: now,
+      passwordResetRequiredAt: null,
       displayName: "Cliper Administrator",
       role: UserRole.SUPER_ADMIN,
       planCode: PlanCode.ENTERPRISE,
@@ -84,6 +85,8 @@ export async function syncProductionBootstrapAdmin(
     client.session.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: now } }),
     client.desktopSession.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: now } }),
     client.passwordResetToken.deleteMany({ where: { userId: user.id } }),
+    client.passwordResetCredential.deleteMany({ where: { userId: user.id } }),
+    client.passwordResetSession.deleteMany({ where: { userId: user.id } }),
     client.auditLog.create({
       data: {
         actorId: user.id,

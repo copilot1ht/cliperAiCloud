@@ -72,7 +72,7 @@ async function bootstrap(): Promise<void> {
   });
   app.use((request: Request, response: Response, next: NextFunction) => {
     const unsafe = !["GET", "HEAD", "OPTIONS"].includes(request.method.toUpperCase());
-    const cookieAuthenticated = /(?:^|;\s*)cliper_session=/.test(String(request.headers.cookie || "")) && !request.headers.authorization;
+    const cookieAuthenticated = /(?:^|;\s*)cliper_(?:session|password_reset)=/.test(String(request.headers.cookie || "")) && !request.headers.authorization;
     if (unsafe && cookieAuthenticated && !allowedOrigins.has(String(request.headers.origin || ""))) {
       response.status(403).json({ statusCode: 403, message: "Origin request tidak diizinkan." });
       return;
