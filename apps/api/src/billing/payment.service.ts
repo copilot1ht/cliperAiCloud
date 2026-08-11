@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
   UnauthorizedException,
 } from "@nestjs/common";
@@ -22,6 +23,11 @@ import {
 } from "../generated/prisma/client.js";
 import { PaymentProviderService } from "./payment-provider.service.js";
 import { AuthService, type MemberPlan } from "../auth/auth.service.js";
+import {
+  microToUsd,
+  usdToMicro,
+  WalletPaymentSettingsService,
+} from "./wallet-payment-settings.service.js";
 
 interface PaymentIdentity {
   id: string;
@@ -63,33 +69,11 @@ const plans: PlanDefinition[] = [
   },
 ];
 
-// IDR is the payment authority. USD is only a display reference in the web UI.
-const DEFAULT_TOPUP_MIN_IDR = 17_000;
-const DEFAULT_TOPUP_MAX_IDR = 10_000_000;
-const DEFAULT_TOPUP_MIN_USD = 1;
-const DEFAULT_TOPUP_USD_TO_IDR_DISPLAY_RATE = 17_700;
 const DEFAULT_INVOICE_EXPIRY_MS = 15 * 60_000;
 // Xendit's one-off QRIS payment requests remain payable for up to 48 hours.
 // Keep the local invoice open for that same window so a customer cannot pay a
 // still-valid provider QR after Cliper has already rejected the invoice.
 const XENDIT_QRIS_INVOICE_EXPIRY_MS = 48 * 60 * 60_000;
-
-function configuredTopupAmount(name: string, fallback: number): number {
-  const value = Number(process.env[name] || fallback);
-  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
-}
-
-function configuredPositiveDecimal(name: string, fallback: number): number {
-  const value = Number(process.env[name] || fallback);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-export function configuredTopupMinimumUsd(): number {
-  return configuredPositiveDecimal(
-    "PAYMENT_MIN_TOPUP_USD",
-    DEFAULT_TOPUP_MIN_USD,
-  );
-}
 
 export async function transientQrDataUrl(
   qrString: string | null | undefined,
@@ -104,56 +88,6 @@ export async function transientQrDataUrl(
   } catch {
     return null;
   }
-}
-
-export function configuredTopupUsdToIdrDisplayRate(): number {
-  const explicit = process.env.PAYMENT_USD_TO_IDR_DISPLAY_RATE;
-  const platformRate = process.env.PLATFORM_USD_TO_IDR;
-  const value = Number(
-    explicit || platformRate || DEFAULT_TOPUP_USD_TO_IDR_DISPLAY_RATE,
-  );
-  return Number.isSafeInteger(value) && value > 0
-    ? value
-    : DEFAULT_TOPUP_USD_TO_IDR_DISPLAY_RATE;
-}
-
-export function configuredTopupMinimumIdr(): number {
-  return configuredTopupAmount(
-    "PAYMENT_MIN_TOPUP_IDR",
-    DEFAULT_TOPUP_MIN_IDR,
-  );
-}
-
-function topupConfiguration() {
-  return {
-    currency: "IDR" as const,
-    minIdr: configuredTopupMinimumIdr(),
-    maxIdr: configuredTopupAmount(
-      "PAYMENT_MAX_TOPUP_IDR",
-      DEFAULT_TOPUP_MAX_IDR,
-    ),
-    minUsd: configuredTopupMinimumUsd(),
-    usdToIdrDisplayRate: configuredTopupUsdToIdrDisplayRate(),
-    creditsPerIdr: Number(process.env.PAYMENT_CREDITS_PER_IDR || "1"),
-  };
-}
-
-function topupCreditMicro(amountIdr: number): bigint {
-  const rawRate = String(process.env.PAYMENT_CREDITS_PER_IDR || "1").trim();
-  if (!/^\d+(?:\.\d{1,6})?$/.test(rawRate)) {
-    throw new BadRequestException("PAYMENT_CREDITS_PER_IDR tidak valid.");
-  }
-  const [whole, fraction = ""] = rawRate.split(".");
-  const rateMicro =
-    BigInt(whole || "0") * 1_000_000n + BigInt(fraction.padEnd(6, "0"));
-  if (rateMicro <= 0n || rateMicro > 1_000_000_000_000n)
-    throw new BadRequestException("PAYMENT_CREDITS_PER_IDR tidak valid.");
-  const creditMicro = BigInt(amountIdr) * rateMicro;
-  if (creditMicro <= 0n)
-    throw new BadRequestException(
-      "Nominal top-up menghasilkan credit tidak valid.",
-    );
-  return creditMicro;
 }
 
 function planByCode(value: unknown): PlanDefinition {
@@ -281,6 +215,9 @@ export class PaymentService {
     @Inject(PaymentProviderService)
     private readonly providers: PaymentProviderService,
     @Inject(AuthService) private readonly auth: AuthService,
+    @Optional()
+    @Inject(WalletPaymentSettingsService)
+    private readonly walletPaymentSettings?: WalletPaymentSettingsService,
   ) {}
 
   planCatalog() {
@@ -292,6 +229,25 @@ export class PaymentService {
 
   private localReadMode(): boolean {
     return !this.database.configured();
+  }
+
+  private async topupConfiguration() {
+    if (!this.walletPaymentSettings) {
+      throw new ServiceUnavailableException("Konfigurasi wallet USD belum tersedia.");
+    }
+    const settings = await this.walletPaymentSettings.get();
+    return {
+      currency: settings.walletCurrency,
+      paymentCurrency: settings.paymentCurrency,
+      minPurchaseUsd: settings.minPurchaseUsd,
+      maxPurchaseUsd: settings.maxPurchaseUsd,
+      usdToIdrRate: settings.usdToIdrRate,
+      serviceFeeIdr: settings.serviceFeeIdr,
+      uniqueCodeEnabled: settings.uniqueCodeEnabled,
+      uniqueCodeMin: settings.uniqueCodeMin,
+      uniqueCodeMax: settings.uniqueCodeMax,
+      maxTotalPaymentIdr: settings.maxTotalPaymentIdr,
+    };
   }
 
   async createInvoice(identity: PaymentIdentity, requestedPlan: unknown) {
@@ -400,37 +356,25 @@ export class PaymentService {
 
   async createTopupInvoice(
     identity: PaymentIdentity,
-    requestedAmount: unknown,
+    requestedPurchaseUsd: unknown,
   ) {
-    const amountIdr = Number(requestedAmount);
-    const minimum = configuredTopupMinimumIdr();
-    const maximum = configuredTopupAmount(
-      "PAYMENT_MAX_TOPUP_IDR",
-      DEFAULT_TOPUP_MAX_IDR,
-    );
-    if (
-      !Number.isSafeInteger(amountIdr) ||
-      amountIdr < minimum ||
-      amountIdr > maximum
-    ) {
-      throw new BadRequestException(
-        `Nominal top-up harus antara ${minimum.toLocaleString("id-ID")} dan ${maximum.toLocaleString("id-ID")} IDR.`,
-      );
+    if (!this.walletPaymentSettings) {
+      throw new ServiceUnavailableException("Konfigurasi wallet USD belum tersedia.");
     }
+    const settings = await this.walletPaymentSettings.get();
+    const purchaseMicroUsd = usdToMicro(requestedPurchaseUsd, "Nilai top-up USD");
+    const quote = this.walletPaymentSettings.quote(purchaseMicroUsd, settings);
     const paymentMethod = "qris";
-    const exchangeRate = configuredTopupUsdToIdrDisplayRate();
-    const usdEquivalent = Number((amountIdr / exchangeRate).toFixed(6));
-    const creditMicro = topupCreditMicro(amountIdr);
     await this.expireOpenInvoices(identity.id);
     const number = invoiceNumber();
     const provider = await this.providers.active();
     const expiresAt = providerInvoiceExpiry(provider.code);
     const providerPayment = await provider.createPayment({
       invoiceNumber: number,
-      amountIdr,
+      amountIdr: quote.totalPaymentIdr,
       expiresAt: expiresAt.toISOString(),
       customer: identity,
-      description: `Cliper AI Cloud top-up ${amountIdr.toLocaleString("id-ID")} IDR`,
+      description: `Cliper AI Cloud wallet top-up US$${quote.purchaseUsd}`,
     });
     const environment = paymentEnvironment(providerPayment.safeMetadata);
     const invoice = await this.serializable(async (tx) => {
@@ -452,7 +396,7 @@ export class PaymentService {
           userId: identity.id,
           provider: providerPayment.provider,
           externalId: providerPayment.externalId,
-          amountIdr,
+          amountIdr: quote.totalPaymentIdr,
           status: PaymentStatus.PENDING,
           idempotencyKey: `invoice:${number}`,
           metadata: jsonInput({
@@ -462,6 +406,12 @@ export class PaymentService {
             paymentMethod,
             qrImageUrl: providerPayment.qrImageUrl || null,
             environment,
+            purchaseUsd: quote.purchaseUsd,
+            purchaseMicroUsd: quote.purchaseMicroUsd.toString(),
+            subtotalIdr: quote.subtotalIdr,
+            serviceFeeIdr: quote.serviceFeeIdr,
+            uniqueCodeIdr: quote.uniqueCodeIdr,
+            totalPaymentIdr: quote.totalPaymentIdr,
           }),
         },
       });
@@ -475,18 +425,24 @@ export class PaymentService {
           paymentUrl: providerPayment.paymentUrl,
           qrString: providerPayment.qrString,
           status: InvoiceStatus.OPEN,
-          subtotalIdr: amountIdr,
-          totalIdr: amountIdr,
+          subtotalIdr: quote.subtotalIdr,
+          totalIdr: quote.totalPaymentIdr,
           dueAt: expiresAt,
           expiresAt,
           metadata: {
             kind: "topup",
-            creditMicro: creditMicro.toString(),
-            credits: Number(creditMicro / 1_000_000n),
-            amountIdr,
-            grossAmountIdr: amountIdr,
-            exchangeRate,
-            usdEquivalent,
+            walletCurrency: "USD",
+            paymentCurrency: "IDR",
+            creditMicro: quote.purchaseMicroUsd.toString(),
+            purchaseMicroUsd: quote.purchaseMicroUsd.toString(),
+            purchaseUsd: quote.purchaseUsd,
+            credits: Number(quote.purchaseMicroUsd / 1_000_000n),
+            subtotalIdr: quote.subtotalIdr,
+            exchangeRate: quote.usdToIdrRate,
+            serviceFeeIdr: quote.serviceFeeIdr,
+            uniqueCodeIdr: quote.uniqueCodeIdr,
+            totalPaymentIdr: quote.totalPaymentIdr,
+            grossAmountIdr: quote.totalPaymentIdr,
             paymentMethod,
             qrImageUrl: providerPayment.qrImageUrl || null,
             environment,
@@ -494,11 +450,15 @@ export class PaymentService {
           items: {
             create: [
               {
-                description: "Cliper Credits top-up",
+                description: `Cliper wallet top-up US$${quote.purchaseUsd}`,
                 quantity: 1,
-                unitPriceIdr: amountIdr,
-                amountIdr,
-                metadata: { kind: "topup" },
+                unitPriceIdr: quote.subtotalIdr,
+                amountIdr: quote.subtotalIdr,
+                metadata: {
+                  kind: "topup",
+                  walletCurrency: "USD",
+                  purchaseUsd: quote.purchaseUsd,
+                },
               },
             ],
           },
@@ -511,7 +471,11 @@ export class PaymentService {
 
   async createXenditTestTopup(identity: PaymentIdentity) {
     await this.providers.createXenditTestProvider();
-    return this.createTopupInvoice(identity, configuredTopupMinimumIdr());
+    if (!this.walletPaymentSettings) {
+      throw new ServiceUnavailableException("Konfigurasi wallet USD belum tersedia.");
+    }
+    const settings = await this.walletPaymentSettings.get();
+    return this.createTopupInvoice(identity, settings.minPurchaseUsd);
   }
 
   async simulateXenditTestInvoice(userId: string, number: string) {
@@ -665,18 +629,20 @@ export class PaymentService {
   }
 
   async memberBilling(userId: string) {
+    const topup = await this.topupConfiguration();
     if (this.localReadMode()) {
       return {
         mode: "development-memory",
         plans: this.planCatalog(),
         wallet: {
-          balanceMicro: 0,
-          reservedMicro: 0,
-          availableMicro: 0,
-          lifetimeGrantedMicro: 0,
-          lifetimeSpentMicro: 0,
+          currency: "USD",
+          balance: "0.000000",
+          reserved: "0.000000",
+          available: "0.000000",
+          lifetimePurchased: "0.000000",
+          lifetimeSpent: "0.000000",
         },
-        topup: topupConfiguration(),
+        topup,
         subscription: null,
         invoices: [],
         notice:
@@ -703,15 +669,16 @@ export class PaymentService {
       mode: "postgresql",
       plans: this.planCatalog(),
       wallet: {
-        balanceMicro: asNumber(account?.balanceMicro || 0n),
-        reservedMicro: asNumber(account?.reservedMicro || 0n),
-        availableMicro: asNumber(
+        currency: "USD",
+        balance: microToUsd(account?.balanceMicro || 0n),
+        reserved: microToUsd(account?.reservedMicro || 0n),
+        available: microToUsd(
           (account?.balanceMicro || 0n) - (account?.reservedMicro || 0n),
         ),
-        lifetimeGrantedMicro: asNumber(account?.lifetimeGrantedMicro || 0n),
-        lifetimeSpentMicro: asNumber(account?.lifetimeSpentMicro || 0n),
+        lifetimePurchased: microToUsd(account?.lifetimeGrantedMicro || 0n),
+        lifetimeSpent: microToUsd(account?.lifetimeSpentMicro || 0n),
       },
-      topup: topupConfiguration(),
+      topup,
       subscription: subscription
         ? {
             id: subscription.id,
@@ -888,6 +855,17 @@ export class PaymentService {
         reference: item.invoice?.number || item.externalId,
         customerEmail: item.user.email,
         amountIdr: item.amountIdr,
+        walletCreditUsd:
+          item.invoice && String(metadataRecord(item.invoice.metadata).kind || "") === "topup"
+            ? String(metadataRecord(item.invoice.metadata).purchaseUsd || "") || null
+            : null,
+        subtotalIdr: item.invoice?.subtotalIdr || item.amountIdr,
+        serviceFeeIdr: item.invoice
+          ? Number(metadataRecord(item.invoice.metadata).serviceFeeIdr || 0)
+          : 0,
+        uniqueCodeIdr: item.invoice
+          ? Number(metadataRecord(item.invoice.metadata).uniqueCodeIdr || 0)
+          : 0,
         method: item.provider,
         status: item.status.toLowerCase(),
         environment: paymentEnvironment(item.metadata),
@@ -1645,6 +1623,15 @@ export class PaymentService {
       subtotalIdr: invoice.subtotalIdr,
       taxIdr: invoice.taxIdr,
       totalIdr: invoice.totalIdr,
+      subtotalPaymentIdr: Number(metadata.subtotalIdr || invoice.subtotalIdr),
+      serviceFeeIdr: Number(metadata.serviceFeeIdr || 0),
+      uniqueCodeIdr: Number(metadata.uniqueCodeIdr || 0),
+      walletCurrency: String(metadata.walletCurrency || "USD"),
+      purchaseUsd:
+        String(metadata.purchaseUsd || "") ||
+        (String(metadata.kind || "") === "topup"
+          ? microToUsd(safeBigInt(metadata.creditMicro))
+          : null),
       provider: invoice.provider,
       paymentUrl: invoice.paymentUrl,
       qrString: invoice.qrString,

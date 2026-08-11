@@ -653,14 +653,17 @@ export class AnalysisJobService {
     const availableCredits = microToCredits(availableMicro);
     const reservedCredits = microToCredits(reservedMicro);
     return {
+      walletCurrency: "USD",
       availableCredits,
       reservedCredits,
+      availableUsd: availableCredits,
+      reservedUsd: reservedCredits,
       estimatedMaxJobCredits: maximumJobCredits,
       canStartJob: availableCredits >= maximumJobCredits,
       balanceStatus: availableCredits < maximumJobCredits
         ? "insufficient"
         : availableCredits <= this.pricingPolicy().lowBalanceWarningCredits ? "low" : "ready",
-      minimumTopupIdr: Number(process.env.PAYMENT_MIN_TOPUP_IDR || 17_000),
+      minimumTopupUsd: Number(process.env.PAYMENT_MIN_TOPUP_USD || 1),
       topupUrl: String(
         process.env.CLIPER_TOPUP_URL
         || `${String(process.env.WEB_ORIGIN || "http://localhost:3000").replace(/\/$/, "")}/billing?source=desktop`,

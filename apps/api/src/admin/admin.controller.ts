@@ -18,6 +18,7 @@ import { BackupService } from "./backup.service.js";
 import { ReleaseCatalogService, type DesktopReleaseInput } from "./release-catalog.service.js";
 import { PaymentConfigurationService, type PaymentSettingsInput } from "../billing/payment-configuration.service.js";
 import { PaymentProviderService } from "../billing/payment-provider.service.js";
+import { WalletPaymentSettingsService, type WalletPaymentSettingsInput } from "../billing/wallet-payment-settings.service.js";
 
 const plans = [
   { code: "free", name: "Free", priceIdr: 0, credits: 0, deviceLimit: 1, active: true },
@@ -47,6 +48,7 @@ export class AdminController {
     @Inject(ReleaseCatalogService) private readonly releases: ReleaseCatalogService,
     @Inject(PaymentConfigurationService) private readonly paymentConfiguration: PaymentConfigurationService,
     @Inject(PaymentProviderService) private readonly paymentProviders: PaymentProviderService,
+    @Inject(WalletPaymentSettingsService) private readonly walletPaymentConfig: WalletPaymentSettingsService,
   ) {}
 
   @Get("overview")
@@ -439,6 +441,16 @@ export class AdminController {
       this.paymentProviders.testActiveConnection(),
     ]);
     return { configuration, connection };
+  }
+
+  @Get("settings/wallet-payment")
+  walletPaymentSettings() {
+    return this.walletPaymentConfig.get();
+  }
+
+  @Patch("settings/wallet-payment")
+  updateWalletPaymentSettings(@Body() input: WalletPaymentSettingsInput) {
+    return this.walletPaymentConfig.update(input);
   }
 
   @Post("settings/payment/test-qris")

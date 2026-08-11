@@ -88,6 +88,10 @@ export interface PaymentRecord {
   reference: string;
   customerEmail: string;
   amountIdr: number;
+  walletCreditUsd: string | null;
+  subtotalIdr: number;
+  serviceFeeIdr: number;
+  uniqueCodeIdr: number;
   method: string;
   status: "paid" | "pending" | "failed" | "expired" | "refunded";
   environment: "test" | "production";

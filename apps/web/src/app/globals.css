@@ -1455,6 +1455,30 @@ td code {
   flex-wrap: wrap;
   gap: 9px;
 }
+.invoice-breakdown {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 18px;
+}
+.invoice-breakdown > span {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8fbfb;
+}
+.invoice-breakdown small {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.invoice-breakdown strong {
+  color: var(--ink);
+  font-size: 12px;
+}
 .topup-panel {
   display: flex;
   align-items: center;
@@ -3042,6 +3066,12 @@ td code {
   background: #eaf8f1;
   border-color: #b7e6cf;
 }
+.topup-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 10px 0 2px;
+}
 .auth-recovery-info {
   gap: 18px;
 }
@@ -3563,6 +3593,9 @@ td code {
   }
   .checkout-grid {
     grid-template-columns: 1fr;
+  }
+  .invoice-breakdown {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .provider-admin-row {
     grid-template-columns: 38px minmax(180px, 1.5fr) minmax(

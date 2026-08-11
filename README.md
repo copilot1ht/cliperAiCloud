@@ -172,8 +172,9 @@ reserve maksimum job
 → release sisa reservation
 ```
 
-1 credit = Rp1, gross margin minimum 50%, target 60%, dan reservation maksimum
-2.000 credits. Akun baru memulai dengan saldo 0; pemrosesan dan key baru aktif
+Wallet user memakai USD mikro; QRIS hanya menagih snapshot IDR setiap invoice.
+Nilai wallet, kurs, biaya layanan, dan kode unik dicatat terpisah agar rekonsiliasi
+payment tetap tepat. Akun baru memulai dengan saldo $0.00; pemrosesan dan key baru aktif
 setelah top-up tervalidasi. Request duplikat memakai provider request ID
 sebagai idempotency key sehingga usage dan job cost tidak tercatat dua kali.
 Semua nilai internal hanya tersedia pada Admin Revenue.

@@ -13,13 +13,20 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiBase } from "@/lib/api-base";
 import { formatDate, formatIdr } from "@/lib/admin-api";
+import { formatUsdWallet } from "@/lib/money";
 
 type BillingView = "plans" | "wallet" | "invoices" | "transactions";
 
 interface Invoice {
   number: string;
+  subtotalIdr: number;
   status: "open" | "paid" | "expired" | "refunded" | "void";
   totalIdr: number;
+  subtotalPaymentIdr: number;
+  serviceFeeIdr: number;
+  uniqueCodeIdr: number;
+  walletCurrency: "USD" | string;
+  purchaseUsd: string | null;
   provider: string | null;
   paymentUrl: string | null;
   qrString: string | null;
@@ -38,11 +45,12 @@ interface BillingPayload {
   mode: "postgresql" | "development-memory" | string;
   plans?: Array<{ code: string; name: string }>;
   wallet: {
-    balanceMicro: number;
-    reservedMicro: number;
-    availableMicro: number;
-    lifetimeGrantedMicro: number;
-    lifetimeSpentMicro: number;
+    currency: "USD";
+    balance: string;
+    reserved: string;
+    available: string;
+    lifetimePurchased: string;
+    lifetimeSpent: string;
   };
   subscription: {
     plan: string;
@@ -52,12 +60,16 @@ interface BillingPayload {
   } | null;
   invoices: Invoice[];
   topup: {
-    currency: "IDR";
-    minIdr: number;
-    maxIdr: number;
-    minUsd?: number;
-    usdToIdrDisplayRate?: number;
-    creditsPerIdr: number;
+    currency: "USD";
+    paymentCurrency: "IDR";
+    minPurchaseUsd: string;
+    maxPurchaseUsd: string;
+    usdToIdrRate: number;
+    serviceFeeIdr: number;
+    uniqueCodeEnabled: boolean;
+    uniqueCodeMin: number;
+    uniqueCodeMax: number;
+    maxTotalPaymentIdr: number;
   };
 }
 
@@ -81,12 +93,6 @@ async function paymentFetch<T>(
   return payload as T;
 }
 
-function creditLabel(micro: number): string {
-  return new Intl.NumberFormat("id-ID", { maximumFractionDigits: 2 }).format(
-    micro / 1_000_000,
-  );
-}
-
 function statusClass(status: string): string {
   if (status === "paid" || status === "active") return "status-tag healthy";
   if (status === "refunded" || status === "void")
@@ -107,18 +113,23 @@ export function MemberBilling({
   const [error, setError] = useState("");
   const [now, setNow] = useState(Date.now());
   const [topupOpen, setTopupOpen] = useState(false);
-  const [topupAmount, setTopupAmount] = useState(17_000);
+  const [topupPurchaseUsd, setTopupPurchaseUsd] = useState("1.00");
+  const [paymentNotice, setPaymentNotice] = useState("");
   const autoOpenHandled = useRef(false);
   const load = useCallback(async () => {
     setError("");
     try {
       const next = await paymentFetch<BillingPayload>("/api/payments");
       setData(next);
-      setSelected((current) =>
-        current
+      setSelected((current) => {
+        const invoice = current
           ? next.invoices.find((item) => item.number === current.number) || null
-          : next.invoices.find((item) => item.status === "open") || null,
-      );
+          : next.invoices.find((item) => item.status === "open") || null;
+        if (current?.status !== "paid" && invoice?.status === "paid") {
+          setPaymentNotice(`Pembayaran berhasil. ${formatUsdWallet(invoice.purchaseUsd)} telah ditambahkan ke wallet Anda.`);
+        }
+        return invoice;
+      });
     } catch (reason) {
       setError(
         reason instanceof Error
@@ -163,7 +174,7 @@ export function MemberBilling({
   useEffect(() => {
     if (!autoOpenTopup || !data || autoOpenHandled.current) return;
     autoOpenHandled.current = true;
-    setTopupAmount(data.topup.minIdr);
+    setTopupPurchaseUsd(data.topup.minPurchaseUsd);
     setTopupOpen(true);
   }, [autoOpenTopup, data]);
   useEffect(() => {
@@ -209,12 +220,12 @@ export function MemberBilling({
   const createTopup = async () => {
     if (
       !data ||
-      !Number.isSafeInteger(topupAmount) ||
-      topupAmount < data.topup.minIdr ||
-      topupAmount > data.topup.maxIdr
+      !/^\d+(?:\.\d{1,6})?$/.test(topupPurchaseUsd) ||
+      Number(topupPurchaseUsd) < Number(data.topup.minPurchaseUsd) ||
+      Number(topupPurchaseUsd) > Number(data.topup.maxPurchaseUsd)
     ) {
       setError(
-        `Nominal top-up harus antara ${formatIdr(data?.topup.minIdr || 0)} dan ${formatIdr(data?.topup.maxIdr || 0)}.`,
+        `Top-up harus antara ${formatUsdWallet(data?.topup.minPurchaseUsd)} dan ${formatUsdWallet(data?.topup.maxPurchaseUsd)}.`,
       );
       return;
     }
@@ -223,7 +234,7 @@ export function MemberBilling({
     try {
       const invoice = await paymentFetch<Invoice>("/api/payments/topups", {
         method: "POST",
-        body: JSON.stringify({ amountIdr: Number(topupAmount) }),
+        body: JSON.stringify({ purchaseUsd: topupPurchaseUsd }),
       });
       setSelected(invoice);
       setTopupOpen(false);
@@ -242,7 +253,7 @@ export function MemberBilling({
     return (
       <section className="panel billing-state">
         <strong>Memuat wallet...</strong>
-        <span>Memeriksa saldo credit dan transaksi terbaru.</span>
+        <span>Memeriksa saldo wallet USD dan transaksi terbaru.</span>
       </section>
     );
   if (!data)
@@ -256,16 +267,16 @@ export function MemberBilling({
       </section>
     );
 
-  // IDR is authoritative for checkout. USD is only a display reference.
-  const topupMinUsd = data.topup.minUsd || 1;
-  const topupDisplayRate = data.topup.usdToIdrDisplayRate || 17_700;
-  const topupUsdEquivalent = topupAmount / topupDisplayRate;
+  const topupPurchase = Number(topupPurchaseUsd);
+  const topupPreviewSubtotal = Number.isFinite(topupPurchase)
+    ? Math.ceil(Math.max(0, topupPurchase) * data.topup.usdToIdrRate)
+    : 0;
   const topupIsValid =
-    Number.isSafeInteger(topupAmount) &&
-    topupAmount >= data.topup.minIdr &&
-    topupAmount <= data.topup.maxIdr;
+    /^\d+(?:\.\d{1,6})?$/.test(topupPurchaseUsd) &&
+    topupPurchase >= Number(data.topup.minPurchaseUsd) &&
+    topupPurchase <= Number(data.topup.maxPurchaseUsd);
   const openTopup = () => {
-    setTopupAmount(data.topup.minIdr);
+    setTopupPurchaseUsd(data.topup.minPurchaseUsd);
     setTopupOpen(true);
   };
 
@@ -280,21 +291,26 @@ export function MemberBilling({
           </div>
         </div>
       )}
+      {paymentNotice && (
+        <div className="notice-line success-notice">
+          <div><ShieldCheck size={17} /><span>{paymentNotice}</span></div>
+        </div>
+      )}
       <div className="stats-grid compact-stats">
         <div className="metric-block">
           <small>Available balance</small>
-          <strong>{creditLabel(data.wallet.availableMicro)}</strong>
-          <span>Credits siap dipakai Cliper Studio</span>
+          <strong>{formatUsdWallet(data.wallet.available)}</strong>
+          <span>Saldo siap dipakai Cliper Studio</span>
         </div>
         <div className="metric-block">
           <small>Reserved balance</small>
-          <strong>{creditLabel(data.wallet.reservedMicro)}</strong>
+          <strong>{formatUsdWallet(data.wallet.reserved)}</strong>
           <span>Dipakai request yang sedang berjalan</span>
         </div>
         <div className="metric-block">
           <small>Lifetime purchased</small>
-          <strong>{creditLabel(data.wallet.lifetimeGrantedMicro)}</strong>
-          <span>Credit dari pembayaran tervalidasi</span>
+          <strong>{formatUsdWallet(data.wallet.lifetimePurchased)}</strong>
+          <span>Saldo dari pembayaran tervalidasi</span>
         </div>
         <div className="metric-block">
           <small>Transactions</small>
@@ -311,8 +327,8 @@ export function MemberBilling({
           <p className="section-kicker">Flexible wallet</p>
           <h2>Isi saldo Cliper</h2>
           <p>
-            Tambahkan Cliper Credits melalui QRIS Xendit. Saldo masuk otomatis
-            setelah pembayaran tervalidasi.
+            Tambahkan saldo wallet USD melalui QRIS Xendit. Saldo masuk
+            otomatis setelah pembayaran tervalidasi.
           </p>
         </div>
         <button className="button button-primary" onClick={openTopup}>
@@ -327,8 +343,7 @@ export function MemberBilling({
               <p className="section-kicker">Payment status</p>
               <h2>{selected.number}</h2>
               <p>
-                Top-up saldo · {selected.credits.toLocaleString("id-ID")}{" "}
-                credits · QRIS
+                Top-up wallet {formatUsdWallet(selected.purchaseUsd)} · QRIS
               </p>
             </div>
             <span className={statusClass(selected.status)}>
@@ -337,8 +352,9 @@ export function MemberBilling({
           </div>
           <div className="checkout-grid">
             <div className="checkout-total">
-              <small>Total payment</small>
+              <small>Total pembayaran QRIS</small>
               <strong>{formatIdr(selected.totalIdr)}</strong>
+              <span>Saldo wallet {formatUsdWallet(selected.purchaseUsd)}</span>
               {countdown && (
                 <span>
                   <Clock3 size={14} /> Expires in {countdown}
@@ -373,6 +389,12 @@ export function MemberBilling({
                   : "Scan dengan aplikasi bank atau e-wallet. Saldo masuk setelah callback Xendit tervalidasi."}
               </span>
             </div>
+          </div>
+          <div className="invoice-breakdown" aria-label="Rincian pembayaran">
+            <span><small>Nilai wallet</small><strong>{formatUsdWallet(selected.purchaseUsd)}</strong></span>
+            <span><small>Subtotal QRIS</small><strong>{formatIdr(selected.subtotalPaymentIdr || selected.subtotalIdr)}</strong></span>
+            <span><small>Biaya layanan</small><strong>{formatIdr(selected.serviceFeeIdr)}</strong></span>
+            <span><small>Kode unik</small><strong>{formatIdr(selected.uniqueCodeIdr)}</strong></span>
           </div>
           <div className="checkout-actions">
             {selected.paymentUrl && selected.provider !== "sandbox" && (
@@ -439,7 +461,8 @@ export function MemberBilling({
                   <tr>
                     <th>Invoice</th>
                     <th>Type</th>
-                    <th>Amount</th>
+                    <th>Wallet</th>
+                    <th>Bayar (IDR)</th>
                     <th>Provider</th>
                     <th>Status</th>
                     <th>Issued</th>
@@ -452,7 +475,8 @@ export function MemberBilling({
                       <td>
                         <strong>{invoice.number}</strong>
                       </td>
-                      <td>Top-up credit</td>
+                      <td>Top-up wallet</td>
+                      <td>{formatUsdWallet(invoice.purchaseUsd)}</td>
                       <td>{formatIdr(invoice.totalIdr)}</td>
                       <td>{invoice.provider || "-"}</td>
                       <td>
@@ -479,7 +503,7 @@ export function MemberBilling({
               <Wallet size={20} />
               <strong>Belum ada transaksi</strong>
               <span>
-                Gunakan tombol Isi saldo credit untuk membuat pembayaran
+                Gunakan tombol Isi saldo untuk membuat pembayaran
                 pertama.
               </span>
             </div>
@@ -504,8 +528,8 @@ export function MemberBilling({
               <div>
                 <h2>Top-up saldo</h2>
                 <p>
-                  Bayar aman melalui Xendit. Nominal akhir dibayar dalam
-                  Rupiah.
+                  Pilih saldo USD untuk wallet Anda. QRIS selalu dibayar dalam
+                  Rupiah dan nominal final dibuat oleh server.
                 </p>
               </div>
               <button
@@ -518,60 +542,64 @@ export function MemberBilling({
             </header>
             <div className="topup-form">
               <label className="field-label">
-                <span>Jumlah (IDR)</span>
+                <span>Saldo wallet (USD)</span>
                 <div className="currency-input">
-                  <b>Rp</b>
+                  <b>$</b>
                   <input
                     type="number"
-                    min={data.topup.minIdr}
-                    max={data.topup.maxIdr}
-                    step="1000"
-                    value={topupAmount}
+                    min={data.topup.minPurchaseUsd}
+                    max={data.topup.maxPurchaseUsd}
+                    step="0.01"
+                    inputMode="decimal"
+                    value={topupPurchaseUsd}
                     onChange={(event) =>
-                      setTopupAmount(Number(event.target.value))
+                      setTopupPurchaseUsd(event.target.value)
                     }
                   />
                 </div>
                 <small>
-                  Minimum setara US${topupMinUsd.toFixed(2)}:{" "}
-                  {formatIdr(data.topup.minIdr)} · maksimum{" "}
-                  {formatIdr(data.topup.maxIdr)}
+                  Minimum {formatUsdWallet(data.topup.minPurchaseUsd)} · maksimum{" "}
+                  {formatUsdWallet(data.topup.maxPurchaseUsd)}
                 </small>
               </label>
+              <div className="topup-presets" aria-label="Pilihan saldo cepat">
+                {["1", "2", "5", "10"].map((value) => (
+                  <button
+                    type="button"
+                    key={value}
+                    className={Number(topupPurchaseUsd) === Number(value) ? "button button-primary compact-button" : "button button-secondary compact-button"}
+                    disabled={Number(value) < Number(data.topup.minPurchaseUsd) || Number(value) > Number(data.topup.maxPurchaseUsd)}
+                    onClick={() => setTopupPurchaseUsd(value)}
+                  >
+                    {formatUsdWallet(value)}
+                  </button>
+                ))}
+              </div>
               <div className="topup-summary" aria-label="Ringkasan pembayaran">
                 <div>
                   <span>Kurs acuan</span>
-                  <strong>US$1 = {formatIdr(topupDisplayRate)}</strong>
+                  <strong>US$1 = {formatIdr(data.topup.usdToIdrRate)}</strong>
                 </div>
                 <div>
-                  <span>Subtotal</span>
-                  <strong>
-                    {formatIdr(
-                      Number.isFinite(topupAmount)
-                        ? Math.max(0, topupAmount)
-                        : 0,
-                    )}
-                  </strong>
+                  <span>Saldo wallet</span>
+                  <strong>{formatUsdWallet(topupPurchaseUsd)}</strong>
                 </div>
                 <div>
-                  <span>Biaya platform</span>
-                  <strong>Rp0</strong>
+                  <span>Subtotal QRIS</span>
+                  <strong>{formatIdr(topupPreviewSubtotal)}</strong>
+                </div>
+                <div>
+                  <span>Biaya layanan</span>
+                  <strong>{formatIdr(data.topup.serviceFeeIdr)}</strong>
+                </div>
+                <div>
+                  <span>Kode unik</span>
+                  <strong>{data.topup.uniqueCodeEnabled ? `${formatIdr(data.topup.uniqueCodeMin)} - ${formatIdr(data.topup.uniqueCodeMax)}` : "Tidak aktif"}</strong>
                 </div>
                 <div className="topup-summary-total">
-                  <span>Total bayar</span>
-                  <strong>
-                    {formatIdr(
-                      Number.isFinite(topupAmount)
-                        ? Math.max(0, topupAmount)
-                        : 0,
-                    )}
-                  </strong>
-                  <small>
-                    ≈ US$
-                    {Number.isFinite(topupUsdEquivalent)
-                      ? topupUsdEquivalent.toFixed(2)
-                      : "0.00"}
-                  </small>
+                  <span>Estimasi total bayar</span>
+                  <strong>{formatIdr(topupPreviewSubtotal + data.topup.serviceFeeIdr + (data.topup.uniqueCodeEnabled ? data.topup.uniqueCodeMin : 0))}</strong>
+                  <small>Kode unik final dipilih sekali saat invoice dibuat.</small>
                 </div>
               </div>
               <div className="payment-method-fixed" aria-label="Metode pembayaran">
@@ -582,10 +610,9 @@ export function MemberBilling({
                 </div>
               </div>
               <p className="topup-hint">
-                Setiap Rp1 menghasilkan{" "}
-                {data.topup.creditsPerIdr.toLocaleString("id-ID")} Cliper
-                Credit. Saldo hanya bertambah setelah status pembayaran
-                tervalidasi oleh server.
+                Wallet bertambah sebesar nilai USD yang dipilih. Biaya layanan
+                dan kode unik hanya untuk QRIS, bukan saldo wallet. Saldo masuk
+                setelah callback provider tervalidasi server.
               </p>
             </div>
             <div className="modal-actions">

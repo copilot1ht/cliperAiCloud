@@ -682,6 +682,25 @@ model PaymentGatewaySetting {
   @@map("payment_gateway_settings")
 }
 
+// Wallet balances are stored as micro-USD. Payment gateways remain IDR-only;
+// every invoice keeps its own IDR snapshot in metadata for reconciliation.
+model WalletPaymentSetting {
+  id                  String   @id
+  walletCurrency      String   @default("USD")
+  paymentCurrency     String   @default("IDR")
+  minPurchaseMicroUsd BigInt   @default(1000000)
+  maxPurchaseMicroUsd BigInt   @default(500000000)
+  usdToIdrRate        Int      @default(17700)
+  serviceFeeIdr       Int      @default(1000)
+  uniqueCodeEnabled   Boolean  @default(true)
+  uniqueCodeMin       Int      @default(99)
+  uniqueCodeMax       Int      @default(299)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@map("wallet_payment_settings")
+}
+
 model InvoiceItem {
   id           String   @id @default(cuid())
   invoiceId    String

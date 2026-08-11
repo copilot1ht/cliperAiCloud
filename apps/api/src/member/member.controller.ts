@@ -5,6 +5,7 @@ import { DatabaseService } from "../database/database.service.js";
 import { LicenseService } from "../license/license.service.js";
 import { SessionGuard, type SessionAuthenticatedRequest } from "../security/session.guard.js";
 import { UsageService } from "../usage/usage.service.js";
+import { microToUsd } from "../billing/wallet-payment-settings.service.js";
 
 @Controller("api/member")
 @UseGuards(SessionGuard)
@@ -34,6 +35,11 @@ export class MemberController {
       mode: authStorageMode(),
       user: { id: user.id, displayName: user.displayName, email: user.email, plan: user.plan, deviceLimit: user.deviceLimit, unlimitedCredits: user.unlimitedCredits },
       credits: {
+        currency: "USD",
+        balance: user.unlimitedCredits ? null : microToUsd(balanceMicro),
+        reserved: user.unlimitedCredits ? null : microToUsd(reservedMicro),
+        available: user.unlimitedCredits ? null : microToUsd(availableMicro),
+        spent: user.unlimitedCredits ? null : microToUsd(usage.creditChargeMicro),
         balanceMicro: user.unlimitedCredits ? Number.MAX_SAFE_INTEGER : balanceMicro,
         reservedMicro,
         availableMicro,

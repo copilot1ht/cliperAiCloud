@@ -1,39 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  configuredTopupMinimumIdr,
-  configuredTopupMinimumUsd,
-  configuredTopupUsdToIdrDisplayRate,
   detectMidtransDashboardTestNotification,
   paymentEnvironment,
   PaymentService,
   providerInvoiceExpiry,
   transientQrDataUrl,
 } from "./payment.service.js";
+import { microToUsd, usdToMicro } from "./wallet-payment-settings.service.js";
 
-describe("Billing top-up helpers", () => {
-  afterEach(() => {
-    delete process.env.PAYMENT_MIN_TOPUP_IDR;
-    delete process.env.PAYMENT_MIN_TOPUP_USD;
-    delete process.env.PAYMENT_USD_TO_IDR_DISPLAY_RATE;
-    delete process.env.PLATFORM_USD_TO_IDR;
+describe("USD wallet helpers", () => {
+  it("stores exact USD wallet values as micro-USD", () => {
+    expect(usdToMicro("1")).toBe(1_000_000n);
+    expect(usdToMicro("1.25")).toBe(1_250_000n);
+    expect(microToUsd(1_000_000n)).toBe("1.000000");
   });
 
-  it("uses the configured IDR minimum as the payment authority", () => {
-    process.env.PAYMENT_MIN_TOPUP_IDR = "100000";
-    expect(configuredTopupMinimumIdr()).toBe(100000);
-  });
-
-  it("defaults to Rp17.000 while USD remains a display reference", () => {
-    expect(configuredTopupMinimumUsd()).toBe(1);
-    expect(configuredTopupUsdToIdrDisplayRate()).toBe(17700);
-    expect(configuredTopupMinimumIdr()).toBe(17000);
-  });
-
-  it("ignores invalid top-up overrides", () => {
-    process.env.PAYMENT_MIN_TOPUP_IDR = "not-a-number";
-    process.env.PAYMENT_MIN_TOPUP_USD = "not-a-number";
-    process.env.PAYMENT_USD_TO_IDR_DISPLAY_RATE = "not-a-number";
-    expect(configuredTopupMinimumIdr()).toBe(17000);
+  it("rejects floating point and malformed purchase values", () => {
+    expect(() => usdToMicro("1.0000001")).toThrow("maksimal 6 digit");
+    expect(() => usdToMicro("1e3")).toThrow("angka USD");
   });
 
   it("creates a temporary QR image only when a provider QR payload exists", async () => {

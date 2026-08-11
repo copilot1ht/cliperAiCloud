@@ -15,6 +15,7 @@ import {
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { AdminError, AdminLoading, LocalModeNotice } from "@/components/admin-ui";
 import { adminFetch } from "@/lib/admin-api";
+import { AdminWalletPaymentSettings } from "@/components/admin-wallet-payment-settings";
 
 interface PaymentSettings {
   provider: "xendit" | "midtrans" | "sandbox";
@@ -225,6 +226,7 @@ export function AdminPaymentSettings() {
       </section>
       {isTestMode && testInvoice && <section className="panel checkout-panel payment-settings-card admin-test-payment"><div className="panel-head"><div><p className="section-kicker">Xendit test workflow</p><h2>Test QRIS {testInvoice.number}</h2><p>Simulator hanya meminta pemrosesan oleh Xendit. Saldo baru berubah setelah callback tervalidasi atau rekonsiliasi status provider.</p></div><span className={testInvoice.status === "paid" ? "status-tag healthy" : "status-tag fallback"}>{testInvoice.status}</span></div><div className="checkout-grid"><div className="checkout-total"><small>Test amount</small><strong>{new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(testInvoice.totalIdr)}</strong><span>{testInvoice.environment} · {testInvoice.payment?.status || "pending"}</span><small>Expires {testInvoice.expiresAt ? new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeStyle: "short" }).format(new Date(testInvoice.expiresAt)) : "-"}</small></div><div className="checkout-code"><small>QRIS payload</small>{testInvoice.qrImageBase64 ? <div className="qris-image-frame"><img src={testInvoice.qrImageBase64} alt="Xendit test QRIS" /></div> : <code>{testInvoice.qrString || "QRIS belum tersedia"}</code>}<span>Payment request ID tersimpan pada backend dan tidak ditampilkan sebagai credential.</span></div></div><div className="modal-actions"><button type="button" className="button button-secondary" onClick={syncTestQris} disabled={Boolean(testBusy)}><RefreshCw size={15} /> {testBusy === "sync" ? "Syncing..." : "Sync status"}</button>{testInvoice.status === "open" && <button type="button" className="button button-primary" onClick={simulateTestQris} disabled={Boolean(testBusy)}><TestTube2 size={15} /> {testBusy === "simulate" ? "Simulating..." : "Simulate success"}</button>}</div></section>}
       {!isTestMode && <section className="panel payment-settings-card"><div className="panel-head"><div><p className="section-kicker">Live readiness</p><h2>Real payment remains guarded</h2><p>Live mode does not expose a simulator. Confirm a valid live key, live callback token, active QRIS channel, and both Xendit webhook tests before one controlled Rp17.000 payment.</p></div><ShieldCheck size={20} /></div></section>}
+      <AdminWalletPaymentSettings />
     </>;
   }
 
@@ -290,5 +292,6 @@ export function AdminPaymentSettings() {
         </div>
       </form>
     </section>
+    <AdminWalletPaymentSettings />
   </>;
 }

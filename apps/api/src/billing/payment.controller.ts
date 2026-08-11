@@ -42,7 +42,7 @@ export class PaymentController {
 
   @Post("topups")
   @UseGuards(SessionGuard, AccountWriteGuard)
-  async createTopup(@Req() request: SessionAuthenticatedRequest, @Body() input: { amountIdr?: number }) {
+  async createTopup(@Req() request: SessionAuthenticatedRequest, @Body() input: { purchaseUsd?: string | number }) {
     const userId = request.cliperSession?.userId || "";
     await this.rateLimits.assertPaymentCreate(userId);
     const user = await this.auth.userById(userId);
@@ -50,7 +50,7 @@ export class PaymentController {
       id: user.id,
       email: user.email,
       displayName: user.displayName,
-    }, input.amountIdr);
+    }, input.purchaseUsd);
   }
 
   @Get("invoices/:number")

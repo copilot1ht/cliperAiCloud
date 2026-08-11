@@ -88,7 +88,7 @@ export function AuthLogin() {
         <div className="auth-visual-copy">
           <p className="auth-overline">Cloud infrastructure for Cliper Studio</p>
           <h1>Satu koneksi aman untuk seluruh workflow AI Anda.</h1>
-          <p>Kelola akses desktop, routing AI, credits, dan penggunaan dari satu workspace yang terukur.</p>
+          <p>Kelola akses desktop, routing AI, saldo wallet USD, dan penggunaan dari satu workspace yang terukur.</p>
           <div className="auth-signal-row" aria-label="Keamanan dan layanan">
             <span><ShieldCheck size={15} /> Server secured</span>
             <span><KeyRound size={15} /> Scoped access</span>
@@ -100,7 +100,7 @@ export function AuthLogin() {
           <span className="auth-cloud-node auth-node-source"><Layers3 size={18} /><b>Cliper Studio</b><small>Desktop source</small></span>
           <span className="auth-cloud-node auth-node-ai"><BrainCircuit size={18} /><b>AI Router</b><small>Task based</small></span>
           <span className="auth-cloud-node auth-node-key"><KeyRound size={18} /><b>API Access</b><small>Device bound</small></span>
-          <span className="auth-cloud-node auth-node-wallet"><WalletCards size={18} /><b>Cloud Credits</b><small>Usage tracked</small></span>
+          <span className="auth-cloud-node auth-node-wallet"><WalletCards size={18} /><b>USD Wallet</b><small>Usage tracked</small></span>
           <span className="auth-cloud-node auth-node-device"><MonitorSmartphone size={18} /><b>Connected</b><small>Live session</small></span>
           <i className="auth-connector connector-one" />
           <i className="auth-connector connector-two" />
@@ -126,7 +126,7 @@ export function AuthLogin() {
             <span className="auth-role"><LockKeyhole size={18} /></span>
             <p className="section-kicker">Secure account access</p>
             <h1>{mode === "login" ? "Welcome to Cliper AI Cloud" : mode === "register" ? "Create your Cliper account" : "Pulihkan password Anda"}</h1>
-            <p>{mode === "login" ? "Secure access to your AI workspace." : mode === "register" ? "Mulai kelola API key, credits, dan penggunaan Cliper Studio." : "Pemulihan password saat ini dilakukan melalui bantuan admin."}</p>
+            <p>{mode === "login" ? "Secure access to your AI workspace." : mode === "register" ? "Mulai kelola API key, saldo wallet USD, dan penggunaan Cliper Studio." : "Pemulihan password saat ini dilakukan melalui bantuan admin."}</p>
           </div>
           {mode === "forgot" ? <div className="auth-form auth-recovery-info">
             <ol>

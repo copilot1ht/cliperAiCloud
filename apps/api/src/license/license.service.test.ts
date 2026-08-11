@@ -55,7 +55,7 @@ describe("LicenseService development verification", () => {
     const service = new LicenseService(undefined, database as never);
 
     await expect(service.createKey({ ownerId: "member-empty" })).rejects.toThrow(
-      /Saldo Cliper Credits tidak mencukupi/i,
+      /Saldo wallet USD tidak mencukupi/i,
     );
   });
 });

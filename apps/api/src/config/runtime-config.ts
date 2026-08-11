@@ -336,31 +336,33 @@ export function validateRuntimeConfig(
   ) {
     errors.push("MIDTRANS_QRIS_ACQUIRER harus bernilai gopay atau airpay_shopee.");
   }
-  const minimumTopupIdr = Number(env.PAYMENT_MIN_TOPUP_IDR || 17_000);
   const minTopupUsd = Number(env.PAYMENT_MIN_TOPUP_USD || 1);
+  const maxTopupUsd = Number(env.PAYMENT_MAX_TOPUP_USD || 500);
   const usdToIdrTopupRate = Number(
     env.PAYMENT_USD_TO_IDR_DISPLAY_RATE || env.PLATFORM_USD_TO_IDR || 17_700,
   );
-  const maxTopup = Number(env.PAYMENT_MAX_TOPUP_IDR || 10_000_000);
+  const topupServiceFeeIdr = Number(env.PAYMENT_SERVICE_FEE_IDR || 1_000);
+  const uniqueCodeMin = Number(env.PAYMENT_UNIQUE_CODE_MIN || 99);
+  const uniqueCodeMax = Number(env.PAYMENT_UNIQUE_CODE_MAX || 299);
   if (
-    !Number.isSafeInteger(minimumTopupIdr) ||
     !Number.isFinite(minTopupUsd) ||
     minTopupUsd <= 0 ||
+    !Number.isFinite(maxTopupUsd) ||
+    maxTopupUsd < minTopupUsd ||
     !Number.isSafeInteger(usdToIdrTopupRate) ||
     usdToIdrTopupRate <= 0 ||
-    !Number.isSafeInteger(maxTopup) ||
-    minimumTopupIdr < 17_000 ||
-    maxTopup < minimumTopupIdr
+    !Number.isSafeInteger(topupServiceFeeIdr) ||
+    topupServiceFeeIdr < 0 ||
+    !Number.isSafeInteger(uniqueCodeMin) ||
+    !Number.isSafeInteger(uniqueCodeMax) ||
+    uniqueCodeMin < 0 ||
+    uniqueCodeMax < uniqueCodeMin ||
+    Math.ceil(maxTopupUsd * usdToIdrTopupRate) + topupServiceFeeIdr + uniqueCodeMax > 10_000_000
   ) {
     errors.push(
-      "Konfigurasi top-up tidak valid. PAYMENT_MIN_TOPUP_IDR minimal 17000; USD hanya dipakai sebagai referensi tampilan.",
+      "Konfigurasi wallet USD tidak valid atau melebihi batas QRIS 10.000.000 IDR.",
     );
   }
-  const creditsPerIdr = Number(env.PAYMENT_CREDITS_PER_IDR || 1);
-  if (!Number.isFinite(creditsPerIdr) || creditsPerIdr <= 0)
-    errors.push(
-      "PAYMENT_CREDITS_PER_IDR harus berupa angka lebih besar dari nol.",
-    );
   const minimumMarginBps = Number(env.MINIMUM_MARGIN_BPS || 5_000);
   if (
     !Number.isInteger(minimumMarginBps) ||
