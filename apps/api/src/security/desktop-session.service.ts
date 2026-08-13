@@ -1,5 +1,5 @@
 import { Inject, Injectable, Optional, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
-import type { DesktopActivateRequest, DesktopHeartbeatResponse, DesktopRefreshRequest, DesktopSessionResponse } from "@cliper/contracts";
+import type { DesktopActivateRequest, DesktopHeartbeatResponse, DesktopRefreshRequest, DesktopSessionResponse, WalletSnapshot } from "@cliper/contracts";
 import { decryptSecret, encryptSecret, sha256Hex, signDesktopRequest, verifyDesktopRequestSignature } from "@cliper/security";
 import { randomBytes, randomUUID } from "node:crypto";
 import { CreditAccountService } from "../billing/credit-account.service.js";
@@ -89,6 +89,32 @@ function planCode(plan: string): "FREE" | "STARTER" | "PRO" | "TEAM" | "ENTERPRI
   }
 }
 
+function walletSnapshot(
+  balanceMicroUsd: number,
+  reservedMicroUsd = 0,
+  unlimited = false,
+): WalletSnapshot {
+  const availableMicroUsd = unlimited
+    ? Number.MAX_SAFE_INTEGER
+    : Math.max(0, Math.round(balanceMicroUsd));
+  const safeReservedMicroUsd = unlimited
+    ? 0
+    : Math.max(0, Math.round(reservedMicroUsd));
+  const spendableMicroUsd = unlimited
+    ? Number.MAX_SAFE_INTEGER
+    : Math.max(0, availableMicroUsd - safeReservedMicroUsd);
+  return {
+    currency: "USD",
+    availableMicroUsd,
+    reservedMicroUsd: safeReservedMicroUsd,
+    spendableMicroUsd,
+    availableUsd: availableMicroUsd / 1_000_000,
+    reservedUsd: safeReservedMicroUsd / 1_000_000,
+    spendableUsd: spendableMicroUsd / 1_000_000,
+    unlimited,
+  };
+}
+
 @Injectable()
 export class DesktopSessionService {
   private readonly sessions = new Map<string, DesktopSessionRecord>();
@@ -123,7 +149,7 @@ export class DesktopSessionService {
     }
     const rotated = this.rotate(current);
     if (this.usesPersistence()) await this.persist(current);
-    const creditsRemainingMicro = await this.currentCredits(current.accountId);
+    const wallet = await this.currentWallet(current.accountId, current.unlimited);
     this.securityEvents.record({ event: "desktop_session_refreshed", severity: "info", accountId: current.accountId, sessionId: current.id, detail: "Access dan refresh token dirotasi." });
     return {
       status: "active",
@@ -133,7 +159,15 @@ export class DesktopSessionService {
       accessExpiresAt: new Date(current.accessExpiresAt).toISOString(),
       refreshExpiresAt: new Date(current.refreshExpiresAt).toISOString(),
       offlineGraceUntil: new Date(current.offlineGraceUntil).toISOString(),
-      license: { plan: current.plan, creditsRemainingMicro, unlimited: current.unlimited, deviceSlots: { used: 1, limit: 1 } },
+      license: {
+        plan: current.plan,
+        wallet,
+        keyType: current.unlimited ? "internal" : "user",
+        cloudConnected: true,
+        billingEligible: current.unlimited || wallet.spendableMicroUsd > 0,
+        unlimited: current.unlimited,
+        deviceSlots: { used: 1, limit: 1 },
+      },
     };
   }
 
@@ -158,13 +192,16 @@ export class DesktopSessionService {
         data: { lastHeartbeatAt: new Date(session.lastHeartbeatAt) },
       });
     }
-    const creditsRemainingMicro = await this.currentCredits(session.accountId);
+    const wallet = await this.currentWallet(session.accountId, session.unlimited);
     return {
       status: "active",
       serverTime: new Date().toISOString(),
       accessExpiresAt: new Date(session.accessExpiresAt).toISOString(),
       offlineGraceUntil: new Date(session.offlineGraceUntil).toISOString(),
-      creditsRemainingMicro,
+      wallet,
+      keyType: session.unlimited ? "internal" : "user",
+      cloudConnected: true,
+      billingEligible: session.unlimited || wallet.spendableMicroUsd > 0,
       unlimited: session.unlimited,
     };
   }
@@ -248,7 +285,10 @@ export class DesktopSessionService {
       offlineGraceUntil: new Date(record.offlineGraceUntil).toISOString(),
       license: {
         plan: record.plan,
-        creditsRemainingMicro: license.credits?.remainingMicro || 0,
+        wallet: license.wallet || walletSnapshot(0),
+        keyType: license.keyType || (record.unlimited ? "internal" : "user"),
+        cloudConnected: license.cloudConnected === true,
+        billingEligible: license.billingEligible === true,
         unlimited: Boolean(license.unlimited),
         deviceSlots: license.deviceSlots || { used: 1, limit: 1 },
         expiresAt: license.expiresAt,
@@ -435,16 +475,19 @@ export class DesktopSessionService {
     return { sessionId: session.id, apiKeyId: session.apiKeyId, accountId: session.accountId, plan: session.plan, accessExpiresAt: session.accessExpiresAt, offlineGraceUntil: session.offlineGraceUntil };
   }
 
-  private async currentCredits(accountId: string): Promise<number> {
+  private async currentWallet(accountId: string, unlimited: boolean): Promise<WalletSnapshot> {
     if (this.database?.configured() && accountId !== "development-account") {
       const user = await this.database.client().user.findUnique({
         where: { id: accountId },
         select: { unlimitedCredits: true, creditAccount: { select: { balanceMicro: true, reservedMicro: true } } },
       });
-      if (user?.unlimitedCredits) return Number.MAX_SAFE_INTEGER;
-      if (user?.creditAccount) return Number(user.creditAccount.balanceMicro - user.creditAccount.reservedMicro);
-      return 0;
+      return walletSnapshot(
+        Number(user?.creditAccount?.balanceMicro || 0n),
+        Number(user?.creditAccount?.reservedMicro || 0n),
+        Boolean(user?.unlimitedCredits || unlimited),
+      );
     }
-    return this.credits.balance(accountId).availableMicro;
+    const balance = this.credits.balance(accountId);
+    return walletSnapshot(balance.balanceMicro, balance.reservedMicro, unlimited);
   }
 }

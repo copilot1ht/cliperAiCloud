@@ -1,6 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { providersFromEnv } from "@cliper/ai-router";
-import { validateClipJobPricingPolicy } from "@cliper/billing";
+import { validateJobPricingPolicy } from "@cliper/billing";
 import { Socket } from "node:net";
 
 export interface RuntimeConfigReport {
@@ -363,7 +363,7 @@ export function validateRuntimeConfig(
       "Konfigurasi wallet USD tidak valid atau melebihi batas QRIS 10.000.000 IDR.",
     );
   }
-  const minimumMarginBps = Number(env.MINIMUM_MARGIN_BPS || 5_000);
+  const minimumMarginBps = Number(env.JOB_MINIMUM_MARGIN_BPS || env.MINIMUM_MARGIN_BPS || 5_000);
   if (
     !Number.isInteger(minimumMarginBps) ||
     minimumMarginBps < 5_000 ||
@@ -376,30 +376,24 @@ export function validateRuntimeConfig(
   const minimumClipCharge = Number(env.MINIMUM_CLIP_CHARGE_MICRO_USD || 5_000);
   if (!Number.isSafeInteger(minimumClipCharge) || minimumClipCharge < 0)
     errors.push("MINIMUM_CLIP_CHARGE_MICRO_USD harus integer nol atau lebih.");
-  const usdToIdr = Number(env.PLATFORM_USD_TO_IDR || 16_000);
+  const usdToIdr = Number(env.PLATFORM_USD_TO_IDR || 17_700);
   if (!Number.isFinite(usdToIdr) || usdToIdr <= 0)
     errors.push("PLATFORM_USD_TO_IDR harus lebih besar dari nol.");
-  const jobPricingValidation = validateClipJobPricingPolicy({
-    creditValueIdr: Number(env.CLIPER_CREDIT_VALUE_IDR || 1),
-    minimumGrossMarginBps: Number(env.MINIMUM_MARGIN_BPS || 5_000),
-    targetGrossMarginBps: Number(env.TARGET_GROSS_MARGIN_BPS || 6_000),
-    baseAnalysisCredits: Number(env.BASE_ANALYSIS_CREDITS || 300),
-    optionalClipCredits: Number(env.OPTIONAL_CLIP_CREDITS || 50),
-    goodClipCredits: Number(env.GOOD_CLIP_CREDITS || 100),
-    premiumClipCredits: Number(env.PREMIUM_CLIP_CREDITS || 150),
-    optionalScoreMin: Number(env.OPTIONAL_SCORE_MIN || 70),
-    goodScoreMin: Number(env.GOOD_SCORE_MIN || 78),
-    premiumScoreMin: Number(env.PREMIUM_SCORE_MIN || 90),
-    minimumJobCredits: Number(env.MINIMUM_JOB_CREDITS || 300),
-    maximumJobCredits: Number(env.MAXIMUM_JOB_CREDITS || 2_000),
-    infrastructureFeeIdr: Number(env.INFRASTRUCTURE_FEE_IDR || 50),
-    safetyBufferBps: Number(env.SAFETY_BUFFER_BPS || 1_000),
-    retryAllowanceBps: Number(env.RETRY_ALLOWANCE_BPS || 500),
-    paymentFeeAllocationBps: Number(env.PAYMENT_FEE_ALLOCATION_BPS || 0),
-    targetProviderCostIdr: Number(env.TARGET_PROVIDER_COST_IDR || 250),
-    warningProviderCostIdr: Number(env.WARNING_PROVIDER_COST_IDR || 400),
-    hardProviderCostIdr: Number(env.HARD_PROVIDER_COST_IDR || 500),
-    lowBalanceWarningCredits: Number(env.LOW_BALANCE_WARNING_CREDITS || 5_000),
+  const jobPricingValidation = validateJobPricingPolicy({
+    minimumMarginBps,
+    targetMarginBps: Number(env.JOB_TARGET_MARGIN_BPS || env.TARGET_GROSS_MARGIN_BPS || 6_000),
+    infrastructureCostMicroUsd: Number(env.JOB_INFRASTRUCTURE_MICRO_USD || 2_000),
+    paymentFeeBps: Number(env.JOB_PAYMENT_FEE_BPS || env.PAYMENT_FEE_BPS || 0),
+    safetyBufferBps: Number(env.JOB_SAFETY_BUFFER_BPS || env.SAFETY_BUFFER_BPS || 1_000),
+    retryAllowanceBps: Number(env.JOB_RETRY_ALLOWANCE_BPS || env.RETRY_ALLOWANCE_BPS || 500),
+    minimumJobChargeMicroUsd: Number(env.JOB_MINIMUM_CHARGE_MICRO_USD || 20_000),
+    maximumJobChargeMicroUsd: Number(env.JOB_MAXIMUM_CHARGE_MICRO_USD || 500_000),
+    reservationHeadroomBps: Number(env.JOB_RESERVATION_HEADROOM_BPS || 2_000),
+    targetProviderCostMicroUsd: Number(env.JOB_TARGET_PROVIDER_COST_MICRO_USD || 15_000),
+    warningProviderCostMicroUsd: Number(env.JOB_WARNING_PROVIDER_COST_MICRO_USD || 25_000),
+    hardProviderCostMicroUsd: Number(env.JOB_HARD_PROVIDER_COST_MICRO_USD || 50_000),
+    lowBalanceWarningMicroUsd: Number(env.JOB_LOW_BALANCE_WARNING_MICRO_USD || 1_000_000),
+    usdToIdr: Number(env.PLATFORM_USD_TO_IDR || 17_700),
   });
   errors.push(
     ...jobPricingValidation.errors.map((message) => `Pricing job: ${message}`),

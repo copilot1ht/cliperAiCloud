@@ -3,6 +3,32 @@ import type { CliperInternalChatResponse } from "@cliper/contracts";
 import { GatewayService } from "./gateway.service.js";
 
 describe("GatewayService billing boundary", () => {
+  it("does not call a provider when the atomic wallet reservation is rejected", async () => {
+    const route = vi.fn();
+    const usage = { record: vi.fn() };
+    const store = { revision: () => 1, refreshIfStale: vi.fn() };
+    const pricing = {
+      estimateRequest: () => ({ creditChargeMicro: 50_000n }),
+      moduleForRequest: () => "highlight",
+      priceResponse: vi.fn(),
+    };
+    const credits = {
+      reserve: vi.fn().mockRejectedValue(new Error("INSUFFICIENT_BALANCE")),
+      settle: vi.fn(),
+      release: vi.fn(),
+    };
+    const rateLimits = { assertAllowed: vi.fn(), withAiConcurrency: vi.fn((_account, _key, _plan, work) => work()) };
+    const jobs = { assertProviderCallAllowed: vi.fn(), recordProviderUsage: vi.fn() };
+    const service = new GatewayService(usage as never, store as never, pricing as never, credits as never, rateLimits as never, jobs as never);
+    (service as unknown as { router: { route: typeof route }; routerRevision: number }).router = { route };
+    (service as unknown as { routerRevision: number }).routerRevision = 1;
+
+    await expect(service.chat({ module: "highlight", messages: [{ role: "user", content: "Find a clip" }] }, "empty-wallet")).rejects.toThrow("INSUFFICIENT_BALANCE");
+    expect(route).not.toHaveBeenCalled();
+    expect(usage.record).not.toHaveBeenCalled();
+    expect(credits.settle).not.toHaveBeenCalled();
+  });
+
   it("returns only Cliper credit usage and keeps internal economics server-side", async () => {
     const internal: CliperInternalChatResponse = {
       id: "request-safe", object: "chat.completion", created: 1, model: "model-a", provider: "provider-a",

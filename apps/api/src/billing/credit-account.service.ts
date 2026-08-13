@@ -27,17 +27,16 @@ export interface CreditReservation {
   amountMicro: number;
 }
 
-export class InsufficientCreditsException extends HttpException {
+export class InsufficientBalanceException extends HttpException {
   constructor(availableMicro: number, requiredMicro: number, requestId?: string) {
     super({
       ok: false,
-      code: "INSUFFICIENT_CREDITS",
+      code: "INSUFFICIENT_BALANCE",
+      category: "PAYMENT_REQUIRED",
       message: "Saldo wallet USD tidak mencukupi.",
       walletCurrency: "USD",
       availableUsd: Number((availableMicro / 1_000_000).toFixed(6)),
       requiredUsd: Number((requiredMicro / 1_000_000).toFixed(6)),
-      availableCredits: Number((availableMicro / 1_000_000).toFixed(6)),
-      requiredCredits: Number((requiredMicro / 1_000_000).toFixed(6)),
       minimumTopupUsd: Number(process.env.PAYMENT_MIN_TOPUP_USD || 1),
       topupUrl: String(process.env.CLIPER_TOPUP_URL || `${String(process.env.WEB_ORIGIN || "http://localhost:3000").replace(/\/$/, "")}/billing`),
       requestId,
@@ -66,7 +65,7 @@ export class CreditAccountService {
     const account = this.account(accountId);
     const amount = safeMicro(amountMicro);
     const available = account.balanceMicro - account.reservedMicro;
-    if (available < amount) throw new InsufficientCreditsException(available, amount, requestId);
+    if (available < amount) throw new InsufficientBalanceException(available, amount, requestId);
     const reservation = { id: randomUUID(), accountId, requestId, amountMicro: amount };
     account.reservedMicro += amount;
     this.reservations.set(reservation.id, reservation);
@@ -159,7 +158,11 @@ export class CreditAccountService {
   private account(accountId: string): CreditAccountState {
     let account = this.accounts.get(accountId);
     if (!account) {
-      const initial = safeMicro(process.env.CLIPER_DEV_CREDIT_BALANCE_MICRO || 1_000_000_000_000);
+      const initial = safeMicro(
+        process.env.CLIPER_DEV_WALLET_BALANCE_MICRO_USD
+        || process.env.CLIPER_DEV_CREDIT_BALANCE_MICRO
+        || 1_000_000_000_000,
+      );
       account = { accountId, balanceMicro: initial, reservedMicro: 0 };
       this.accounts.set(accountId, account);
     }

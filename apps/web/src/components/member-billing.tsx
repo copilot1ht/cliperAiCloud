@@ -36,7 +36,6 @@ interface Invoice {
   expiresAt?: string;
   paidAt?: string;
   plan: string;
-  credits: number;
   kind: "plan" | "topup";
   payment: { id: string; status: string; externalId: string } | null;
 }
@@ -46,11 +45,11 @@ interface BillingPayload {
   plans?: Array<{ code: string; name: string }>;
   wallet: {
     currency: "USD";
-    balance: string;
-    reserved: string;
-    available: string;
-    lifetimePurchased: string;
-    lifetimeSpent: string;
+    availableUsd: string;
+    reservedUsd: string;
+    spendableUsd: string;
+    lifetimePurchasedUsd: string;
+    lifetimeSpentUsd: string;
   };
   subscription: {
     plan: string;
@@ -299,17 +298,17 @@ export function MemberBilling({
       <div className="stats-grid compact-stats">
         <div className="metric-block">
           <small>Available balance</small>
-          <strong>{formatUsdWallet(data.wallet.available)}</strong>
+          <strong>{formatUsdWallet(data.wallet.spendableUsd)}</strong>
           <span>Saldo siap dipakai Cliper Studio</span>
         </div>
         <div className="metric-block">
           <small>Reserved balance</small>
-          <strong>{formatUsdWallet(data.wallet.reserved)}</strong>
+          <strong>{formatUsdWallet(data.wallet.reservedUsd)}</strong>
           <span>Dipakai request yang sedang berjalan</span>
         </div>
         <div className="metric-block">
           <small>Lifetime purchased</small>
-          <strong>{formatUsdWallet(data.wallet.lifetimePurchased)}</strong>
+          <strong>{formatUsdWallet(data.wallet.lifetimePurchasedUsd)}</strong>
           <span>Saldo dari pembayaran tervalidasi</span>
         </div>
         <div className="metric-block">

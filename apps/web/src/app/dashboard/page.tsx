@@ -12,9 +12,9 @@ import { formatUsdMicro } from "@/lib/money";
 interface MemberOverview {
   mode: string;
   user: { displayName: string; email: string; plan: string; deviceLimit: number; unlimitedCredits: boolean };
-  credits: { balanceMicro: number; reservedMicro: number; availableMicro: number; spentMicro: number; unlimited: boolean };
+  wallet: { availableMicroUsd: number; reservedMicroUsd: number; spendableMicroUsd: number; spentMicroUsd: number; unlimited: boolean };
   keys: { total: number; active: number; devicesUsed: number };
-  usage: { requests: number; inputTokens: number; outputTokens: number; creditChargeMicro: number; recent: Array<{ id: string; module: string; tokens: number; creditChargeMicro: number; createdAt: string }> };
+  usage: { requests: number; inputTokens: number; outputTokens: number; chargedMicroUsd: number; recent: Array<{ id: string; module: string; tokens: number; chargedMicroUsd: number; createdAt: string }> };
 }
 
 const displayCredits = formatUsdMicro;
@@ -51,8 +51,8 @@ export default function DashboardPage() {
         </div>
         <div className="member-balance">
           <small>Available balance</small>
-          <strong>{data.credits.unlimited ? "Unlimited" : displayCredits(data.credits.availableMicro)}</strong>
-          <span>{displayCredits(data.credits.reservedMicro)} reserved · {data.usage.requests.toLocaleString("id-ID")} requests</span>
+          <strong>{data.wallet.unlimited ? "Unlimited" : displayCredits(data.wallet.spendableMicroUsd)}</strong>
+          <span>{displayCredits(data.wallet.reservedMicroUsd)} reserved · {data.usage.requests.toLocaleString("id-ID")} requests</span>
           <Link href="/usage">Lihat penggunaan <ArrowRight size={14} /></Link>
         </div>
       </section>
@@ -61,12 +61,12 @@ export default function DashboardPage() {
         <StatCard label="Wallet status" value={data.mode.includes("memory") ? "Local" : "Live"} detail={data.user.email} icon={ShieldCheck} tone="blue" />
         <StatCard label="Active API keys" value={String(data.keys.active)} detail={`${data.keys.total} key dibuat`} icon={Key} />
         <StatCard label="Bound devices" value={`${data.keys.devicesUsed} / ${data.user.deviceLimit}`} detail="Dihitung dari license aktif" icon={Activity} tone="amber" />
-        <StatCard label="Available balance" value={data.credits.unlimited ? "Unlimited" : displayCredits(data.credits.availableMicro)} detail={data.credits.unlimited ? "Akun pengujian internal" : `${displayCredits(data.credits.reservedMicro)} sedang direservasi`} icon={Coins} tone="coral" />
+        <StatCard label="Available balance" value={data.wallet.unlimited ? "Unlimited" : displayCredits(data.wallet.spendableMicroUsd)} detail={data.wallet.unlimited ? "Akun pengujian internal" : `${displayCredits(data.wallet.reservedMicroUsd)} sedang direservasi`} icon={Coins} tone="coral" />
       </section>
       <div className="content-grid member-content-grid">
         <section className="panel table-panel">
           <div className="panel-head"><div><p className="section-kicker">Actual usage</p><h2>Recent gateway requests</h2><p>Penggunaan wallet dicatat per request. Biaya provider dan markup tetap aman di server.</p></div><span className="status-tag fallback">{data.mode.includes("memory") ? "Preview store" : "Live"}</span></div>
-          {data.usage.recent.length ? <div className="table-scroll"><table><thead><tr><th>Module</th><th>Tokens</th><th>Biaya wallet</th><th>Time</th></tr></thead><tbody>{data.usage.recent.map((item) => <tr key={item.id}><td><strong>{item.module}</strong></td><td>{item.tokens.toLocaleString("id-ID")}</td><td>{displayCredits(item.creditChargeMicro)}</td><td>{formatDate(item.createdAt)}</td></tr>)}</tbody></table></div> : <div className="admin-empty"><Activity size={21} /><strong>Belum ada AI request</strong><span>Aktivitas akan muncul setelah Cliper Studio menggunakan AI Gateway.</span></div>}
+          {data.usage.recent.length ? <div className="table-scroll"><table><thead><tr><th>Module</th><th>Tokens</th><th>Biaya wallet</th><th>Time</th></tr></thead><tbody>{data.usage.recent.map((item) => <tr key={item.id}><td><strong>{item.module}</strong></td><td>{item.tokens.toLocaleString("id-ID")}</td><td>{displayCredits(item.chargedMicroUsd)}</td><td>{formatDate(item.createdAt)}</td></tr>)}</tbody></table></div> : <div className="admin-empty"><Activity size={21} /><strong>Belum ada AI request</strong><span>Aktivitas akan muncul setelah Cliper Studio menggunakan AI Gateway.</span></div>}
         </section>
         <section className="panel activation-panel">
           <div className="panel-head"><div><p className="section-kicker">Desktop activation</p><h2>Connect Cliper Studio</h2><p>Key portal dapat dipakai langsung oleh License API dan AI Gateway.</p></div><Link href="/keys">Manage keys</Link></div>

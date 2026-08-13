@@ -85,13 +85,27 @@ export interface LicenseValidationRequest {
   appVersion?: string;
 }
 
+export interface WalletSnapshot {
+  currency: "USD";
+  availableMicroUsd: number;
+  reservedMicroUsd: number;
+  spendableMicroUsd: number;
+  availableUsd: number;
+  reservedUsd: number;
+  spendableUsd: number;
+  unlimited?: boolean;
+}
+
 export interface LicenseValidationResponse {
   valid: boolean;
   status?: "active" | "expired" | "suspended" | "revoked";
   plan?: string;
   expiresAt?: string;
   deviceSlots?: { used: number; limit: number };
-  credits?: { remainingMicro: number; renewalAt?: string };
+  wallet?: WalletSnapshot;
+  keyType?: "user" | "internal";
+  cloudConnected?: boolean;
+  billingEligible?: boolean;
   unlimited?: boolean;
   reason?: string;
 }
@@ -108,7 +122,10 @@ export interface DesktopSessionResponse {
   offlineGraceUntil: string;
   license: {
     plan: string;
-    creditsRemainingMicro: number;
+    wallet: WalletSnapshot;
+    keyType: "user" | "internal";
+    cloudConnected: boolean;
+    billingEligible: boolean;
     unlimited?: boolean;
     deviceSlots: { used: number; limit: number };
     expiresAt?: string;
@@ -125,6 +142,9 @@ export interface DesktopHeartbeatResponse {
   serverTime: string;
   accessExpiresAt: string;
   offlineGraceUntil: string;
-  creditsRemainingMicro: number;
+  wallet: WalletSnapshot;
+  keyType: "user" | "internal";
+  cloudConnected: boolean;
+  billingEligible: boolean;
   unlimited?: boolean;
 }

@@ -636,11 +636,11 @@ export class PaymentService {
         plans: this.planCatalog(),
         wallet: {
           currency: "USD",
-          balance: "0.000000",
-          reserved: "0.000000",
-          available: "0.000000",
-          lifetimePurchased: "0.000000",
-          lifetimeSpent: "0.000000",
+          availableUsd: "0.000000",
+          reservedUsd: "0.000000",
+          spendableUsd: "0.000000",
+          lifetimePurchasedUsd: "0.000000",
+          lifetimeSpentUsd: "0.000000",
         },
         topup,
         subscription: null,
@@ -670,13 +670,13 @@ export class PaymentService {
       plans: this.planCatalog(),
       wallet: {
         currency: "USD",
-        balance: microToUsd(account?.balanceMicro || 0n),
-        reserved: microToUsd(account?.reservedMicro || 0n),
-        available: microToUsd(
+        availableUsd: microToUsd(account?.balanceMicro || 0n),
+        reservedUsd: microToUsd(account?.reservedMicro || 0n),
+        spendableUsd: microToUsd(
           (account?.balanceMicro || 0n) - (account?.reservedMicro || 0n),
         ),
-        lifetimePurchased: microToUsd(account?.lifetimeGrantedMicro || 0n),
-        lifetimeSpent: microToUsd(account?.lifetimeSpentMicro || 0n),
+        lifetimePurchasedUsd: microToUsd(account?.lifetimeGrantedMicro || 0n),
+        lifetimeSpentUsd: microToUsd(account?.lifetimeSpentMicro || 0n),
       },
       topup,
       subscription: subscription
@@ -1641,7 +1641,6 @@ export class PaymentService {
       expiresAt: invoice.expiresAt?.toISOString(),
       paidAt: invoice.paidAt?.toISOString(),
       plan: String(metadata.planCode || "").toLowerCase(),
-      credits: Number(metadata.credits || 0),
       paymentMethod: String(metadata.paymentMethod || "qris"),
       kind: String(metadata.kind || "plan"),
       environment: paymentEnvironment(metadata),

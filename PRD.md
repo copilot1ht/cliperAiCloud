@@ -1,3 +1,54 @@
+> Historical note: this document contains the original Phase 1 proposal below. The current production contract in this section overrides any conflicting legacy wording.
+
+# Current Production Contract: USD Wallet and Per-Job Billing
+
+## Product boundary
+
+Cliper AI Cloud is the account, key, wallet, AI routing, payment, and usage service for the local-first Cliper Studio desktop application. Video download, transcription, analysis, rendering, and export remain on the user's computer.
+
+## API key and connection
+
+- A `clip_sk` key is valid when it is active, belongs to an active account, and satisfies device/session rules.
+- Wallet balance is never a requirement to create, activate, validate, refresh, or heartbeat an API key.
+- Electron connection checks authenticate the key, session, and wallet endpoint only. They never make a paid AI request.
+- A wallet with US$0 remains connected. The UI asks the user to top up only before a paid operation.
+
+## Canonical wallet contract
+
+- Currency is USD, stored as integer micro-USD for exact arithmetic.
+- Server responses expose `availableUsd`, `reservedUsd`, and `spendableUsd`, where `spendable = available - reserved`.
+- The minimum top-up is US$1.00. It is a payment rule, not a minimum balance required to use a key.
+- Legacy database and ledger column names may remain for migration compatibility, but user-facing product language is wallet balance, reservation, settlement, and USD.
+
+## Paid analysis job
+
+1. Electron starts a local analysis and asks Cloud to create one analysis job before the first paid provider call.
+2. Cloud estimates the job from source duration and requested output count.
+3. Cloud reserves `estimated protected cost + reservation headroom` atomically.
+4. If `spendableUsd` is smaller than that specific reservation, Cloud returns `PAYMENT_REQUIRED` with the available and required USD values. The key and session remain valid.
+5. All provider calls for that analysis job use the same reservation. The job is never charged once per provider request.
+6. On success, Cloud settles the actual protected cost once and releases the remainder. On failure, Cloud releases the complete reservation.
+7. A configured maximum job charge is a safety ceiling, never a blanket reservation or login gate.
+
+## Cost guard
+
+- Provider calls stop before their projected cost would exceed the job reservation or the hard provider cost limit.
+- Optional enrichment stages use local fallbacks when budget guards are reached.
+- Admin can configure margin, infrastructure allocation, buffers, retry allowance, per-job reservation headroom, and the maximum job charge safety ceiling.
+- Admin accounts marked unlimited do not draw down wallet balance, while provider usage remains auditable.
+
+## Required acceptance matrix
+
+- A valid key with US$1.00 connects and starts a normal estimated job.
+- A valid key with US$0.00 connects successfully but receives `PAYMENT_REQUIRED` only when a paid job is too expensive.
+- A wallet with US$0.01 can run a US$0.005 operation.
+- A wallet with US$0.01 cannot run a US$0.05 operation.
+- Wallet top-up accumulates balance and existing keys work after top-up without reactivation.
+- Concurrent job starts reserve atomically and cannot overdraw spendable balance.
+- Duplicate job requests reuse the same reservation; duplicate settlement cannot charge twice.
+
+---
+
 Ya. Saya justru menyarankan **dibuat sebagai project baru 100%**, jangan menjadi bagian dari Cliper Studio Plus.
 
 Kalau target Anda memang ingin menjual Cliper Studio Plus, maka ini harus menjadi **backend SaaS** yang berdiri sendiri.

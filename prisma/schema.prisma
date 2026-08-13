@@ -453,6 +453,14 @@ model PricingPolicy {
   lowBalanceWarningCredits Int    @default(5000)
   usdToIdr              Int       @default(16000)
   isDefault             Boolean   @default(false)
+  infrastructureCostMicroUsd  BigInt    @default(2000)
+  minimumJobChargeMicroUsd    BigInt    @default(20000)
+  maximumJobChargeMicroUsd    BigInt    @default(500000)
+  reservationHeadroomBps      Int       @default(2000)
+  targetProviderCostMicroUsd  BigInt    @default(15000)
+  warningProviderCostMicroUsd BigInt    @default(25000)
+  hardProviderCostMicroUsd    BigInt    @default(50000)
+  lowBalanceWarningMicroUsd   BigInt    @default(1000000)
   effectiveFrom         DateTime  @default(now())
   effectiveTo           DateTime?
   createdById           String?

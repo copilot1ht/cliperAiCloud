@@ -243,12 +243,12 @@ export class AdminController {
   }
 
   @Post("users")
-  createUser(@Body() input: { email?: string; password?: string; displayName?: string; role?: AuthRole; plan?: MemberPlan; credits?: number; unlimitedCredits?: boolean; deviceLimit?: number }) {
+  createUser(@Body() input: { email?: string; password?: string; displayName?: string; role?: AuthRole; plan?: MemberPlan; walletUsd?: number; unlimitedWallet?: boolean; deviceLimit?: number }) {
     return this.auth.createManagedAccount(input);
   }
 
   @Patch("users/:id")
-  updateUser(@Param("id") id: string, @Body() input: { displayName?: string; plan?: MemberPlan; status?: MemberStatus; credits?: number; unlimitedCredits?: boolean; deviceLimit?: number }) {
+  updateUser(@Param("id") id: string, @Body() input: { displayName?: string; plan?: MemberPlan; status?: MemberStatus; walletUsd?: number; unlimitedWallet?: boolean; deviceLimit?: number }) {
     return this.auth.updateMember(id, input);
   }
 
@@ -374,12 +374,12 @@ export class AdminController {
       payment,
       usage,
       pricing: this.store.pricingPolicy(),
-      pricingValidation: this.pricingService.validateAnalysisJobPolicy(),
+      pricingValidation: this.pricingService.serializeAnalysisJobValidation(this.pricingService.validateAnalysisJobPolicy()),
       jobBilling,
-      simulation: this.pricingService.quoteAnalysisJob({
-        providerCostIdr: this.store.pricingPolicy().targetProviderCostIdr,
-        clipScores: [72, 80, 84, 91, 93],
-      }),
+      simulation: this.pricingService.serializeAnalysisJobQuote(this.pricingService.quoteAnalysisJob({
+        providerCostMicroUsd: BigInt(this.store.pricingPolicy().targetProviderCostMicroUsd),
+        usableResult: true,
+      })),
       grossMarginUsd: usage.grossMarginUsd,
       marginRate: usage.billedCostUsd > 0 ? Number((usage.grossMarginUsd / usage.billedCostUsd * 100).toFixed(2)) : 0,
     };
@@ -390,7 +390,7 @@ export class AdminController {
     return {
       mode: authStorageMode(),
       policy: this.store.pricingPolicy(),
-      validation: this.pricingService.validateAnalysisJobPolicy(),
+      validation: this.pricingService.serializeAnalysisJobValidation(this.pricingService.validateAnalysisJobPolicy()),
     };
   }
 
@@ -398,16 +398,16 @@ export class AdminController {
   async updatePricing(@Body() input: PricingPolicyInput) {
     const policy = this.store.updatePricingPolicy(input);
     await this.store.persistPricingPolicy();
-    return { mode: authStorageMode(), policy, validation: this.pricingService.validateAnalysisJobPolicy() };
+    return { mode: authStorageMode(), policy, validation: this.pricingService.serializeAnalysisJobValidation(this.pricingService.validateAnalysisJobPolicy()) };
   }
 
   @Post("pricing/simulate")
-  simulatePricing(@Body() input: { providerCostIdr?: number; clipScores?: number[]; usableResult?: boolean; policy?: Record<string, unknown> }) {
+  simulatePricing(@Body() input: { providerCostIdr?: number; providerCostMicroUsd?: number; usableResult?: boolean; policy?: Record<string, unknown> }) {
     return {
       mode: authStorageMode(),
       ...this.pricingService.simulateAnalysisJob({
         providerCostIdr: Number(input.providerCostIdr || 0),
-        clipScores: Array.isArray(input.clipScores) ? input.clipScores : [],
+        providerCostMicroUsd: input.providerCostMicroUsd,
         usableResult: input.usableResult !== false,
       }, input.policy),
     };

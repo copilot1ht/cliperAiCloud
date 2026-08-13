@@ -1,6 +1,6 @@
 import { BadRequestException, Inject, Injectable, NotFoundException, OnModuleInit, Optional } from "@nestjs/common";
 import { providersFromEnv, type ProviderDefinition } from "@cliper/ai-router";
-import { validateClipJobPricingPolicy, type ClipJobPricingPolicy } from "@cliper/billing";
+import { validateJobPricingPolicy, type JobPricingPolicy } from "@cliper/billing";
 import type { AiModule } from "@cliper/contracts";
 import { randomUUID } from "node:crypto";
 import { decryptSecret, encryptSecret } from "@cliper/security";
@@ -44,28 +44,20 @@ export interface PaymentRecord {
   updatedAt: string;
 }
 
-export interface PricingPolicyInput extends Partial<ClipJobPricingPolicy> {
+export interface PricingPolicyInput extends Partial<JobPricingPolicy> {
   markupBps?: number;
-  minimumMarginBps?: number;
   computeCostMicroUsd?: number;
-  paymentFeeBps?: number;
   reserveBps?: number;
   minimumChargeMicroUsd?: number;
   minimumClipChargeMicroUsd?: number;
-  microUsdPerCredit?: number;
-  usdToIdr?: number;
 }
 
-export interface PricingPolicyState extends ClipJobPricingPolicy {
+export interface PricingPolicyState extends JobPricingPolicy {
   markupBps: number;
-  minimumMarginBps: number;
   computeCostMicroUsd: number;
-  paymentFeeBps: number;
   reserveBps: number;
   minimumChargeMicroUsd: number;
   minimumClipChargeMicroUsd: number;
-  microUsdPerCredit: number;
-  usdToIdr: number;
   updatedAt: string;
 }
 
@@ -117,37 +109,27 @@ export class AdminStoreService implements OnModuleInit {
     const legacyMarkupPercent = finiteNumber(process.env.DEFAULT_MARKUP_PERCENT, 50);
     this.pricingPolicyValue = {
       markupBps: Math.round(finiteNumber(process.env.DEFAULT_MARKUP_BPS, legacyMarkupPercent * 100)),
-      minimumMarginBps: Math.round(finiteNumber(process.env.MINIMUM_MARGIN_BPS, 5_000, 5_000)),
+      minimumMarginBps: Math.round(finiteNumber(process.env.JOB_MINIMUM_MARGIN_BPS || process.env.MINIMUM_MARGIN_BPS, 5_000, 5_000)),
+      targetMarginBps: Math.round(finiteNumber(process.env.JOB_TARGET_MARGIN_BPS || process.env.TARGET_GROSS_MARGIN_BPS, 6_000, 5_000)),
       computeCostMicroUsd: Math.round(finiteNumber(process.env.COMPUTE_COST_MICRO_USD, 0)),
-      paymentFeeBps: Math.round(finiteNumber(process.env.PAYMENT_FEE_BPS, 0)),
+      paymentFeeBps: Math.round(finiteNumber(process.env.JOB_PAYMENT_FEE_BPS || process.env.PAYMENT_FEE_BPS, 0)),
       reserveBps: Math.round(finiteNumber(process.env.RISK_RESERVE_BPS, 0)),
       minimumChargeMicroUsd: Math.round(finiteNumber(process.env.MINIMUM_REQUEST_MICRO_USD, 0)),
       minimumClipChargeMicroUsd: Math.round(finiteNumber(process.env.MINIMUM_CLIP_CHARGE_MICRO_USD, 5_000)),
-      microUsdPerCredit: Math.max(1, Math.round(finiteNumber(process.env.MICRO_USD_PER_CREDIT, 100))),
-      usdToIdr: Math.round(finiteNumber(process.env.PLATFORM_USD_TO_IDR, 16_000, 1)),
-      creditValueIdr: Math.max(1, Math.round(finiteNumber(process.env.CLIPER_CREDIT_VALUE_IDR, 1, 1))),
-      minimumGrossMarginBps: Math.round(finiteNumber(process.env.MINIMUM_MARGIN_BPS, 5_000, 5_000)),
-      targetGrossMarginBps: Math.round(finiteNumber(process.env.TARGET_GROSS_MARGIN_BPS, 6_000, 5_000)),
-      baseAnalysisCredits: Math.round(finiteNumber(process.env.BASE_ANALYSIS_CREDITS, 300)),
-      optionalClipCredits: Math.round(finiteNumber(process.env.OPTIONAL_CLIP_CREDITS, 50)),
-      goodClipCredits: Math.round(finiteNumber(process.env.GOOD_CLIP_CREDITS, 100)),
-      premiumClipCredits: Math.round(finiteNumber(process.env.PREMIUM_CLIP_CREDITS, 150)),
-      optionalScoreMin: Math.round(finiteNumber(process.env.OPTIONAL_SCORE_MIN, 70)),
-      goodScoreMin: Math.round(finiteNumber(process.env.GOOD_SCORE_MIN, 78)),
-      premiumScoreMin: Math.round(finiteNumber(process.env.PREMIUM_SCORE_MIN, 90)),
-      minimumJobCredits: Math.round(finiteNumber(process.env.MINIMUM_JOB_CREDITS, 300)),
-      maximumJobCredits: Math.round(finiteNumber(process.env.MAXIMUM_JOB_CREDITS, 2_000, 1)),
-      infrastructureFeeIdr: Math.round(finiteNumber(process.env.INFRASTRUCTURE_FEE_IDR, 50)),
-      safetyBufferBps: Math.round(finiteNumber(process.env.SAFETY_BUFFER_BPS, 1_000)),
-      retryAllowanceBps: Math.round(finiteNumber(process.env.RETRY_ALLOWANCE_BPS, 500)),
-      paymentFeeAllocationBps: Math.round(finiteNumber(process.env.PAYMENT_FEE_ALLOCATION_BPS, 0)),
-      targetProviderCostIdr: Math.round(finiteNumber(process.env.TARGET_PROVIDER_COST_IDR, 250)),
-      warningProviderCostIdr: Math.round(finiteNumber(process.env.WARNING_PROVIDER_COST_IDR, 400)),
-      hardProviderCostIdr: Math.round(finiteNumber(process.env.HARD_PROVIDER_COST_IDR, 500)),
-      lowBalanceWarningCredits: Math.round(finiteNumber(process.env.LOW_BALANCE_WARNING_CREDITS, 5_000)),
+      infrastructureCostMicroUsd: Math.round(finiteNumber(process.env.JOB_INFRASTRUCTURE_MICRO_USD, 2_000)),
+      safetyBufferBps: Math.round(finiteNumber(process.env.JOB_SAFETY_BUFFER_BPS || process.env.SAFETY_BUFFER_BPS, 1_000)),
+      retryAllowanceBps: Math.round(finiteNumber(process.env.JOB_RETRY_ALLOWANCE_BPS || process.env.RETRY_ALLOWANCE_BPS, 500)),
+      minimumJobChargeMicroUsd: Math.round(finiteNumber(process.env.JOB_MINIMUM_CHARGE_MICRO_USD, 20_000)),
+      maximumJobChargeMicroUsd: Math.max(1, Math.round(finiteNumber(process.env.JOB_MAXIMUM_CHARGE_MICRO_USD, 500_000, 1))),
+      reservationHeadroomBps: Math.round(finiteNumber(process.env.JOB_RESERVATION_HEADROOM_BPS, 2_000)),
+      targetProviderCostMicroUsd: Math.round(finiteNumber(process.env.JOB_TARGET_PROVIDER_COST_MICRO_USD, 15_000)),
+      warningProviderCostMicroUsd: Math.round(finiteNumber(process.env.JOB_WARNING_PROVIDER_COST_MICRO_USD, 25_000)),
+      hardProviderCostMicroUsd: Math.max(1, Math.round(finiteNumber(process.env.JOB_HARD_PROVIDER_COST_MICRO_USD, 50_000, 1))),
+      lowBalanceWarningMicroUsd: Math.round(finiteNumber(process.env.JOB_LOW_BALANCE_WARNING_MICRO_USD, 1_000_000)),
+      usdToIdr: Math.round(finiteNumber(process.env.PLATFORM_USD_TO_IDR, 17_700, 1)),
       updatedAt: new Date().toISOString(),
     };
-    const validation = validateClipJobPricingPolicy(this.pricingPolicyValue);
+    const validation = validateJobPricingPolicy(this.pricingPolicyValue);
     if (!validation.valid) {
       throw new Error(`Konfigurasi pricing job tidak aman: ${validation.errors.join(" ")}`);
     }
@@ -252,32 +234,22 @@ export class AdminStoreService implements OnModuleInit {
         ...this.pricingPolicyValue,
         markupBps: pricing.markupBps,
         minimumMarginBps: pricing.minimumMarginBps,
+        targetMarginBps: pricing.targetMarginBps,
         computeCostMicroUsd: Number(pricing.computeCostMicroUsd),
         paymentFeeBps: pricing.paymentFeeBps,
         reserveBps: pricing.reserveBps,
         minimumChargeMicroUsd: Number(pricing.minimumChargeMicroUsd),
         minimumClipChargeMicroUsd: Number(pricing.minimumClipChargeMicroUsd),
-        microUsdPerCredit: Number(pricing.microUsdPerCredit),
-        creditValueIdr: pricing.creditValueIdr,
-        minimumGrossMarginBps: pricing.minimumMarginBps,
-        targetGrossMarginBps: pricing.targetMarginBps,
-        baseAnalysisCredits: pricing.baseAnalysisCredits,
-        optionalClipCredits: pricing.optionalClipCredits,
-        goodClipCredits: pricing.goodClipCredits,
-        premiumClipCredits: pricing.premiumClipCredits,
-        optionalScoreMin: pricing.optionalScoreMin,
-        goodScoreMin: pricing.goodScoreMin,
-        premiumScoreMin: pricing.premiumScoreMin,
-        minimumJobCredits: pricing.minimumJobCredits,
-        maximumJobCredits: pricing.maximumJobCredits,
-        infrastructureFeeIdr: pricing.infrastructureFeeIdr,
+        infrastructureCostMicroUsd: Number(pricing.infrastructureCostMicroUsd),
         safetyBufferBps: pricing.safetyBufferBps,
         retryAllowanceBps: pricing.retryAllowanceBps,
-        paymentFeeAllocationBps: pricing.paymentFeeAllocationBps,
-        targetProviderCostIdr: pricing.targetProviderCostIdr,
-        warningProviderCostIdr: pricing.warningProviderCostIdr,
-        hardProviderCostIdr: pricing.hardProviderCostIdr,
-        lowBalanceWarningCredits: pricing.lowBalanceWarningCredits,
+        minimumJobChargeMicroUsd: Number(pricing.minimumJobChargeMicroUsd),
+        maximumJobChargeMicroUsd: Number(pricing.maximumJobChargeMicroUsd),
+        reservationHeadroomBps: pricing.reservationHeadroomBps,
+        targetProviderCostMicroUsd: Number(pricing.targetProviderCostMicroUsd),
+        warningProviderCostMicroUsd: Number(pricing.warningProviderCostMicroUsd),
+        hardProviderCostMicroUsd: Number(pricing.hardProviderCostMicroUsd),
+        lowBalanceWarningMicroUsd: Number(pricing.lowBalanceWarningMicroUsd),
         usdToIdr: pricing.usdToIdr,
         updatedAt: pricing.updatedAt.toISOString(),
       };
@@ -320,47 +292,47 @@ export class AdminStoreService implements OnModuleInit {
   }
 
   updatePricingPolicy(input: PricingPolicyInput): PricingPolicyState {
-    const current = this.pricingPolicyValue;
-    const markupBps = input.markupBps === undefined ? current.markupBps : Math.round(finiteNumber(input.markupBps, current.markupBps));
-    const minimumMarginBps = input.minimumMarginBps === undefined ? current.minimumMarginBps : Math.round(finiteNumber(input.minimumMarginBps, current.minimumMarginBps));
-    const paymentFeeBps = input.paymentFeeBps === undefined ? current.paymentFeeBps : Math.round(finiteNumber(input.paymentFeeBps, current.paymentFeeBps));
-    const reserveBps = input.reserveBps === undefined ? current.reserveBps : Math.round(finiteNumber(input.reserveBps, current.reserveBps));
-    if (markupBps > 100_000 || minimumMarginBps < 5_000 || minimumMarginBps > 9_500 || paymentFeeBps > 10_000 || reserveBps > 10_000) {
-      throw new BadRequestException("Pricing basis points melebihi batas aman.");
+    for (const [field, value] of Object.entries(input)) {
+      if (value !== undefined && !Number.isFinite(Number(value))) {
+        throw new BadRequestException(`Pricing ${field} harus berupa angka valid.`);
+      }
     }
+    if (
+      (input.minimumMarginBps !== undefined && Number(input.minimumMarginBps) < 5_000) ||
+      (input.targetMarginBps !== undefined && Number(input.targetMarginBps) < 5_000)
+    ) {
+      throw new BadRequestException(
+        "Pricing basis points untuk margin tidak boleh di bawah 50%.",
+      );
+    }
+    const current = this.pricingPolicyValue;
     const next: PricingPolicyState = {
-      markupBps,
-      minimumMarginBps,
+      ...current,
+      markupBps: input.markupBps === undefined ? current.markupBps : Math.round(finiteNumber(input.markupBps, current.markupBps)),
+      minimumMarginBps: input.minimumMarginBps === undefined ? current.minimumMarginBps : Math.round(finiteNumber(input.minimumMarginBps, current.minimumMarginBps, 5_000)),
+      targetMarginBps: input.targetMarginBps === undefined ? current.targetMarginBps : Math.round(finiteNumber(input.targetMarginBps, current.targetMarginBps, 5_000)),
       computeCostMicroUsd: input.computeCostMicroUsd === undefined ? current.computeCostMicroUsd : Math.round(finiteNumber(input.computeCostMicroUsd, current.computeCostMicroUsd)),
-      paymentFeeBps,
-      reserveBps,
+      paymentFeeBps: input.paymentFeeBps === undefined ? current.paymentFeeBps : Math.round(finiteNumber(input.paymentFeeBps, current.paymentFeeBps)),
+      reserveBps: input.reserveBps === undefined ? current.reserveBps : Math.round(finiteNumber(input.reserveBps, current.reserveBps)),
       minimumChargeMicroUsd: input.minimumChargeMicroUsd === undefined ? current.minimumChargeMicroUsd : Math.round(finiteNumber(input.minimumChargeMicroUsd, current.minimumChargeMicroUsd)),
       minimumClipChargeMicroUsd: input.minimumClipChargeMicroUsd === undefined ? current.minimumClipChargeMicroUsd : Math.round(finiteNumber(input.minimumClipChargeMicroUsd, current.minimumClipChargeMicroUsd)),
-      microUsdPerCredit: input.microUsdPerCredit === undefined ? current.microUsdPerCredit : Math.max(1, Math.round(finiteNumber(input.microUsdPerCredit, current.microUsdPerCredit, 1))),
-      usdToIdr: input.usdToIdr === undefined ? current.usdToIdr : Math.max(1, Math.round(finiteNumber(input.usdToIdr, current.usdToIdr, 1))),
-      creditValueIdr: input.creditValueIdr === undefined ? current.creditValueIdr : Math.max(1, Math.round(finiteNumber(input.creditValueIdr, current.creditValueIdr, 1))),
-      minimumGrossMarginBps: input.minimumGrossMarginBps === undefined ? current.minimumGrossMarginBps : Math.round(finiteNumber(input.minimumGrossMarginBps, current.minimumGrossMarginBps, 5_000)),
-      targetGrossMarginBps: input.targetGrossMarginBps === undefined ? current.targetGrossMarginBps : Math.round(finiteNumber(input.targetGrossMarginBps, current.targetGrossMarginBps, 5_000)),
-      baseAnalysisCredits: input.baseAnalysisCredits === undefined ? current.baseAnalysisCredits : Math.round(finiteNumber(input.baseAnalysisCredits, current.baseAnalysisCredits)),
-      optionalClipCredits: input.optionalClipCredits === undefined ? current.optionalClipCredits : Math.round(finiteNumber(input.optionalClipCredits, current.optionalClipCredits)),
-      goodClipCredits: input.goodClipCredits === undefined ? current.goodClipCredits : Math.round(finiteNumber(input.goodClipCredits, current.goodClipCredits)),
-      premiumClipCredits: input.premiumClipCredits === undefined ? current.premiumClipCredits : Math.round(finiteNumber(input.premiumClipCredits, current.premiumClipCredits)),
-      optionalScoreMin: input.optionalScoreMin === undefined ? current.optionalScoreMin : Math.round(finiteNumber(input.optionalScoreMin, current.optionalScoreMin)),
-      goodScoreMin: input.goodScoreMin === undefined ? current.goodScoreMin : Math.round(finiteNumber(input.goodScoreMin, current.goodScoreMin)),
-      premiumScoreMin: input.premiumScoreMin === undefined ? current.premiumScoreMin : Math.round(finiteNumber(input.premiumScoreMin, current.premiumScoreMin)),
-      minimumJobCredits: input.minimumJobCredits === undefined ? current.minimumJobCredits : Math.round(finiteNumber(input.minimumJobCredits, current.minimumJobCredits)),
-      maximumJobCredits: input.maximumJobCredits === undefined ? current.maximumJobCredits : Math.max(1, Math.round(finiteNumber(input.maximumJobCredits, current.maximumJobCredits, 1))),
-      infrastructureFeeIdr: input.infrastructureFeeIdr === undefined ? current.infrastructureFeeIdr : Math.round(finiteNumber(input.infrastructureFeeIdr, current.infrastructureFeeIdr)),
+      infrastructureCostMicroUsd: input.infrastructureCostMicroUsd === undefined ? current.infrastructureCostMicroUsd : Math.round(finiteNumber(input.infrastructureCostMicroUsd, current.infrastructureCostMicroUsd)),
       safetyBufferBps: input.safetyBufferBps === undefined ? current.safetyBufferBps : Math.round(finiteNumber(input.safetyBufferBps, current.safetyBufferBps)),
       retryAllowanceBps: input.retryAllowanceBps === undefined ? current.retryAllowanceBps : Math.round(finiteNumber(input.retryAllowanceBps, current.retryAllowanceBps)),
-      paymentFeeAllocationBps: input.paymentFeeAllocationBps === undefined ? current.paymentFeeAllocationBps : Math.round(finiteNumber(input.paymentFeeAllocationBps, current.paymentFeeAllocationBps)),
-      targetProviderCostIdr: input.targetProviderCostIdr === undefined ? current.targetProviderCostIdr : Math.round(finiteNumber(input.targetProviderCostIdr, current.targetProviderCostIdr)),
-      warningProviderCostIdr: input.warningProviderCostIdr === undefined ? current.warningProviderCostIdr : Math.round(finiteNumber(input.warningProviderCostIdr, current.warningProviderCostIdr)),
-      hardProviderCostIdr: input.hardProviderCostIdr === undefined ? current.hardProviderCostIdr : Math.round(finiteNumber(input.hardProviderCostIdr, current.hardProviderCostIdr)),
-      lowBalanceWarningCredits: input.lowBalanceWarningCredits === undefined ? current.lowBalanceWarningCredits : Math.round(finiteNumber(input.lowBalanceWarningCredits, current.lowBalanceWarningCredits)),
+      minimumJobChargeMicroUsd: input.minimumJobChargeMicroUsd === undefined ? current.minimumJobChargeMicroUsd : Math.round(finiteNumber(input.minimumJobChargeMicroUsd, current.minimumJobChargeMicroUsd)),
+      maximumJobChargeMicroUsd: input.maximumJobChargeMicroUsd === undefined ? current.maximumJobChargeMicroUsd : Math.max(1, Math.round(finiteNumber(input.maximumJobChargeMicroUsd, current.maximumJobChargeMicroUsd, 1))),
+      reservationHeadroomBps: input.reservationHeadroomBps === undefined ? current.reservationHeadroomBps : Math.round(finiteNumber(input.reservationHeadroomBps, current.reservationHeadroomBps)),
+      targetProviderCostMicroUsd: input.targetProviderCostMicroUsd === undefined ? current.targetProviderCostMicroUsd : Math.round(finiteNumber(input.targetProviderCostMicroUsd, current.targetProviderCostMicroUsd)),
+      warningProviderCostMicroUsd: input.warningProviderCostMicroUsd === undefined ? current.warningProviderCostMicroUsd : Math.round(finiteNumber(input.warningProviderCostMicroUsd, current.warningProviderCostMicroUsd)),
+      hardProviderCostMicroUsd: input.hardProviderCostMicroUsd === undefined ? current.hardProviderCostMicroUsd : Math.max(1, Math.round(finiteNumber(input.hardProviderCostMicroUsd, current.hardProviderCostMicroUsd, 1))),
+      lowBalanceWarningMicroUsd: input.lowBalanceWarningMicroUsd === undefined ? current.lowBalanceWarningMicroUsd : Math.round(finiteNumber(input.lowBalanceWarningMicroUsd, current.lowBalanceWarningMicroUsd)),
+      usdToIdr: input.usdToIdr === undefined ? current.usdToIdr : Math.max(1, Math.round(finiteNumber(input.usdToIdr, current.usdToIdr, 1))),
       updatedAt: new Date().toISOString(),
     };
-    const validation = validateClipJobPricingPolicy(next);
+    if (next.markupBps > 100_000 || next.reserveBps > 10_000 || next.reservationHeadroomBps > 10_000) {
+      throw new BadRequestException("Pricing basis points melebihi batas aman.");
+    }
+    const validation = validateJobPricingPolicy(next);
     if (!validation.valid) throw new BadRequestException(validation.errors.join(" "));
     this.pricingPolicyValue = next;
     this.touch();
@@ -780,27 +752,18 @@ export class AdminStoreService implements OnModuleInit {
         reserveBps: policy.reserveBps,
         minimumChargeMicroUsd: BigInt(policy.minimumChargeMicroUsd),
         minimumClipChargeMicroUsd: BigInt(policy.minimumClipChargeMicroUsd),
-        microUsdPerCredit: BigInt(policy.microUsdPerCredit),
-        creditValueIdr: policy.creditValueIdr,
         minimumMarginBps: policy.minimumMarginBps,
-        targetMarginBps: policy.targetGrossMarginBps,
-        baseAnalysisCredits: policy.baseAnalysisCredits,
-        optionalClipCredits: policy.optionalClipCredits,
-        goodClipCredits: policy.goodClipCredits,
-        premiumClipCredits: policy.premiumClipCredits,
-        optionalScoreMin: policy.optionalScoreMin,
-        goodScoreMin: policy.goodScoreMin,
-        premiumScoreMin: policy.premiumScoreMin,
-        minimumJobCredits: policy.minimumJobCredits,
-        maximumJobCredits: policy.maximumJobCredits,
-        infrastructureFeeIdr: policy.infrastructureFeeIdr,
+        targetMarginBps: policy.targetMarginBps,
+        infrastructureCostMicroUsd: BigInt(policy.infrastructureCostMicroUsd),
         safetyBufferBps: policy.safetyBufferBps,
         retryAllowanceBps: policy.retryAllowanceBps,
-        paymentFeeAllocationBps: policy.paymentFeeAllocationBps,
-        targetProviderCostIdr: policy.targetProviderCostIdr,
-        warningProviderCostIdr: policy.warningProviderCostIdr,
-        hardProviderCostIdr: policy.hardProviderCostIdr,
-        lowBalanceWarningCredits: policy.lowBalanceWarningCredits,
+        minimumJobChargeMicroUsd: BigInt(policy.minimumJobChargeMicroUsd),
+        maximumJobChargeMicroUsd: BigInt(policy.maximumJobChargeMicroUsd),
+        reservationHeadroomBps: policy.reservationHeadroomBps,
+        targetProviderCostMicroUsd: BigInt(policy.targetProviderCostMicroUsd),
+        warningProviderCostMicroUsd: BigInt(policy.warningProviderCostMicroUsd),
+        hardProviderCostMicroUsd: BigInt(policy.hardProviderCostMicroUsd),
+        lowBalanceWarningMicroUsd: BigInt(policy.lowBalanceWarningMicroUsd),
         usdToIdr: policy.usdToIdr,
         isDefault: true,
       },
@@ -811,27 +774,18 @@ export class AdminStoreService implements OnModuleInit {
         reserveBps: policy.reserveBps,
         minimumChargeMicroUsd: BigInt(policy.minimumChargeMicroUsd),
         minimumClipChargeMicroUsd: BigInt(policy.minimumClipChargeMicroUsd),
-        microUsdPerCredit: BigInt(policy.microUsdPerCredit),
-        creditValueIdr: policy.creditValueIdr,
         minimumMarginBps: policy.minimumMarginBps,
-        targetMarginBps: policy.targetGrossMarginBps,
-        baseAnalysisCredits: policy.baseAnalysisCredits,
-        optionalClipCredits: policy.optionalClipCredits,
-        goodClipCredits: policy.goodClipCredits,
-        premiumClipCredits: policy.premiumClipCredits,
-        optionalScoreMin: policy.optionalScoreMin,
-        goodScoreMin: policy.goodScoreMin,
-        premiumScoreMin: policy.premiumScoreMin,
-        minimumJobCredits: policy.minimumJobCredits,
-        maximumJobCredits: policy.maximumJobCredits,
-        infrastructureFeeIdr: policy.infrastructureFeeIdr,
+        targetMarginBps: policy.targetMarginBps,
+        infrastructureCostMicroUsd: BigInt(policy.infrastructureCostMicroUsd),
         safetyBufferBps: policy.safetyBufferBps,
         retryAllowanceBps: policy.retryAllowanceBps,
-        paymentFeeAllocationBps: policy.paymentFeeAllocationBps,
-        targetProviderCostIdr: policy.targetProviderCostIdr,
-        warningProviderCostIdr: policy.warningProviderCostIdr,
-        hardProviderCostIdr: policy.hardProviderCostIdr,
-        lowBalanceWarningCredits: policy.lowBalanceWarningCredits,
+        minimumJobChargeMicroUsd: BigInt(policy.minimumJobChargeMicroUsd),
+        maximumJobChargeMicroUsd: BigInt(policy.maximumJobChargeMicroUsd),
+        reservationHeadroomBps: policy.reservationHeadroomBps,
+        targetProviderCostMicroUsd: BigInt(policy.targetProviderCostMicroUsd),
+        warningProviderCostMicroUsd: BigInt(policy.warningProviderCostMicroUsd),
+        hardProviderCostMicroUsd: BigInt(policy.hardProviderCostMicroUsd),
+        lowBalanceWarningMicroUsd: BigInt(policy.lowBalanceWarningMicroUsd),
         usdToIdr: policy.usdToIdr,
         isDefault: true,
       },

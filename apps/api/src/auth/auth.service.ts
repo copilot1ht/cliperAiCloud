@@ -487,7 +487,7 @@ export class AuthService {
     password?: string;
     displayName?: string;
     plan?: MemberPlan;
-    credits?: number;
+    walletUsd?: number;
     deviceLimit?: number;
   }) {
     return this.createAccount(input, "member", false);
@@ -499,20 +499,20 @@ export class AuthService {
     displayName?: string;
     role?: AuthRole;
     plan?: MemberPlan;
-    credits?: number;
-    unlimitedCredits?: boolean;
+    walletUsd?: number;
+    unlimitedWallet?: boolean;
     deviceLimit?: number;
   }) {
     const role = input.role === "admin" || input.role === "investor" ? input.role : "member";
-    return this.createAccount(input, role, Boolean(input.unlimitedCredits));
+    return this.createAccount(input, role, Boolean(input.unlimitedWallet));
   }
 
   async updateMember(id: string, input: {
     displayName?: string;
     plan?: MemberPlan;
     status?: MemberStatus;
-    credits?: number;
-    unlimitedCredits?: boolean;
+    walletUsd?: number;
+    unlimitedWallet?: boolean;
     deviceLimit?: number;
   }) {
     if (this.usesPostgres()) {
@@ -527,12 +527,12 @@ export class AuthService {
           ...(displayName !== undefined ? { displayName } : {}),
           ...(plan !== undefined ? { planCode: plan } : {}),
           ...(input.status !== undefined ? { isActive: input.status !== "suspended" } : {}),
-          ...(input.unlimitedCredits !== undefined ? { unlimitedCredits: Boolean(input.unlimitedCredits) } : {}),
+          ...(input.unlimitedWallet !== undefined ? { unlimitedCredits: Boolean(input.unlimitedWallet) } : {}),
           ...(deviceLimit !== undefined ? { deviceLimit } : {}),
         },
       });
-      if (input.credits !== undefined) {
-        const balanceMicro = BigInt(Math.round(this.nonNegative(input.credits, 0) * 1_000_000));
+      if (input.walletUsd !== undefined) {
+        const balanceMicro = BigInt(Math.round(this.nonNegative(input.walletUsd, 0) * 1_000_000));
         await this.database!.client().userCreditAccount.upsert({
           where: { userId: id },
           create: { userId: id, balanceMicro, lifetimeGrantedMicro: balanceMicro },
@@ -549,9 +549,9 @@ export class AuthService {
     if (input.displayName !== undefined) user.displayName = this.validDisplayName(input.displayName);
     if (input.plan !== undefined) user.plan = this.validPlan(input.plan);
     if (input.status !== undefined) user.status = input.status === "suspended" ? "suspended" : "active";
-    if (input.unlimitedCredits !== undefined) user.unlimitedCredits = Boolean(input.unlimitedCredits);
-    if (input.credits !== undefined) {
-      user.credits = this.nonNegative(input.credits, user.credits);
+    if (input.unlimitedWallet !== undefined) user.unlimitedCredits = Boolean(input.unlimitedWallet);
+    if (input.walletUsd !== undefined) {
+      user.credits = this.nonNegative(input.walletUsd, user.credits);
       this.creditAccounts?.setBalance(user.id, Math.round(user.credits * 1_000_000), "admin-user-credit-update");
     }
     if (input.deviceLimit !== undefined) user.deviceLimit = Math.max(1, Math.round(this.nonNegative(input.deviceLimit, user.deviceLimit)));
@@ -816,7 +816,7 @@ export class AuthService {
   }
 
   private async createAccount(
-    input: { email?: string; password?: string; displayName?: string; plan?: MemberPlan; credits?: number; deviceLimit?: number },
+    input: { email?: string; password?: string; displayName?: string; plan?: MemberPlan; walletUsd?: number; deviceLimit?: number },
     role: AuthRole,
     unlimitedCredits: boolean,
   ) {
@@ -826,7 +826,7 @@ export class AuthService {
     if (!validEmail(email)) throw new BadRequestException("Format email tidak valid.");
     if (!validNewPassword(password)) throw new BadRequestException("Password minimal 12 karakter dan maksimal 128 karakter.");
     const plan = this.validPlan(input.plan || (role === "member" ? "free" : "enterprise"));
-    const credits = this.nonNegative(input.credits, this.defaultPlanCredits(plan));
+    const credits = this.nonNegative(input.walletUsd, this.defaultWalletUsd(plan));
     const deviceLimit = Math.max(1, Math.round(this.nonNegative(input.deviceLimit, role === "member" ? 1 : 2)));
     const passwordHash = await hash(password, ARGON_OPTIONS);
 
@@ -1014,11 +1014,13 @@ export class AuthService {
   }
 
   private safeMemoryUser(user: MemoryUser) {
-    const { passwordHash: _passwordHash, ...safe } = user;
+    const { passwordHash: _passwordHash, credits, unlimitedCredits, ...safe } = user;
     const activeCredential = Array.from(this.passwordResetCredentials.values())
       .find((item) => item.userId === user.id && !item.usedAt && !item.revokedAt && item.expiresAt > Date.now());
     return {
       ...safe,
+      walletUsd: credits,
+      unlimitedWallet: unlimitedCredits,
       passwordRecovery: {
         mode: "admin-assisted" as const,
         status: user.passwordResetRequiredAt ? "reset_required" as const : "normal" as const,
@@ -1037,8 +1039,8 @@ export class AuthService {
       role: roleFromDatabase(user.role),
       plan: planFromDatabase(user.planCode),
       status: user.isActive ? "active" as const : "suspended" as const,
-      credits: Number(user.creditAccount?.balanceMicro || 0n) / 1_000_000,
-      unlimitedCredits: user.unlimitedCredits,
+      walletUsd: Number(user.creditAccount?.balanceMicro || 0n) / 1_000_000,
+      unlimitedWallet: user.unlimitedCredits,
       deviceLimit: user.deviceLimit,
       createdAt: user.createdAt.toISOString(),
       lastActiveAt: user.lastActiveAt?.toISOString() || "",
@@ -1096,8 +1098,9 @@ export class AuthService {
     return displayName;
   }
 
-  private defaultPlanCredits(plan: MemberPlan): number {
-    return { free: 0, starter: 1_000, pro: 5_000, enterprise: 0 }[plan];
+  private defaultWalletUsd(_plan: MemberPlan): number {
+    // A plan defines product access; only a verified payment funds a user wallet.
+    return 0;
   }
 
   private nonNegative(value: unknown, fallback: number): number {

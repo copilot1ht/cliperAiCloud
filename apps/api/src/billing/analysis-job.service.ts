@@ -6,12 +6,12 @@ import {
   Optional,
   ServiceUnavailableException,
 } from "@nestjs/common";
-import { creditsToMicro, microToCredits, type ClipJobPricingQuote } from "@cliper/billing";
+import { type JobPricingQuote } from "@cliper/billing";
 import { randomUUID } from "node:crypto";
 import type { AiModule, CliperChatRequest, CliperInternalChatResponse } from "@cliper/contracts";
 import { DatabaseService } from "../database/database.service.js";
 import { AnalysisJobStatus, LedgerType, Prisma } from "../generated/prisma/client.js";
-import { CreditAccountService, InsufficientCreditsException } from "./credit-account.service.js";
+import { CreditAccountService, InsufficientBalanceException } from "./credit-account.service.js";
 import { PricingService } from "./pricing.service.js";
 
 export type AnalysisJobStatusValue = "active" | "completed" | "failed";
@@ -37,21 +37,29 @@ interface AnalysisJobRecord {
   sourceDurationSeconds: number;
   requestedClipCount: number;
   reservationId: string;
-  reservedCredits: number;
+  reservedMicro: number;
   providerCostUsd: number;
   providerCostIdr: number;
   requestCount: number;
   modules: Partial<Record<AiModule, number>>;
   status: AnalysisJobStatusValue;
   clipScores: number[];
-  finalChargeCredits: number;
-  releasedCredits: number;
-  quote?: ClipJobPricingQuote;
+  finalChargeMicro: number;
+  releasedMicro: number;
+  quote?: JobPricingQuote;
   failureReason?: string;
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
 }
+function usdToMicro(value: number): number {
+  return Math.ceil(Math.max(0, Number(value || 0)) * 1_000_000);
+}
+
+function microToUsd(value: bigint | number): number {
+  return Number(value) / 1_000_000;
+}
+
 
 function safePositiveNumber(value: unknown, fallback = 0): number {
   const parsed = Number(value);
@@ -99,6 +107,30 @@ function objectValue(value: unknown): Record<string, unknown> {
     ? value as Record<string, unknown>
     : {};
 }
+function snapshotMicroUsd(value: unknown, fallback: bigint): bigint {
+  try {
+    const parsed = BigInt(String(value ?? ""));
+    return parsed;
+  } catch {
+    return fallback;
+  }
+}
+
+
+function jobQuoteSnapshot(quote: JobPricingQuote): Record<string, unknown> {
+  return {
+    providerCostMicroUsd: quote.providerCostMicroUsd.toString(),
+    internalCostMicroUsd: quote.internalCostMicroUsd.toString(),
+    protectedChargeMicroUsd: quote.protectedChargeMicroUsd.toString(),
+    userChargeMicroUsd: quote.userChargeMicroUsd.toString(),
+    reservationMicroUsd: quote.reservationMicroUsd.toString(),
+    reservationCapped: quote.reservationCapped,
+    grossProfitMicroUsd: quote.grossProfitMicroUsd.toString(),
+    grossMarginBps: quote.grossMarginBps,
+    capSafe: quote.capSafe,
+    budgetStatus: quote.budgetStatus,
+  };
+}
 
 function statusValue(value: AnalysisJobStatus): AnalysisJobStatusValue {
   if (value === AnalysisJobStatus.COMPLETED) return "completed";
@@ -133,9 +165,12 @@ export class AnalysisJobService {
       ? await this.persistentJob(jobId, accountId, true)
       : this.activeMemoryJob(jobId, accountId);
     const policy = this.pricingPolicy();
-    const currentProviderCostIdr = "providerCostIdr" in job ? Number(job.providerCostIdr) : 0;
-    const estimatedCostIdr = this.pricing.providerCostIdr(estimatedProviderCostUsd);
-    if (currentProviderCostIdr + estimatedCostIdr > policy.hardProviderCostIdr) {
+    const currentProviderCostMicroUsd = "providerCostMicroUsd" in job
+      ? job.providerCostMicroUsd
+      : BigInt(usdToMicro(job.providerCostUsd));
+    const estimatedCostMicroUsd = BigInt(usdToMicro(estimatedProviderCostUsd));
+    const projectedProviderCostMicroUsd = currentProviderCostMicroUsd + estimatedCostMicroUsd;
+    if (projectedProviderCostMicroUsd > BigInt(policy.hardProviderCostMicroUsd)) {
       throw new ServiceUnavailableException({
         code: "COST_LIMIT_REACHED",
         message: "Budget AI job tercapai. Hasil terbaik yang sudah tersedia akan digunakan.",
@@ -144,10 +179,26 @@ export class AnalysisJobService {
     }
     const module = this.pricing.moduleForRequest(request);
     const optionalModule = module === "title" || module === "hook" || module === "metadata" || module === "caption";
-    if (optionalModule && currentProviderCostIdr >= policy.warningProviderCostIdr) {
+    if (optionalModule && currentProviderCostMicroUsd >= BigInt(policy.warningProviderCostMicroUsd)) {
       throw new ServiceUnavailableException({
         code: "COST_LIMIT_REACHED",
         message: "Budget warning tercapai; rewrite opsional dihentikan dan fallback lokal digunakan.",
+        jobId,
+      });
+    }
+    const projectedQuote = this.pricing.quoteAnalysisJob({
+      providerCostMicroUsd: projectedProviderCostMicroUsd,
+      usableResult: true,
+    });
+    const reservedMicro = "reservedCreditMicro" in job
+      ? job.reservedCreditMicro
+      : BigInt(job.reservedMicro);
+    const unlimited = "pricingSnapshot" in job
+      && objectValue(job.pricingSnapshot).unlimitedCredits === true;
+    if (!unlimited && (!projectedQuote.capSafe || projectedQuote.userChargeMicroUsd > reservedMicro)) {
+      throw new ServiceUnavailableException({
+        code: "COST_LIMIT_REACHED",
+        message: "Estimasi biaya berikutnya melewati reservation job. Fallback lokal akan digunakan.",
         jobId,
       });
     }
@@ -206,12 +257,18 @@ export class AnalysisJobService {
     ]);
     const balanceMicro = account?.balanceMicro || 0n;
     const reservedMicro = account?.reservedMicro || 0n;
-    const payload = this.walletPayload(Number(balanceMicro - reservedMicro), Number(reservedMicro));
+    const payload = this.walletPayload(Number(balanceMicro), Number(reservedMicro));
     return user?.unlimitedCredits
       ? {
         ...payload,
-        availableCredits: Number.MAX_SAFE_INTEGER / 1_000_000,
-        canStartJob: true,
+        availableMicroUsd: Number.MAX_SAFE_INTEGER,
+        availableUsd: Number.MAX_SAFE_INTEGER / 1_000_000,
+        spendableMicroUsd: Number.MAX_SAFE_INTEGER,
+        spendableUsd: Number.MAX_SAFE_INTEGER / 1_000_000,
+        billingMode: "per_job_usd",
+        keyType: "internal",
+        cloudConnected: true,
+        billingEligible: true,
         balanceStatus: "unlimited",
         unlimited: true,
       }
@@ -227,14 +284,21 @@ export class AnalysisJobService {
       include: { account: { select: { balanceMicro: true, reservedMicro: true } } },
     });
     const completed = jobs.filter((job) => job.status === AnalysisJobStatus.COMPLETED);
-    const providerCostIdr = completed.reduce((total, job) => total + job.providerCostIdr, 0);
+    const providerCostIdr = completed.reduce(
+      (total, job) => total + this.pricing.microUsdToIdr(job.providerCostMicroUsd),
+      0,
+    );
     const customerRevenueIdr = completed.reduce(
-      (total, job) => total + microToCredits(Number(job.finalChargeMicro)) * this.pricingPolicy().creditValueIdr,
+      (total, job) => total + this.pricing.microUsdToIdr(job.finalChargeMicro),
       0,
     );
     const internalCostIdr = completed.reduce((total, job) => {
       const snapshot = objectValue(job.pricingSnapshot);
-      return total + Number(snapshot.internalCostIdr || job.providerCostIdr);
+      const internalCostMicroUsd = snapshotMicroUsd(
+        snapshot.internalCostMicroUsd,
+        job.providerCostMicroUsd,
+      );
+      return total + this.pricing.microUsdToIdr(internalCostMicroUsd);
     }, 0);
     return {
       storage: "postgres",
@@ -245,7 +309,10 @@ export class AnalysisJobService {
       providerCostIdr,
       customerRevenueIdr,
       grossProfitIdr: customerRevenueIdr - internalCostIdr,
-      creditsCharged: completed.reduce((total, job) => total + microToCredits(Number(job.finalChargeMicro)), 0),
+      usdCharged: completed.reduce(
+        (total, job) => total + microToUsd(job.finalChargeMicro),
+        0,
+      ),
       recent: jobs.slice(0, 12).map((job) => this.adminPersistentJob(job)),
     };
   }
@@ -272,8 +339,11 @@ export class AnalysisJobService {
     await this.recoverStalePersistentJobs(accountId);
     const entitlement = await client.user.findUnique({ where: { id: accountId }, select: { unlimitedCredits: true } });
     if (!entitlement) throw new NotFoundException("Akun analysis tidak ditemukan.");
-    const reservedCredits = entitlement.unlimitedCredits ? 0 : this.pricing.maximumJobCredits();
-    const reservedMicro = BigInt(creditsToMicro(reservedCredits));
+    const estimate = this.pricing.estimateAnalysisJob({
+      sourceDurationSeconds: input.sourceDurationSeconds,
+      requestedClipCount,
+    });
+    const reservedMicro = entitlement.unlimitedCredits ? 0n : estimate.reservationMicroUsd;
     const existing = await client.analysisJob.findUnique({
       where: { userId_requestId: { userId: accountId, requestId } },
       include: { account: { select: { balanceMicro: true, reservedMicro: true } } },
@@ -290,7 +360,7 @@ export class AnalysisJobService {
       const account = await tx.userCreditAccount.findUnique({ where: { userId: accountId } });
       const available = account ? account.balanceMicro - account.reservedMicro : 0n;
       if (!account || (!entitlement.unlimitedCredits && available < reservedMicro)) {
-        throw new InsufficientCreditsException(Number(available), Number(reservedMicro), requestId);
+        throw new InsufficientBalanceException(Number(available), Number(reservedMicro), requestId);
       }
       const trustedApiKey = apiKeyId && apiKeyId !== "development-key"
         ? await tx.apiKey.findUnique({ where: { id: apiKeyId }, select: { id: true } })
@@ -311,7 +381,11 @@ export class AnalysisJobService {
           requestedClipCount,
           reservedCreditMicro: reservedMicro,
           modules: {},
-          pricingSnapshot: jsonValue({ unlimitedCredits: entitlement.unlimitedCredits }),
+          pricingSnapshot: jsonValue({
+            unlimitedCredits: entitlement.unlimitedCredits,
+            estimated: jobQuoteSnapshot(estimate),
+            reservationMicroUsd: reservedMicro.toString(),
+          }),
         },
       });
       if (reservedMicro > 0n) {
@@ -324,8 +398,12 @@ export class AnalysisJobService {
             amountMicro: -reservedMicro,
             balanceAfterMicro: updated.balanceMicro,
             idempotencyKey: `analysis-reserve:${job.id}`,
-            description: "Reserve maksimum biaya analysis job",
-            costSnapshot: jsonValue({ requestId, reservedCredits }),
+            description: "Reserve estimasi biaya analysis job",
+            costSnapshot: jsonValue({
+              requestId,
+              reservedUsd: microToUsd(reservedMicro),
+              estimate: jobQuoteSnapshot(estimate),
+            }),
           },
         });
       }
@@ -351,14 +429,18 @@ export class AnalysisJobService {
       const account = await tx.userCreditAccount.findUniqueOrThrow({ where: { id: job.accountId } });
       const entitlement = await tx.user.findUniqueOrThrow({ where: { id: accountId }, select: { unlimitedCredits: true } });
       const quote = this.pricing.quoteAnalysisJob({
-        providerCostIdr: job.providerCostIdr,
-        clipScores,
+        providerCostMicroUsd: job.providerCostMicroUsd,
         usableResult: input.usableResult !== false && clipScores.length > 0,
       });
       const reservedMicro = job.reservedCreditMicro;
-      const finalChargeMicro = entitlement.unlimitedCredits ? 0n : BigInt(creditsToMicro(Math.min(
-        microToCredits(Number(reservedMicro)), quote.finalChargeCredits,
-      )));
+      if (!entitlement.unlimitedCredits && (!quote.capSafe || quote.userChargeMicroUsd > reservedMicro)) {
+        throw new ServiceUnavailableException({
+          code: "COST_LIMIT_REACHED",
+          message: "Biaya job melewati batas aman sebelum settlement. Reservation akan dilepas oleh jalur gagal.",
+          jobId,
+        });
+      }
+      const finalChargeMicro = entitlement.unlimitedCredits ? 0n : quote.userChargeMicroUsd;
       const releasedMicro = reservedMicro - finalChargeMicro;
       if (account.reservedMicro < reservedMicro || account.balanceMicro < finalChargeMicro) {
         throw new ServiceUnavailableException("Saldo wallet berubah saat settlement. Job tidak dipotong.");
@@ -396,7 +478,7 @@ export class AnalysisJobService {
             balanceAfterMicro: updated.balanceMicro,
             idempotencyKey: `analysis-settle:${job.id}`,
             description: "Settlement biaya analysis job",
-            costSnapshot: jsonValue(quote),
+            costSnapshot: jsonValue(jobQuoteSnapshot(quote)),
           },
         });
       }
@@ -407,7 +489,7 @@ export class AnalysisJobService {
           clipScores: jsonValue(clipScores),
           finalChargeMicro,
           releasedMicro,
-          pricingSnapshot: jsonValue({ ...quote, unlimitedCredits: entitlement.unlimitedCredits }),
+          pricingSnapshot: jsonValue({ ...jobQuoteSnapshot(quote), unlimitedCredits: entitlement.unlimitedCredits }),
           completedAt: new Date(),
         },
       });
@@ -515,29 +597,56 @@ export class AnalysisJobService {
     finalChargeMicro: bigint;
     releasedMicro: bigint;
     providerCostIdr: number;
+    providerCostMicroUsd: bigint;
     pricingSnapshot: unknown;
     createdAt: Date;
     completedAt: Date | null;
     account: { balanceMicro: bigint; reservedMicro: bigint };
   }) {
     const quote = objectValue(job.pricingSnapshot);
+    const unlimited = quote.unlimitedCredits === true;
+    const balanceMicro = job.account.balanceMicro;
+    const spendableMicro = balanceMicro - job.account.reservedMicro;
+    const availableUsd = unlimited
+      ? Number.MAX_SAFE_INTEGER / 1_000_000
+      : microToUsd(balanceMicro);
+    const spendableUsd = unlimited
+      ? Number.MAX_SAFE_INTEGER / 1_000_000
+      : microToUsd(spendableMicro);
+    const reservedUsd = microToUsd(job.reservedCreditMicro);
+    const finalChargeUsd = microToUsd(job.finalChargeMicro);
+    const releasedUsd = microToUsd(job.releasedMicro);
+    const estimatedReservationUsd = microToUsd(
+      snapshotMicroUsd(quote.reservationMicroUsd, job.reservedCreditMicro),
+    );
+    const jobChargeCeilingUsd = microToUsd(this.pricing.maximumJobChargeMicroUsd());
     return {
       id: job.id,
       requestId: job.requestId,
       status: statusValue(job.status),
-      reservedCredits: microToCredits(Number(job.reservedCreditMicro)),
-      finalChargeCredits: microToCredits(Number(job.finalChargeMicro)),
-      releasedCredits: microToCredits(Number(job.releasedMicro)),
-      acceptedClipCount: Number(quote.acceptedClipCount || 0),
-      rejectedClipCount: Number(quote.rejectedClipCount || 0),
+      walletCurrency: "USD",
+      billingMode: "per_job_usd",
+      reservedMicroUsd: Number(job.reservedCreditMicro),
+      spendableMicroUsd: unlimited ? Number.MAX_SAFE_INTEGER : Number(spendableMicro),
+      finalChargeMicroUsd: Number(job.finalChargeMicro),
+      releasedMicroUsd: Number(job.releasedMicro),
+      reservedUsd,
+      finalChargeUsd,
+      chargedUsd: finalChargeUsd,
+      releasedUsd,
+      availableUsd,
+      spendableUsd,
+      estimatedReservationUsd,
+      jobChargeCeilingUsd,
+      acceptedClipCount: 0,
+      rejectedClipCount: 0,
       budgetStatus: String(
         quote.budgetStatus
-        || (job.providerCostIdr >= this.pricingPolicy().warningProviderCostIdr ? "warning" : "target"),
+        || (job.providerCostMicroUsd >= BigInt(this.pricingPolicy().warningProviderCostMicroUsd)
+          ? "warning"
+          : "target"),
       ),
-      creditsRemaining: quote.unlimitedCredits === true
-        ? Number.MAX_SAFE_INTEGER / 1_000_000
-        : microToCredits(Number(job.account.balanceMicro - job.account.reservedMicro)),
-      unlimited: quote.unlimitedCredits === true,
+      unlimited,
       storage: "postgres",
       createdAt: job.createdAt.toISOString(),
       completedAt: job.completedAt?.toISOString(),
@@ -555,20 +664,29 @@ export class AnalysisJobService {
   }) {
     const quote = objectValue(job.pricingSnapshot);
     const base = this.publicPersistentJob(job);
+    const internalCostMicroUsd = snapshotMicroUsd(
+      quote.internalCostMicroUsd,
+      job.providerCostMicroUsd,
+    );
+    const grossProfitMicroUsd = snapshotMicroUsd(
+      quote.grossProfitMicroUsd,
+      job.finalChargeMicro - internalCostMicroUsd,
+    );
     return {
       ...base,
       sourceId: job.sourceId || "",
       sourceDurationSeconds: job.sourceDurationSeconds,
       requestedClipCount: job.requestedClipCount,
-      providerCostUsd: Number(job.providerCostMicroUsd) / 1_000_000,
-      providerCostIdr: job.providerCostIdr,
-      internalCostIdr: Number(quote.internalCostIdr || 0),
-      grossProfitIdr: base.finalChargeCredits * this.pricingPolicy().creditValueIdr
-        - Number(quote.internalCostIdr || 0),
+      providerCostUsd: microToUsd(job.providerCostMicroUsd),
+      providerCostIdr: this.pricing.microUsdToIdr(job.providerCostMicroUsd),
+      internalCostIdr: this.pricing.microUsdToIdr(internalCostMicroUsd),
+      finalChargeIdr: this.pricing.microUsdToIdr(job.finalChargeMicro),
+      releasedIdr: this.pricing.microUsdToIdr(job.releasedMicro),
+      grossProfitIdr: this.pricing.microUsdToIdr(grossProfitMicroUsd),
       requestCount: job.requestCount,
       modules: objectValue(job.modules),
-      tierCounts: objectValue(quote.tierCounts),
-      capApplied: Boolean(quote.capApplied),
+      tierCounts: {},
+      capApplied: false,
       capSafe: quote.capSafe !== false,
       failureReason: job.failureReason || undefined,
     };
@@ -581,8 +699,12 @@ export class AnalysisJobService {
     const existing = existingId ? this.jobs.get(existingId) : undefined;
     if (existing) return this.publicMemoryJob(existing);
     const requestedClipCount = this.validatedClipCount(input.requestedClipCount);
-    const reservedCredits = this.pricing.maximumJobCredits();
-    const reservation = this.credits.reserve(accountId, `analysis-job:${requestId}`, creditsToMicro(reservedCredits));
+    const estimate = this.pricing.estimateAnalysisJob({
+      sourceDurationSeconds: input.sourceDurationSeconds,
+      requestedClipCount,
+    });
+    const reservedMicro = Number(estimate.reservationMicroUsd);
+    const reservation = this.credits.reserve(accountId, `analysis-job:${requestId}`, reservedMicro);
     const now = new Date().toISOString();
     const job: AnalysisJobRecord = {
       id: randomUUID(),
@@ -592,15 +714,16 @@ export class AnalysisJobService {
       sourceDurationSeconds: safePositiveNumber(input.sourceDurationSeconds),
       requestedClipCount,
       reservationId: reservation.id,
-      reservedCredits,
+      reservedMicro: reservation.amountMicro,
       providerCostUsd: 0,
       providerCostIdr: 0,
       requestCount: 0,
       modules: {},
       status: "active",
       clipScores: [],
-      finalChargeCredits: 0,
-      releasedCredits: 0,
+      finalChargeMicro: 0,
+      releasedMicro: 0,
+      quote: estimate,
       createdAt: now,
       updatedAt: now,
     };
@@ -615,16 +738,22 @@ export class AnalysisJobService {
     if (job.status === "failed") throw new BadRequestException("Job sudah gagal dan reservation telah dilepas.");
     const clipScores = safeScores(input.clipScores, settlementScoreLimit());
     const quote = this.pricing.quoteAnalysisJob({
-      providerCostIdr: job.providerCostIdr,
-      clipScores,
+      providerCostMicroUsd: BigInt(usdToMicro(job.providerCostUsd)),
       usableResult: input.usableResult !== false && clipScores.length > 0,
     });
-    const finalChargeCredits = Math.min(job.reservedCredits, quote.finalChargeCredits);
-    this.credits.settle(job.reservationId, creditsToMicro(finalChargeCredits));
+    if (!quote.capSafe || quote.userChargeMicroUsd > BigInt(job.reservedMicro)) {
+      throw new ServiceUnavailableException({
+        code: "COST_LIMIT_REACHED",
+        message: "Biaya job melewati batas aman sebelum settlement.",
+        jobId: job.id,
+      });
+    }
+    const finalChargeMicro = Number(quote.userChargeMicroUsd);
+    this.credits.settle(job.reservationId, finalChargeMicro);
     job.status = "completed";
     job.clipScores = clipScores;
-    job.finalChargeCredits = finalChargeCredits;
-    job.releasedCredits = Math.max(0, job.reservedCredits - finalChargeCredits);
+    job.finalChargeMicro = finalChargeMicro;
+    job.releasedMicro = Math.max(0, job.reservedMicro - finalChargeMicro);
     job.quote = quote;
     job.completedAt = new Date().toISOString();
     job.updatedAt = job.completedAt;
@@ -637,7 +766,7 @@ export class AnalysisJobService {
     this.credits.release(job.reservationId);
     job.status = "failed";
     job.failureReason = String(reason || "analysis_failed").slice(0, 300);
-    job.releasedCredits = job.reservedCredits;
+    job.releasedMicro = job.reservedMicro;
     job.updatedAt = new Date().toISOString();
     job.completedAt = job.updatedAt;
     return this.publicMemoryJob(job);
@@ -645,24 +774,32 @@ export class AnalysisJobService {
 
   private memoryWalletSummary(accountId: string) {
     const balance = this.credits.balance(accountId);
-    return this.walletPayload(balance.availableMicro, balance.reservedMicro);
+    return this.walletPayload(balance.balanceMicro, balance.reservedMicro);
   }
 
-  private walletPayload(availableMicro: number, reservedMicro: number) {
-    const maximumJobCredits = this.pricing.maximumJobCredits();
-    const availableCredits = microToCredits(availableMicro);
-    const reservedCredits = microToCredits(reservedMicro);
+  private walletPayload(balanceMicro: number, reservedMicro: number) {
+    const maximumJobMicroUsd = this.pricing.maximumJobChargeMicroUsd();
+    const spendableMicro = Math.max(0, balanceMicro - reservedMicro);
+    const availableUsd = microToUsd(balanceMicro);
+    const reservedUsd = microToUsd(reservedMicro);
+    const spendableUsd = microToUsd(spendableMicro);
+    const jobChargeCeilingUsd = microToUsd(maximumJobMicroUsd);
     return {
       walletCurrency: "USD",
-      availableCredits,
-      reservedCredits,
-      availableUsd: availableCredits,
-      reservedUsd: reservedCredits,
-      estimatedMaxJobCredits: maximumJobCredits,
-      canStartJob: availableCredits >= maximumJobCredits,
-      balanceStatus: availableCredits < maximumJobCredits
-        ? "insufficient"
-        : availableCredits <= this.pricingPolicy().lowBalanceWarningCredits ? "low" : "ready",
+      billingMode: "per_job_usd",
+      availableMicroUsd: balanceMicro,
+      reservedMicroUsd: reservedMicro,
+      spendableMicroUsd: spendableMicro,
+      jobChargeCeilingMicroUsd: maximumJobMicroUsd,
+      availableUsd,
+      reservedUsd,
+      spendableUsd,
+      keyType: "user",
+      cloudConnected: true,
+      billingEligible: spendableMicro > 0,
+      balanceStatus: spendableMicro === 0
+        ? "empty"
+        : spendableMicro <= this.pricingPolicy().lowBalanceWarningMicroUsd ? "low" : "ready",
       minimumTopupUsd: Number(process.env.PAYMENT_MIN_TOPUP_USD || 1),
       topupUrl: String(
         process.env.CLIPER_TOPUP_URL
@@ -675,9 +812,22 @@ export class AnalysisJobService {
   private memorySummary() {
     const jobs = Array.from(this.jobs.values());
     const completed = jobs.filter((job) => job.status === "completed");
-    const providerCostIdr = completed.reduce((total, job) => total + job.providerCostIdr, 0);
+    const providerCostIdr = completed.reduce(
+      (total, job) => total + this.pricing.providerCostIdr(job.providerCostUsd),
+      0,
+    );
     const customerRevenueIdr = completed.reduce(
-      (total, job) => total + job.finalChargeCredits * this.pricingPolicy().creditValueIdr,
+      (total, job) => total + this.pricing.microUsdToIdr(job.finalChargeMicro),
+      0,
+    );
+    const internalCostIdr = completed.reduce(
+      (total, job) => total + this.pricing.microUsdToIdr(
+        job.quote?.internalCostMicroUsd ?? BigInt(usdToMicro(job.providerCostUsd)),
+      ),
+      0,
+    );
+    const chargedUsd = completed.reduce(
+      (total, job) => total + microToUsd(job.finalChargeMicro),
       0,
     );
     return {
@@ -688,9 +838,8 @@ export class AnalysisJobService {
       failed: jobs.filter((job) => job.status === "failed").length,
       providerCostIdr,
       customerRevenueIdr,
-      grossProfitIdr: customerRevenueIdr
-        - completed.reduce((total, job) => total + (job.quote?.internalCostIdr || job.providerCostIdr), 0),
-      creditsCharged: completed.reduce((total, job) => total + job.finalChargeCredits, 0),
+      grossProfitIdr: customerRevenueIdr - internalCostIdr,
+      usdCharged: chargedUsd,
       recent: jobs
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
         .slice(0, 12)
@@ -731,18 +880,38 @@ export class AnalysisJobService {
 
   private publicMemoryJob(job: AnalysisJobRecord) {
     const balance = this.credits.balance(job.accountId);
+    const availableUsd = microToUsd(balance.balanceMicro);
+    const spendableUsd = microToUsd(balance.availableMicro);
+    const reservedUsd = microToUsd(job.reservedMicro);
+    const finalChargeUsd = microToUsd(job.finalChargeMicro);
+    const releasedUsd = microToUsd(job.releasedMicro);
+    const estimatedReservationUsd = microToUsd(job.reservedMicro);
+    const jobChargeCeilingUsd = microToUsd(this.pricing.maximumJobChargeMicroUsd());
     return {
       id: job.id,
       requestId: job.requestId,
       status: job.status,
-      reservedCredits: job.reservedCredits,
-      finalChargeCredits: job.finalChargeCredits,
-      releasedCredits: job.releasedCredits,
-      acceptedClipCount: job.quote?.acceptedClipCount || 0,
-      rejectedClipCount: job.quote?.rejectedClipCount || 0,
+      walletCurrency: "USD",
+      billingMode: "per_job_usd",
+      reservedMicroUsd: job.reservedMicro,
+      spendableMicroUsd: balance.availableMicro,
+      finalChargeMicroUsd: job.finalChargeMicro,
+      releasedMicroUsd: job.releasedMicro,
+      reservedUsd,
+      finalChargeUsd,
+      chargedUsd: finalChargeUsd,
+      releasedUsd,
+      availableUsd,
+      spendableUsd,
+      estimatedReservationUsd,
+      jobChargeCeilingUsd,
+      acceptedClipCount: job.clipScores.length,
+      rejectedClipCount: 0,
       budgetStatus: job.quote?.budgetStatus
-        || (job.providerCostIdr >= this.pricingPolicy().warningProviderCostIdr ? "warning" : "target"),
-      creditsRemaining: microToCredits(balance.availableMicro),
+        || (BigInt(usdToMicro(job.providerCostUsd)) >= BigInt(this.pricingPolicy().warningProviderCostMicroUsd)
+          ? "warning"
+          : "target"),
+      unlimited: false,
       storage: "memory",
       createdAt: job.createdAt,
       completedAt: job.completedAt,
@@ -750,21 +919,25 @@ export class AnalysisJobService {
   }
 
   private adminMemoryJob(job: AnalysisJobRecord) {
+    const providerCostMicroUsd = BigInt(usdToMicro(job.providerCostUsd));
+    const internalCostMicroUsd = job.quote?.internalCostMicroUsd ?? providerCostMicroUsd;
+    const grossProfitMicroUsd = job.quote?.grossProfitMicroUsd
+      ?? BigInt(job.finalChargeMicro) - internalCostMicroUsd;
     return {
       ...this.publicMemoryJob(job),
       sourceId: job.sourceId,
       sourceDurationSeconds: job.sourceDurationSeconds,
       requestedClipCount: job.requestedClipCount,
       providerCostUsd: job.providerCostUsd,
-      providerCostIdr: job.providerCostIdr,
-      internalCostIdr: job.quote?.internalCostIdr || 0,
-      grossProfitIdr: job.quote
-        ? job.finalChargeCredits * this.pricingPolicy().creditValueIdr - job.quote.internalCostIdr
-        : 0,
+      providerCostIdr: this.pricing.microUsdToIdr(providerCostMicroUsd),
+      internalCostIdr: this.pricing.microUsdToIdr(internalCostMicroUsd),
+      finalChargeIdr: this.pricing.microUsdToIdr(job.finalChargeMicro),
+      releasedIdr: this.pricing.microUsdToIdr(job.releasedMicro),
+      grossProfitIdr: this.pricing.microUsdToIdr(grossProfitMicroUsd),
       requestCount: job.requestCount,
       modules: { ...job.modules },
-      tierCounts: job.quote?.tierCounts,
-      capApplied: job.quote?.capApplied || false,
+      tierCounts: {},
+      capApplied: false,
       capSafe: job.quote?.capSafe ?? true,
       failureReason: job.failureReason,
     };

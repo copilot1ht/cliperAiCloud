@@ -37,7 +37,7 @@ describe("AuthService", () => {
     const auth = new AuthService();
     const result = await auth.register({ email: "member@test.local", password: "strong-member-password", displayName: "Member Test" });
     expect(result.user.role).toBe("member");
-    expect((await auth.userById(result.user.id)).credits).toBe(0);
+    expect((await auth.userById(result.user.id)).walletUsd).toBe(0);
     expect(result.redirectTo).toBe("/dashboard");
   });
 
@@ -95,8 +95,8 @@ describe("AuthService", () => {
     const auth = new AuthService();
     const member = await auth.createMember({ email: "managed@test.local", password: "strong-member-password", displayName: "Managed Member", plan: "starter" });
     expect(member).not.toHaveProperty("passwordHash");
-    const updated = await auth.updateMember(member.id, { plan: "pro", credits: 5000, status: "suspended" });
-    expect(updated).toMatchObject({ plan: "pro", credits: 5000, status: "suspended" });
+    const updated = await auth.updateMember(member.id, { plan: "pro", walletUsd: 5, status: "suspended" });
+    expect(updated).toMatchObject({ plan: "pro", walletUsd: 5, status: "suspended" });
     expect((await auth.listUsers()).find((item) => item.id === member.id)).toMatchObject({ plan: "pro", protected: false });
     expect(await auth.deleteMember(member.id)).toEqual({ ok: true });
   });

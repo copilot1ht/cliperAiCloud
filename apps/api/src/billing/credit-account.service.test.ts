@@ -26,9 +26,15 @@ describe("CreditAccountService", () => {
     expect(service.balance("account-b")).toMatchObject({ balanceMicro: 500, reservedMicro: 0 });
   });
 
-  it("rejects a request when available credits are insufficient", () => {
+  it("rejects a job when its own USD reservation exceeds the spendable wallet", () => {
     process.env.CLIPER_DEV_CREDIT_BALANCE_MICRO = "100";
     expect(() => new CreditAccountService().reserve("account-c", "request-c", 101)).toThrow(/tidak mencukupi/i);
+  });
+
+  it("allows a US$0.005 job when the wallet has US$0.01", () => {
+    process.env.CLIPER_DEV_CREDIT_BALANCE_MICRO = "10000";
+    const reservation = new CreditAccountService().reserve("account-small", "request-small", 5_000);
+    expect(reservation.amountMicro).toBe(5_000);
   });
 
   it("keeps every reservation intact when settlement cannot cover the actual charge", () => {

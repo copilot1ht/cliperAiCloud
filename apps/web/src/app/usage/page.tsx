@@ -10,15 +10,15 @@ import { formatUsdMicro } from "@/lib/money";
 
 interface MemberUsagePayload {
   mode: string;
-  credits: { availableMicro: number; spentMicro: number };
+  wallet: { spendableMicroUsd: number; spentMicroUsd: number };
   usage: {
     requests: number;
     inputTokens: number;
     outputTokens: number;
-    creditChargeMicro: number;
+    chargedMicroUsd: number;
     averageLatencyMs: number;
     p95LatencyMs: number;
-    recent: Array<{ id: string; module: string; tokens: number; latencyMs: number; creditChargeMicro: number; createdAt: string }>;
+    recent: Array<{ id: string; module: string; tokens: number; latencyMs: number; chargedMicroUsd: number; createdAt: string }>;
   };
 }
 
@@ -40,7 +40,7 @@ export default function UsagePage() {
 
   const exportCsv = () => {
     if (!data?.usage.recent.length) return;
-  const rows = [["module", "tokens", "latency_ms", "wallet_usd", "created_at"], ...data.usage.recent.map((item) => [item.module, item.tokens, item.latencyMs, credits(item.creditChargeMicro), item.createdAt])];
+  const rows = [["module", "tokens", "latency_ms", "wallet_usd", "created_at"], ...data.usage.recent.map((item) => [item.module, item.tokens, item.latencyMs, credits(item.chargedMicroUsd), item.createdAt])];
     const blob = new Blob([rows.map((row) => row.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(",")).join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = "cliper-usage.csv"; link.click(); URL.revokeObjectURL(url);
   };
@@ -54,9 +54,9 @@ export default function UsagePage() {
         <StatCard label="Total tokens" value={(data.usage.inputTokens + data.usage.outputTokens).toLocaleString("id-ID")} detail={`${data.usage.inputTokens.toLocaleString("id-ID")} input · ${data.usage.outputTokens.toLocaleString("id-ID")} output`} icon={Activity} />
         <StatCard label="Average latency" value={`${data.usage.averageLatencyMs} ms`} detail={`P95 ${data.usage.p95LatencyMs} ms`} icon={Timer} tone="blue" />
         <StatCard label="Completed requests" value={String(data.usage.requests)} detail="Successfully billed gateway calls" icon={Gauge} tone="amber" />
-        <StatCard label="Wallet spent" value={credits(data.usage.creditChargeMicro)} detail={`${credits(data.credits.availableMicro)} available`} icon={Coins} tone="coral" />
+        <StatCard label="Wallet spent" value={credits(data.usage.chargedMicroUsd)} detail={`${credits(data.wallet.spendableMicroUsd)} available`} icon={Coins} tone="coral" />
       </section>
-      <section className="panel table-panel"><div className="panel-head"><div><p className="section-kicker">Immutable usage view</p><h2>Recent activity</h2><p>Semua biaya wallet dicatat dalam USD mikro di server.</p></div><button className="button button-secondary" onClick={() => void load()}>Refresh</button></div>{data.usage.recent.length ? <div className="table-scroll"><table><thead><tr><th>Module</th><th>Tokens</th><th>Latency</th><th>Wallet USD</th><th>Time</th></tr></thead><tbody>{data.usage.recent.map((item) => <tr key={item.id}><td><strong>{item.module}</strong></td><td>{item.tokens.toLocaleString("id-ID")}</td><td>{item.latencyMs} ms</td><td>{credits(item.creditChargeMicro)}</td><td>{formatDate(item.createdAt)}</td></tr>)}</tbody></table></div> : <div className="admin-empty"><strong>Belum ada request</strong><span>Aktivitas akan muncul setelah Cliper Studio menggunakan AI Gateway.</span></div>}</section>
+      <section className="panel table-panel"><div className="panel-head"><div><p className="section-kicker">Immutable usage view</p><h2>Recent activity</h2><p>Semua biaya wallet dicatat dalam USD mikro di server.</p></div><button className="button button-secondary" onClick={() => void load()}>Refresh</button></div>{data.usage.recent.length ? <div className="table-scroll"><table><thead><tr><th>Module</th><th>Tokens</th><th>Latency</th><th>Wallet USD</th><th>Time</th></tr></thead><tbody>{data.usage.recent.map((item) => <tr key={item.id}><td><strong>{item.module}</strong></td><td>{item.tokens.toLocaleString("id-ID")}</td><td>{item.latencyMs} ms</td><td>{credits(item.chargedMicroUsd)}</td><td>{formatDate(item.createdAt)}</td></tr>)}</tbody></table></div> : <div className="admin-empty"><strong>Belum ada request</strong><span>Aktivitas akan muncul setelah Cliper Studio menggunakan AI Gateway.</span></div>}</section>
     </>}
   </AppShell>;
 }

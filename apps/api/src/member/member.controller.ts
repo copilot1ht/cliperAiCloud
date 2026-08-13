@@ -28,23 +28,24 @@ export class MemberController {
       : null;
     const balanceMicro = persistentCredit ? Number(persistentCredit.balanceMicro) : memoryCredit.balanceMicro;
     const reservedMicro = persistentCredit ? Number(persistentCredit.reservedMicro) : memoryCredit.reservedMicro;
-    const availableMicro = user.unlimitedCredits ? Number.MAX_SAFE_INTEGER : balanceMicro - reservedMicro;
+    const unlimitedWallet = user.unlimitedWallet;
+    const availableMicro = unlimitedWallet ? Number.MAX_SAFE_INTEGER : balanceMicro - reservedMicro;
     const keys = await this.licenses.listKeys(accountId);
     const usage = await this.usage.summary(accountId);
     return {
       mode: authStorageMode(),
-      user: { id: user.id, displayName: user.displayName, email: user.email, plan: user.plan, deviceLimit: user.deviceLimit, unlimitedCredits: user.unlimitedCredits },
-      credits: {
+      user: { id: user.id, displayName: user.displayName, email: user.email, plan: user.plan, deviceLimit: user.deviceLimit, unlimitedWallet },
+      wallet: {
         currency: "USD",
-        balance: user.unlimitedCredits ? null : microToUsd(balanceMicro),
-        reserved: user.unlimitedCredits ? null : microToUsd(reservedMicro),
-        available: user.unlimitedCredits ? null : microToUsd(availableMicro),
-        spent: user.unlimitedCredits ? null : microToUsd(usage.creditChargeMicro),
-        balanceMicro: user.unlimitedCredits ? Number.MAX_SAFE_INTEGER : balanceMicro,
-        reservedMicro,
-        availableMicro,
-        unlimited: user.unlimitedCredits,
-        spentMicro: usage.creditChargeMicro,
+        availableUsd: unlimitedWallet ? null : microToUsd(balanceMicro),
+        reservedUsd: unlimitedWallet ? null : microToUsd(reservedMicro),
+        spendableUsd: unlimitedWallet ? null : microToUsd(availableMicro),
+        spentUsd: unlimitedWallet ? null : microToUsd(usage.creditChargeMicro),
+        availableMicroUsd: unlimitedWallet ? Number.MAX_SAFE_INTEGER : balanceMicro,
+        reservedMicroUsd: reservedMicro,
+        spendableMicroUsd: availableMicro,
+        unlimited: unlimitedWallet,
+        spentMicroUsd: usage.creditChargeMicro,
       },
       keys: {
         total: keys.length,
@@ -55,7 +56,8 @@ export class MemberController {
         requests: usage.requests,
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
-        creditChargeMicro: usage.creditChargeMicro,
+        chargedMicroUsd: usage.creditChargeMicro,
+        chargedUsd: microToUsd(usage.creditChargeMicro),
         averageLatencyMs: usage.averageLatencyMs,
         p95LatencyMs: usage.p95LatencyMs,
         recent: usage.recent.map((item) => ({
@@ -63,7 +65,8 @@ export class MemberController {
           module: item.module,
           tokens: item.inputTokens + item.outputTokens,
           latencyMs: item.latencyMs,
-          creditChargeMicro: item.creditChargeMicro,
+          chargedMicroUsd: item.creditChargeMicro,
+          chargedUsd: microToUsd(item.creditChargeMicro),
           createdAt: item.createdAt,
         })),
       },

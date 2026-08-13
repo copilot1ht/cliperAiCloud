@@ -2,7 +2,7 @@ import { Inject, Injectable, Optional, ServiceUnavailableException } from "@nest
 import { randomUUID } from "node:crypto";
 import { DatabaseService } from "../database/database.service.js";
 import { LedgerType, Prisma } from "../generated/prisma/client.js";
-import { CreditAccountService, InsufficientCreditsException } from "./credit-account.service.js";
+import { CreditAccountService, InsufficientBalanceException } from "./credit-account.service.js";
 
 export interface DirectCreditReservation {
   id: string;
@@ -61,7 +61,7 @@ export class DirectCreditService {
       const account = await tx.userCreditAccount.findUnique({ where: { userId: accountId } });
       const available = account ? account.balanceMicro - account.reservedMicro : 0n;
       if (!account || available < BigInt(amount)) {
-        throw new InsufficientCreditsException(Number(available), amount, requestId);
+        throw new InsufficientBalanceException(Number(available), amount, requestId);
       }
       const trustedKey = apiKeyId
         ? await tx.apiKey.findFirst({ where: { id: apiKeyId, userId: accountId }, select: { id: true } })
@@ -104,7 +104,7 @@ export class DirectCreditService {
       const actualValue = BigInt(actual);
       const reservedForOthers = account.reservedMicro - reserved;
       if (reservedForOthers < 0n || account.balanceMicro - reservedForOthers < actualValue) {
-        throw new InsufficientCreditsException(Number(account.balanceMicro - account.reservedMicro), actual, reservation.requestId);
+        throw new InsufficientBalanceException(Number(account.balanceMicro - account.reservedMicro), actual, reservation.requestId);
       }
       const updated = await tx.userCreditAccount.update({
         where: { id: account.id },

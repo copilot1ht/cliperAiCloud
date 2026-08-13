@@ -12,8 +12,8 @@ afterEach(() => {
   else process.env.CLIPER_DEV_CREDIT_BALANCE_MICRO = originalBalance;
 });
 
-function setup(balanceCredits = 5_000) {
-  process.env.CLIPER_DEV_CREDIT_BALANCE_MICRO = String(balanceCredits * 1_000_000);
+function setup(balanceUsd = 5) {
+  process.env.CLIPER_DEV_CREDIT_BALANCE_MICRO = String(Math.round(balanceUsd * 1_000_000));
   const credits = new CreditAccountService();
   const pricing = new PricingService(new AdminStoreService());
   return { credits, pricing, jobs: new AnalysisJobService(pricing, credits) };
@@ -46,18 +46,21 @@ describe("AnalysisJobService", () => {
     const started = await jobs.start("account-a", { requestId: "video-a", requestedClipCount: 5 });
     const duplicate = await jobs.start("account-a", { requestId: "video-a", requestedClipCount: 5 });
     expect(duplicate.id).toBe(started.id);
-    expect(credits.balance("account-a")).toMatchObject({ reservedMicro: 2_000_000_000, availableMicro: 3_000_000_000 });
+    expect(started.reservedUsd).toBeGreaterThan(0);
+    expect(started.reservedUsd).toBeLessThan(0.1);
+    expect(credits.balance("account-a").reservedMicro).toBe(Math.round(started.reservedUsd * 1_000_000));
 
     await jobs.recordProviderUsage(started.id, "account-a", providerResponse(0.01), "highlight");
     const completed = await jobs.complete("account-a", { jobId: started.id, clipScores: [72, 82, 93], usableResult: true });
     expect(completed.status).toBe("completed");
-    expect(completed.finalChargeCredits).toBeGreaterThanOrEqual(600);
-    expect(completed.finalChargeCredits).toBeLessThanOrEqual(2_000);
-    expect(completed.releasedCredits).toBe(2_000 - completed.finalChargeCredits);
+    expect(completed.walletCurrency).toBe("USD");
+    expect(completed.finalChargeUsd).toBeGreaterThan(0);
+    expect(completed.finalChargeUsd).toBeLessThanOrEqual(started.reservedUsd);
+    expect(completed.releasedUsd).toBeCloseTo(started.reservedUsd - completed.finalChargeUsd, 6);
     expect(credits.balance("account-a").reservedMicro).toBe(0);
 
     const completedAgain = await jobs.complete("account-a", { jobId: started.id, clipScores: [100] });
-    expect(completedAgain.finalChargeCredits).toBe(completed.finalChargeCredits);
+    expect(completedAgain.chargedUsd).toBe(completed.chargedUsd);
     expect(credits.transactions("account-a").filter((item) => item.type === "settle")).toHaveLength(1);
   });
 
@@ -65,21 +68,25 @@ describe("AnalysisJobService", () => {
     const { jobs, credits } = setup();
     const started = await jobs.start("account-b", { requestId: "video-b" });
     await jobs.fail("account-b", started.id, "provider unavailable");
-    expect(credits.balance("account-b")).toMatchObject({ balanceMicro: 5_000_000_000, reservedMicro: 0 });
+    expect(credits.balance("account-b")).toMatchObject({ balanceMicro: 5_000_000, reservedMicro: 0 });
   });
 
-  it("blocks a job before provider use when the wallet cannot cover the maximum reservation", async () => {
-    const { jobs } = setup(1_500);
+  it("blocks only a job whose own estimated reservation exceeds the spendable wallet", async () => {
+    const { jobs } = setup(0.01);
     await expect(jobs.start("account-c", { requestId: "video-c" })).rejects.toThrow(/tidak mencukupi/i);
   });
 
-  it("reports wallet readiness using credits rather than raw microcredits", async () => {
-    const { jobs } = setup(5_000);
+  it("keeps a one dollar wallet connected and ready for per-job estimation", async () => {
+    const { jobs } = setup(1);
     await expect(jobs.walletSummary("account-d")).resolves.toMatchObject({
-      availableCredits: 5_000,
-      estimatedMaxJobCredits: 2_000,
-      canStartJob: true,
+      walletCurrency: "USD",
+      availableUsd: 1,
+      spendableUsd: 1,
+      billingEligible: true,
       balanceStatus: "low",
+    });
+    await expect(jobs.start("account-d", { requestId: "normal-video", sourceDurationSeconds: 3600 })).resolves.toMatchObject({
+      status: "active",
     });
   });
 

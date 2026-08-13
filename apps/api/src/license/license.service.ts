@@ -1,14 +1,40 @@
 import { Inject, Injectable, NotFoundException, Optional } from "@nestjs/common";
-import type { LicenseValidationRequest, LicenseValidationResponse } from "@cliper/contracts";
+import type { LicenseValidationRequest, LicenseValidationResponse, WalletSnapshot } from "@cliper/contracts";
 import { generateCliperApiKey, hashCliperApiKey, isCliperApiKey } from "@cliper/security";
-import { CreditAccountService, InsufficientCreditsException } from "../billing/credit-account.service.js";
+import { CreditAccountService } from "../billing/credit-account.service.js";
 import { DatabaseService } from "../database/database.service.js";
 import { KeyStatus, PlanCode } from "../generated/prisma/client.js";
 import { LicenseKeyStore, type LicenseKeyMetadata } from "./key-storage.js";
 
 const DEFAULT_DEVICE_LIMIT = 2;
 const DEFAULT_EXPIRE_DAYS = 365;
-const UNLIMITED_CREDIT_DISPLAY_MICRO = Number.MAX_SAFE_INTEGER;
+const UNLIMITED_WALLET_DISPLAY_MICRO_USD = Number.MAX_SAFE_INTEGER;
+
+function walletSnapshot(
+  balanceMicroUsd: number,
+  reservedMicroUsd = 0,
+  unlimited = false,
+): WalletSnapshot {
+  const availableMicroUsd = unlimited
+    ? UNLIMITED_WALLET_DISPLAY_MICRO_USD
+    : Math.max(0, Math.round(balanceMicroUsd));
+  const safeReservedMicroUsd = unlimited
+    ? 0
+    : Math.max(0, Math.round(reservedMicroUsd));
+  const spendableMicroUsd = unlimited
+    ? UNLIMITED_WALLET_DISPLAY_MICRO_USD
+    : Math.max(0, availableMicroUsd - safeReservedMicroUsd);
+  return {
+    currency: "USD",
+    availableMicroUsd,
+    reservedMicroUsd: safeReservedMicroUsd,
+    spendableMicroUsd,
+    availableUsd: availableMicroUsd / 1_000_000,
+    reservedUsd: safeReservedMicroUsd / 1_000_000,
+    spendableUsd: spendableMicroUsd / 1_000_000,
+    unlimited,
+  };
+}
 
 function activityWriteIntervalMs(): number {
   const value = Number(process.env.KEY_ACTIVITY_WRITE_INTERVAL_MS || 10 * 60_000);
@@ -61,12 +87,20 @@ export class LicenseService {
     const cachedDevKey = String(process.env.CLIPER_DEV_API_KEY || "").trim();
     const isDevKey = cachedDevKey.length > 0 && request.key === cachedDevKey;
     if (isDevKey) {
+      const balance = this.credits?.balance("development-account");
+      const wallet = walletSnapshot(
+        balance?.balanceMicro ?? 10_000_000,
+        balance?.reservedMicro ?? 0,
+      );
       return {
         valid: true,
         status: "active",
         plan: "DEVELOPMENT",
         deviceSlots: { used: 1, limit: 2 },
-        credits: { remainingMicro: this.credits?.balance("development-account").availableMicro ?? 10_000_000 },
+        wallet,
+        keyType: "internal",
+        cloudConnected: true,
+        billingEligible: wallet.spendableMicroUsd > 0,
       };
     }
 
@@ -76,12 +110,17 @@ export class LicenseService {
     if (found.status !== "active") return { valid: false, status: found.status, reason: "License key ini sudah dicabut." };
     const validation = this.store.useDevice(request.key, request.deviceFingerprint);
     if (!validation.ok) return { valid: false, status: "revoked", reason: validation.reason };
+    const balance = this.credits?.balance(found.ownerId);
+    const wallet = walletSnapshot(balance?.balanceMicro ?? 0, balance?.reservedMicro ?? 0);
     return {
       valid: true,
       status: "active",
       plan: found.plan,
       deviceSlots: { used: found.deviceFingerprints.length, limit: found.deviceLimit },
-      credits: { remainingMicro: this.credits?.balance(found.ownerId).availableMicro ?? 0 },
+      wallet,
+      keyType: "user",
+      cloudConnected: true,
+      billingEligible: wallet.spendableMicroUsd > 0,
       expiresAt: found.expiresAt,
       reason: found.reason,
     };
@@ -114,14 +153,6 @@ export class LicenseService {
     const ownerId = String(input.ownerId || "");
     const owner = await this.database!.client().user.findUnique({ where: { id: ownerId }, select: { id: true, planCode: true, deviceLimit: true, unlimitedCredits: true } });
     if (!owner) throw new NotFoundException("Pemilik API key tidak ditemukan.");
-    if (!owner.unlimitedCredits) {
-      const account = await this.database!.client().userCreditAccount.findUnique({
-        where: { userId: owner.id },
-        select: { balanceMicro: true, reservedMicro: true },
-      });
-      const available = account ? account.balanceMicro - account.reservedMicro : 0n;
-      if (available <= 0n) throw new InsufficientCreditsException(0, 1);
-    }
     const material = generateCliperApiKey(keyPepper());
     const expiresAt = addDays(DEFAULT_EXPIRE_DAYS);
     const key = await this.database!.client().apiKey.create({
@@ -239,13 +270,20 @@ export class LicenseService {
       await client.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: now } });
     }
     const account = await client.userCreditAccount.findUnique({ where: { userId: key.userId }, select: { balanceMicro: true, reservedMicro: true } });
-    const available = account ? account.balanceMicro - account.reservedMicro : 0n;
+    const wallet = walletSnapshot(
+      Number(account?.balanceMicro || 0n),
+      Number(account?.reservedMicro || 0n),
+      key.user.unlimitedCredits,
+    );
     return {
       valid: true,
       status: "active",
       plan: planLabel(key.plan),
       deviceSlots: { used: existing ? key.devices.length : key.devices.length + 1, limit: key.deviceLimit },
-      credits: { remainingMicro: key.user.unlimitedCredits ? UNLIMITED_CREDIT_DISPLAY_MICRO : Number(available) },
+      wallet,
+      keyType: key.user.unlimitedCredits ? "internal" : "user",
+      cloudConnected: true,
+      billingEligible: key.user.unlimitedCredits || wallet.spendableMicroUsd > 0,
       unlimited: key.user.unlimitedCredits,
       expiresAt: key.expiresAt?.toISOString(),
     };

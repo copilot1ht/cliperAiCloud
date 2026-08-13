@@ -9,13 +9,13 @@ afterEach(() => {
 });
 
 describe("LicenseService development verification", () => {
-  it("accepts a configured clip_sk key and returns credits/device state", async () => {
+  it("accepts a configured clip_sk key and returns wallet/device state", async () => {
     const key = `clip_sk_${"a".repeat(32)}`;
     process.env.CLIPER_DEV_API_KEY = key;
     const result = await new LicenseService().validate({ key, deviceFingerprint: "device-a" });
     expect(result.valid).toBe(true);
     expect(result.status).toBe("active");
-    expect(result.credits?.remainingMicro).toBeGreaterThan(0);
+    expect(result.wallet?.spendableMicroUsd).toBeGreaterThan(0);
   });
 
   it("rejects malformed keys before secret comparison", async () => {
@@ -35,7 +35,31 @@ describe("LicenseService development verification", () => {
     await expect(service.revokeKey(first.key.id, "member-b")).rejects.toThrow(/tidak ditemukan/i);
   });
 
-  it("blocks a new API key for a persistent account without available credits", async () => {
+  it("keeps the same user key connected at zero balance and marks it eligible after a top-up", async () => {
+    const { CreditAccountService } = await import("../billing/credit-account.service.js");
+    const wallet = new CreditAccountService();
+    const service = new LicenseService(wallet);
+    const generated = await service.createKey({ ownerId: "wallet-member", plan: "free" });
+    wallet.initialize("wallet-member", 0);
+
+    await expect(service.validate({ key: generated.rawKey, deviceFingerprint: "wallet-device" })).resolves.toMatchObject({
+      valid: true,
+      cloudConnected: true,
+      keyType: "user",
+      billingEligible: false,
+      wallet: { availableUsd: 0, spendableUsd: 0 },
+    });
+
+    wallet.setBalance("wallet-member", 1_000_000, "verified-topup");
+    await expect(service.validate({ key: generated.rawKey, deviceFingerprint: "wallet-device" })).resolves.toMatchObject({
+      valid: true,
+      cloudConnected: true,
+      billingEligible: true,
+      wallet: { availableUsd: 1, spendableUsd: 1 },
+    });
+  });
+
+  it("allows a new API key for a persistent account without wallet balance", async () => {
     const database = {
       configured: () => true,
       client: () => ({
@@ -47,15 +71,23 @@ describe("LicenseService development verification", () => {
             unlimitedCredits: false,
           }),
         },
-        userCreditAccount: {
-          findUnique: async () => ({ balanceMicro: 0n, reservedMicro: 0n }),
+        apiKey: {
+          create: async ({ data }: { data: { userId: string; name: string; prefix: string; plan: string; deviceLimit: number; expiresAt: Date } }) => ({
+            id: "key-empty-wallet",
+            userId: data.userId,
+            name: data.name,
+            prefix: data.prefix,
+            plan: data.plan,
+            deviceLimit: data.deviceLimit,
+            createdAt: new Date("2026-08-11T00:00:00.000Z"),
+          }),
         },
       }),
     };
     const service = new LicenseService(undefined, database as never);
 
-    await expect(service.createKey({ ownerId: "member-empty" })).rejects.toThrow(
-      /Saldo wallet USD tidak mencukupi/i,
-    );
+    await expect(service.createKey({ ownerId: "member-empty" })).resolves.toMatchObject({
+      key: { ownerId: "member-empty", status: "active" },
+    });
   });
 });

@@ -7,8 +7,8 @@ export interface AdminUser {
   role: "admin" | "investor" | "member";
   plan: PlanCode;
   status: "active" | "suspended";
-  credits: number;
-  unlimitedCredits: boolean;
+  walletUsd: number;
+  unlimitedWallet: boolean;
   deviceLimit: number;
   createdAt: string;
   lastActiveAt: string;
@@ -102,33 +102,23 @@ export interface PaymentRecord {
 export interface PricingPolicy {
   markupBps: number;
   minimumMarginBps: number;
+  targetMarginBps: number;
   computeCostMicroUsd: number;
   paymentFeeBps: number;
   reserveBps: number;
   minimumChargeMicroUsd: number;
   minimumClipChargeMicroUsd: number;
-  microUsdPerCredit: number;
-  usdToIdr: number;
-  creditValueIdr: number;
-  minimumGrossMarginBps: number;
-  targetGrossMarginBps: number;
-  baseAnalysisCredits: number;
-  optionalClipCredits: number;
-  goodClipCredits: number;
-  premiumClipCredits: number;
-  optionalScoreMin: number;
-  goodScoreMin: number;
-  premiumScoreMin: number;
-  minimumJobCredits: number;
-  maximumJobCredits: number;
-  infrastructureFeeIdr: number;
+  infrastructureCostMicroUsd: number;
   safetyBufferBps: number;
   retryAllowanceBps: number;
-  paymentFeeAllocationBps: number;
-  targetProviderCostIdr: number;
-  warningProviderCostIdr: number;
-  hardProviderCostIdr: number;
-  lowBalanceWarningCredits: number;
+  minimumJobChargeMicroUsd: number;
+  maximumJobChargeMicroUsd: number;
+  reservationHeadroomBps: number;
+  targetProviderCostMicroUsd: number;
+  warningProviderCostMicroUsd: number;
+  hardProviderCostMicroUsd: number;
+  lowBalanceWarningMicroUsd: number;
+  usdToIdr: number;
   updatedAt: string;
 }
 

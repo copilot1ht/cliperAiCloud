@@ -112,14 +112,13 @@ describe("AdminStoreService", () => {
     expect(store.revenue()).toMatchObject({ grossIdr: 100_000, refundedIdr: 25_000, netIdr: 75_000, paidCount: 1, pendingCount: 1 });
   });
 
-  it("stores markup as a target over service cost, not as a claimed margin rate", () => {
+  it("keeps legacy direct-request markup separate from protected job pricing", () => {
     const store = new AdminStoreService();
-    const policy = store.updatePricingPolicy({ markupBps: 5000, microUsdPerCredit: 100 });
+    const policy = store.updatePricingPolicy({ markupBps: 5000 });
     expect(policy.markupBps).toBe(5000);
-    expect(policy.microUsdPerCredit).toBe(100);
     expect(policy.minimumMarginBps).toBe(5000);
     expect(policy.minimumClipChargeMicroUsd).toBe(5000);
-    expect(policy.usdToIdr).toBe(16000);
+    expect(policy.usdToIdr).toBe(17700);
   });
 
   it("does not allow the business margin floor below 50 percent", () => {
