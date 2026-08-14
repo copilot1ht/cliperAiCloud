@@ -39,11 +39,13 @@ export class GatewayController {
     if (promptChars > maxPromptChars) {
       throw new BadRequestException(`Prompt terlalu besar (${promptChars} karakter). Batas server ${maxPromptChars} karakter.`);
     }
-    const serverPlan = httpRequest?.cliperAuth?.plan || String(process.env.CLIPER_DEV_PLAN || "starter").toLowerCase();
+    // Wallet funding determines permission per job. A historical plan column
+    // must never alter a user's model route, rate tier, or visible access.
+    const billingMode = "wallet";
     const result = await this.gateway.chat({
       ...request,
-      metadata: { ...(request.metadata ?? {}), plan: serverPlan },
-    }, httpRequest?.cliperAuth?.accountId || "development-account", serverPlan, httpRequest?.cliperAuth?.apiKeyId);
+      metadata: { ...(request.metadata ?? {}), plan: billingMode, billingMode },
+    }, httpRequest?.cliperAuth?.accountId || "development-account", billingMode, httpRequest?.cliperAuth?.apiKeyId);
     if (httpRequest?.cliperAuth?.mode === "desktop-session" && httpRequest.cliperAuth.sessionId) {
       result.integrity = await this.desktopSessions.signResponse(httpRequest.cliperAuth.sessionId, "/v1/chat/completions", result);
       httpResponse.setHeader("X-Cliper-Response-Signed", "1");

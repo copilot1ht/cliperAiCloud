@@ -10,7 +10,7 @@ const availableModels = [
 export default function ModelsPage() {
   return (
     <AppShell eyebrow="Models" title="Model selection">
-      <div className="notice-line"><div><ShieldCheck size={17} /><span><strong>Masukkan API key dan pilih model.</strong> Model terbaik dipilih otomatis berdasarkan routing dan plan kamu.</span></div></div>
+      <div className="notice-line"><div><ShieldCheck size={17} /><span><strong>Masukkan API key dan pilih model.</strong> Model terbaik dipilih otomatis berdasarkan routing, kualitas tugas, dan biaya wallet.</span></div></div>
       <section className="panel"><div className="panel-head"><div><p className="section-kicker">Recommended models</p><h2>Pilih model untuk workflow kamu</h2><p>Tiap model punya karakter berbeda; kamu bisa mulai dari rekomendasi lalu sesuaikan jika ingin kualitas atau biaya khusus.</p></div></div>
         <div className="plan-grid">
           {availableModels.map((model) => (

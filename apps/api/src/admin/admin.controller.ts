@@ -1,5 +1,5 @@
 import { BadRequestException, Body, Controller, Delete, Get, Inject, Param, Patch, Post, Put, Req, UseGuards } from "@nestjs/common";
-import { AuthService, authStorageMode, type AuthRole, type MemberPlan, type MemberStatus } from "../auth/auth.service.js";
+import { AuthService, authStorageMode, type AuthRole, type MemberStatus } from "../auth/auth.service.js";
 import { GatewayService } from "../gateway/gateway.service.js";
 import { AdminSessionGuard, type AdminAuthenticatedRequest } from "../security/admin-session.guard.js";
 import { UsageService } from "../usage/usage.service.js";
@@ -19,13 +19,6 @@ import { ReleaseCatalogService, type DesktopReleaseInput } from "./release-catal
 import { PaymentConfigurationService, type PaymentSettingsInput } from "../billing/payment-configuration.service.js";
 import { PaymentProviderService } from "../billing/payment-provider.service.js";
 import { WalletPaymentSettingsService, type WalletPaymentSettingsInput } from "../billing/wallet-payment-settings.service.js";
-
-const plans = [
-  { code: "free", name: "Free", priceIdr: 0, credits: 0, deviceLimit: 1, active: true },
-  { code: "starter", name: "Starter", priceIdr: 99_000, credits: 50_000, deviceLimit: 1, active: true },
-  { code: "pro", name: "Pro", priceIdr: 299_000, credits: 500_000, deviceLimit: 3, active: true },
-  { code: "enterprise", name: "Enterprise", priceIdr: 0, credits: 0, deviceLimit: 10, active: true },
-];
 
 @Controller("api/admin")
 @UseGuards(AdminSessionGuard)
@@ -85,7 +78,7 @@ export class AdminController {
 
   @Get("users")
   async users() {
-    return { mode: authStorageMode(), users: await this.auth.listUsers(), plans };
+    return { mode: authStorageMode(), users: await this.auth.listUsers() };
   }
 
   @Get("system-health")
@@ -243,13 +236,17 @@ export class AdminController {
   }
 
   @Post("users")
-  createUser(@Body() input: { email?: string; password?: string; displayName?: string; role?: AuthRole; plan?: MemberPlan; walletUsd?: number; unlimitedWallet?: boolean; deviceLimit?: number }) {
+  createUser(@Body() input: { email?: string; password?: string; displayName?: string; role?: AuthRole; walletUsd?: number; unlimitedWallet?: boolean; deviceLimit?: number }) {
     return this.auth.createManagedAccount(input);
   }
 
   @Patch("users/:id")
-  updateUser(@Param("id") id: string, @Body() input: { displayName?: string; plan?: MemberPlan; status?: MemberStatus; walletUsd?: number; unlimitedWallet?: boolean; deviceLimit?: number }) {
-    return this.auth.updateMember(id, input);
+  updateUser(
+    @Param("id") id: string,
+    @Body() input: { displayName?: string; email?: string; status?: MemberStatus; walletUsd?: number; unlimitedWallet?: boolean; deviceLimit?: number },
+    @Req() request: AdminAuthenticatedRequest,
+  ) {
+    return this.auth.updateMember(id, input, request.cliperAdminSession?.userId);
   }
 
   @Post("users/:id/password-reset")
@@ -263,8 +260,8 @@ export class AdminController {
   }
 
   @Delete("users/:id")
-  deleteUser(@Param("id") id: string) {
-    return this.auth.deleteMember(id);
+  deleteUser(@Param("id") id: string, @Req() request: AdminAuthenticatedRequest) {
+    return this.auth.deleteMember(id, request.cliperAdminSession?.userId);
   }
 
   @Get("providers")

@@ -100,6 +100,7 @@ model User {
   deviceLimit     Int                   @default(1)
   unlimitedCredits Boolean              @default(false)
   isActive        Boolean              @default(true)
+  deletedAt       DateTime?
   lastActiveAt    DateTime?
   passwordChangedAt DateTime             @default(now())
   passwordResetRequiredAt DateTime?
@@ -122,6 +123,7 @@ model User {
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt
 
+  @@index([deletedAt])
   @@map("users")
 }
 

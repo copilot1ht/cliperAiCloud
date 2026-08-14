@@ -33,7 +33,7 @@ function UserForm({ user, onClose, onSaved }: { user?: AdminUser; onClose: () =>
     <form className="admin-form" onSubmit={submit}>
       <div className="form-grid">
         <label className="field-label">Nama<input name="displayName" defaultValue={user?.displayName || ""} required minLength={2} /></label>
-        <label className="field-label">Email<input name="email" type="email" defaultValue={user?.email || ""} required disabled={Boolean(user)} /></label>
+        <label className="field-label">Email<input name="email" type="email" defaultValue={user?.email || ""} required /></label>
         {!user && <label className="field-label">Password awal<input name="password" type="password" required minLength={12} maxLength={128} autoComplete="new-password" /></label>}
         {user && <label className="field-label">Status<select name="status" defaultValue={user.status}><option value="active">Active</option><option value="suspended">Suspended</option></select></label>}
         <label className="field-label">Saldo wallet (USD)<input name="walletUsd" type="number" min={0} step="0.000001" defaultValue={user?.walletUsd ?? 0} /></label>
@@ -43,6 +43,34 @@ function UserForm({ user, onClose, onSaved }: { user?: AdminUser; onClose: () =>
       {error && <p className="form-error">{error}</p>}
       <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={saving}>{saving ? "Saving..." : "Save user"}</button></div>
     </form>
+  </AdminModal>;
+}
+
+function AccountActionConfirm({ user, action, onClose, onSaved }: { user: AdminUser; action: "toggle" | "delete"; onClose: () => void; onSaved: () => void }) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const deleting = action === "delete";
+  const title = deleting ? "Hapus akun member" : user.status === "active" ? "Tangguhkan akun" : "Aktifkan akun";
+  const detail = deleting
+    ? `${user.email} akan kehilangan akses permanen. Riwayat pembayaran, wallet, dan audit akan tetap disimpan untuk rekonsiliasi.`
+    : user.status === "active"
+      ? `${user.email} akan keluar dari seluruh sesi dan seluruh API key aktifnya ditangguhkan.`
+      : `${user.email} akan dapat masuk kembali. Hanya key yang ditangguhkan oleh status akun yang diaktifkan kembali.`;
+  const submit = async () => {
+    setSaving(true); setError("");
+    try {
+      if (deleting) await adminFetch(`/api/admin/users/${user.id}`, { method: "DELETE" });
+      else await adminFetch(`/api/admin/users/${user.id}`, { method: "PATCH", body: JSON.stringify({ status: user.status === "active" ? "suspended" : "active" }) });
+      onSaved();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Perubahan akses gagal."); }
+    finally { setSaving(false); }
+  };
+  return <AdminModal title={title} detail={detail} onClose={onClose}>
+    <div className="admin-form">
+      <p className="form-notice">{deleting ? "Akun dihapus secara aman: profil dianonimkan, sesi dan key dicabut, sementara ledger dan invoice tidak dihapus." : "Tindakan akses ini dicatat di audit log."}</p>
+      {error && <p className="form-error">{error}</p>}
+      <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Batal</button><button type="button" className={deleting ? "button button-danger" : "button button-primary"} onClick={() => void submit()} disabled={saving}>{saving ? "Memproses..." : deleting ? "Hapus akun" : user.status === "active" ? "Tangguhkan" : "Aktifkan"}</button></div>
+    </div>
   </AdminModal>;
 }
 
@@ -108,23 +136,13 @@ export function AdminUsers() {
   const [status, setStatus] = useState("all");
   const [editing, setEditing] = useState<AdminUser | null | "new">(null);
   const [resetting, setResetting] = useState<AdminUser | null>(null);
+  const [confirming, setConfirming] = useState<{ user: AdminUser; action: "toggle" | "delete" } | null>(null);
   const load = useCallback(() => { setError(""); adminFetch<UsersPayload>("/api/admin/users").then(setData).catch((reason) => setError(reason.message)); }, []);
   useEffect(load, [load]);
   const filtered = useMemo(() => (data?.users || []).filter((user) => {
     const matchQuery = `${user.displayName} ${user.email}`.toLowerCase().includes(query.toLowerCase());
     return matchQuery && (status === "all" || user.status === status);
   }), [data, query, status]);
-
-  const mutate = async (user: AdminUser, action: "toggle" | "delete") => {
-    if (user.protected) return;
-    const verb = action === "delete" ? "menghapus" : user.status === "active" ? "menangguhkan" : "mengaktifkan";
-    if (!window.confirm(`Yakin ingin ${verb} ${user.email}?`)) return;
-    try {
-      if (action === "delete") await adminFetch(`/api/admin/users/${user.id}`, { method: "DELETE" });
-      else await adminFetch(`/api/admin/users/${user.id}`, { method: "PATCH", body: JSON.stringify({ status: user.status === "active" ? "suspended" : "active" }) });
-      load();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Perubahan gagal."); }
-  };
 
   if (error && !data) return <><LocalModeNotice /><AdminError message={error} retry={load} /></>;
   if (!data) return <AdminLoading />;
@@ -139,10 +157,11 @@ export function AdminUsers() {
       <div className="metric-block"><small>Wallet accounts</small><strong>{members.filter((user) => user.walletUsd > 0 || user.unlimitedWallet).length}</strong><span>funded or unlimited accounts</span></div>
     </div>
     <section className="panel table-panel">
-      <div className="panel-head admin-toolbar"><div><p className="section-kicker">User management</p><h2>Accounts and access</h2><p>Admin account dilindungi. Member dapat dibuat, diubah, ditangguhkan, atau dihapus.</p></div><div className="toolbar-actions"><label className="search-box"><Search size={15} /><input aria-label="Cari user" placeholder="Search user..." value={query} onChange={(event) => setQuery(event.target.value)} /></label><select aria-label="Filter status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All status</option><option value="active">Active</option><option value="suspended">Suspended</option></select><button className="button button-primary" onClick={() => setEditing("new")}><Plus size={15} /> Add user</button></div></div>
-      {filtered.length ? <div className="table-scroll"><table><thead><tr><th>User</th><th>Role</th><th>Wallet USD</th><th>Devices</th><th>Status</th><th>Password recovery</th><th>Last activity</th><th>Actions</th></tr></thead><tbody>{filtered.map((user) => <tr key={user.id}><td><strong>{user.displayName}</strong><small>{user.email}</small></td><td>{user.role}</td><td>{user.unlimitedWallet ? "Unlimited" : `$${user.walletUsd.toFixed(2)}`}</td><td>{user.deviceLimit || "-"}</td><td><span className={user.status === "active" ? "status-tag healthy" : "status-tag danger-tag"}>{user.status}</span></td><td>{user.passwordRecovery?.status === "reset_required" ? <span className="status-tag fallback">Reset required</span> : <span className="status-tag healthy">Normal</span>}<small>{user.passwordRecovery?.expiresAt ? `Berakhir ${formatDate(user.passwordRecovery.expiresAt)}` : "Admin-assisted"}</small></td><td>{formatDate(user.lastActiveAt)}</td><td><div className="row-actions"><button className="icon-button" title="Reset password" aria-label={`Reset password ${user.email}`} disabled={user.protected} onClick={() => setResetting(user)}><KeyRound size={15} /></button><button className="icon-button" title="Edit user" aria-label={`Edit ${user.email}`} disabled={user.protected} onClick={() => setEditing(user)}><Pencil size={15} /></button><button className="icon-button" title={user.status === "active" ? "Suspend" : "Activate"} aria-label={`${user.status === "active" ? "Suspend" : "Activate"} ${user.email}`} disabled={user.protected} onClick={() => mutate(user, "toggle")}>{user.status === "active" ? <Ban size={15} /> : <CheckCircle2 size={15} />}</button><button className="icon-button danger-icon" title="Delete" aria-label={`Delete ${user.email}`} disabled={user.protected || user.role !== "member"} onClick={() => mutate(user, "delete")}><Trash2 size={15} /></button></div></td></tr>)}</tbody></table></div> : <EmptyState title="No users found" detail="Ubah kata pencarian atau filter status." />}
+      <div className="panel-head admin-toolbar"><div><p className="section-kicker">User management</p><h2>Accounts and access</h2><p>Member dapat diubah, ditangguhkan, atau dihapus aman tanpa menghilangkan riwayat pembayaran.</p></div><div className="toolbar-actions"><label className="search-box"><Search size={15} /><input aria-label="Cari user" placeholder="Search user..." value={query} onChange={(event) => setQuery(event.target.value)} /></label><select aria-label="Filter status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All status</option><option value="active">Active</option><option value="suspended">Suspended</option><option value="deleted">Deleted</option></select><button className="button button-primary" onClick={() => setEditing("new")}><Plus size={15} /> Add user</button></div></div>
+      {filtered.length ? <div className="table-scroll"><table><thead><tr><th>User</th><th>Role</th><th>Wallet USD</th><th>Devices</th><th>Status</th><th>Password recovery</th><th>Last activity</th><th>Actions</th></tr></thead><tbody>{filtered.map((user) => { const removed = user.status === "deleted"; return <tr key={user.id}><td><strong>{user.displayName}</strong><small>{user.email}</small></td><td>{user.role}</td><td>{user.unlimitedWallet ? "Unlimited" : `$${user.walletUsd.toFixed(2)}`}</td><td>{user.deviceLimit || "-"}</td><td><span className={user.status === "active" ? "status-tag healthy" : "status-tag danger-tag"}>{user.status}</span></td><td>{removed ? <small>Access removed</small> : <>{user.passwordRecovery?.status === "reset_required" ? <span className="status-tag fallback">Reset required</span> : <span className="status-tag healthy">Normal</span>}<small>{user.passwordRecovery?.expiresAt ? `Berakhir ${formatDate(user.passwordRecovery.expiresAt)}` : "Admin-assisted"}</small></>}</td><td>{formatDate(user.lastActiveAt)}</td><td><div className="row-actions"><button className="icon-button" title="Reset password" aria-label={`Reset password ${user.email}`} disabled={user.protected || removed} onClick={() => setResetting(user)}><KeyRound size={15} /></button><button className="icon-button" title="Edit user" aria-label={`Edit ${user.email}`} disabled={user.protected || removed} onClick={() => setEditing(user)}><Pencil size={15} /></button><button className="icon-button" title={user.status === "active" ? "Suspend" : "Activate"} aria-label={`${user.status === "active" ? "Suspend" : "Activate"} ${user.email}`} disabled={user.protected || removed} onClick={() => setConfirming({ user, action: "toggle" })}>{user.status === "active" ? <Ban size={15} /> : <CheckCircle2 size={15} />}</button><button className="icon-button danger-icon" title="Delete" aria-label={`Delete ${user.email}`} disabled={user.protected || user.role !== "member" || removed} onClick={() => setConfirming({ user, action: "delete" })}><Trash2 size={15} /></button></div></td></tr>; })}</tbody></table></div> : <EmptyState title="No users found" detail="Ubah kata pencarian atau filter status." />}
     </section>
     {editing && <UserForm user={editing === "new" ? undefined : editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
     {resetting && <PasswordResetForm user={resetting} onClose={() => setResetting(null)} onSaved={load} />}
+    {confirming && <AccountActionConfirm user={confirming.user} action={confirming.action} onClose={() => setConfirming(null)} onSaved={() => { setConfirming(null); load(); }} />}
   </>;
 }

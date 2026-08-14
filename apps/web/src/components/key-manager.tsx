@@ -6,7 +6,6 @@ import { useState } from "react";
 export interface LicenseKeySummary {
   id: string;
   prefix: string;
-  plan: string;
   status: string;
   deviceSlots: { used: number; limit: number };
   createdAt: string;
@@ -53,16 +52,15 @@ export function KeyManager({ keys, generatedKey, onGenerate, onRevoke, loading, 
       <div className="table-scroll">
         <table>
           <thead>
-            <tr><th>Key</th><th>Gateway</th><th>Plan</th><th>Status</th><th>Devices</th><th>Last used</th><th>Actions</th></tr>
+            <tr><th>Key</th><th>Gateway</th><th>Status</th><th>Devices</th><th>Last used</th><th>Actions</th></tr>
           </thead>
           <tbody>
             {keys.length === 0 ? (
-              <tr><td colSpan={7}><em>No API keys yet. Generate one to start.</em></td></tr>
+              <tr><td colSpan={6}><em>No API keys yet. Generate one to start.</em></td></tr>
             ) : keys.map((key) => (
               <tr key={key.id}>
                 <td><strong>{key.prefix}</strong></td>
                 <td>Cliper AI Cloud</td>
-                <td>{key.plan}</td>
                 <td><span className={`status-tag ${key.status === "active" ? "healthy" : "fallback"}`}>{key.status}</span></td>
                 <td>{key.deviceSlots.used} / {key.deviceSlots.limit}</td>
                 <td>{key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : "Never"}</td>

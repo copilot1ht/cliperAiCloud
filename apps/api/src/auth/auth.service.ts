@@ -3,12 +3,12 @@ import { Algorithm, hash, verify } from "@node-rs/argon2";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { CreditAccountService } from "../billing/credit-account.service.js";
 import { DatabaseService } from "../database/database.service.js";
-import { PlanCode, Prisma, UserRole } from "../generated/prisma/client.js";
+import { KeyStatus, LedgerType, PlanCode, Prisma, UserRole } from "../generated/prisma/client.js";
 import { SecurityEventService } from "../security/security-event.service.js";
 
 export type AuthRole = "admin" | "investor" | "member";
 export type MemberPlan = "free" | "starter" | "pro" | "enterprise";
-export type MemberStatus = "active" | "suspended";
+export type MemberStatus = "active" | "suspended" | "deleted";
 export type AuthStorageMode = "postgresql" | "development-memory" | "bootstrap-memory";
 
 interface MemoryUser {
@@ -25,6 +25,7 @@ interface MemoryUser {
   createdAt: string;
   lastActiveAt: string;
   passwordResetRequiredAt?: number;
+  deletedAt?: string;
 }
 
 interface DatabaseUserRecord {
@@ -37,6 +38,7 @@ interface DatabaseUserRecord {
   deviceLimit: number;
   unlimitedCredits: boolean;
   isActive: boolean;
+  deletedAt: Date | null;
   lastActiveAt: Date | null;
   passwordResetRequiredAt: Date | null;
   createdAt: Date;
@@ -509,46 +511,103 @@ export class AuthService {
 
   async updateMember(id: string, input: {
     displayName?: string;
-    plan?: MemberPlan;
+    email?: string;
     status?: MemberStatus;
     walletUsd?: number;
     unlimitedWallet?: boolean;
     deviceLimit?: number;
-  }) {
+  }, actorId?: string) {
     if (this.usesPostgres()) {
-      const current = await this.database!.client().user.findUnique({ where: { id } });
-      if (!current) throw new BadRequestException("User tidak ditemukan.");
-      const displayName = input.displayName === undefined ? undefined : this.validDisplayName(input.displayName);
-      const plan = input.plan === undefined ? undefined : planForDatabase(this.validPlan(input.plan));
-      const deviceLimit = input.deviceLimit === undefined ? undefined : Math.max(1, Math.round(this.nonNegative(input.deviceLimit, current.deviceLimit)));
-      await this.database!.client().user.update({
+      const current = await this.database!.client().user.findUnique({
         where: { id },
-        data: {
-          ...(displayName !== undefined ? { displayName } : {}),
-          ...(plan !== undefined ? { planCode: plan } : {}),
-          ...(input.status !== undefined ? { isActive: input.status !== "suspended" } : {}),
-          ...(input.unlimitedWallet !== undefined ? { unlimitedCredits: Boolean(input.unlimitedWallet) } : {}),
-          ...(deviceLimit !== undefined ? { deviceLimit } : {}),
-        },
+        include: { creditAccount: { select: { id: true, balanceMicro: true, reservedMicro: true } } },
       });
-      if (input.walletUsd !== undefined) {
-        const balanceMicro = BigInt(Math.round(this.nonNegative(input.walletUsd, 0) * 1_000_000));
-        await this.database!.client().userCreditAccount.upsert({
-          where: { userId: id },
-          create: { userId: id, balanceMicro, lifetimeGrantedMicro: balanceMicro },
-          update: { balanceMicro },
-        });
-        this.creditAccounts?.setBalance(id, Number(balanceMicro), "admin-user-credit-update");
+      if (!current) throw new BadRequestException("User tidak ditemukan.");
+      if (current.role === UserRole.SUPER_ADMIN) throw new BadRequestException("Akun admin yang dilindungi tidak dapat diubah dari panel.");
+      if (current.deletedAt) throw new BadRequestException("Akun yang telah dihapus tidak dapat diubah.");
+      const displayName = input.displayName === undefined ? undefined : this.validDisplayName(input.displayName);
+      const email = input.email === undefined ? undefined : normalizeEmail(input.email);
+      if (email !== undefined && !validEmail(email)) throw new BadRequestException("Format email tidak valid.");
+      if (input.status === "deleted") throw new BadRequestException("Gunakan aksi hapus akun untuk menghapus member.");
+      const deviceLimit = input.deviceLimit === undefined ? undefined : Math.max(1, Math.round(this.nonNegative(input.deviceLimit, current.deviceLimit)));
+      const nextStatus = input.status === undefined ? undefined : input.status;
+      const targetBalance = input.walletUsd === undefined
+        ? undefined
+        : BigInt(Math.round(this.nonNegative(input.walletUsd, 0) * 1_000_000));
+      if (targetBalance !== undefined && targetBalance < (current.creditAccount?.reservedMicro || 0n)) {
+        throw new BadRequestException("Saldo tidak dapat ditetapkan di bawah dana yang sedang direservasi.");
       }
-      if (input.status === "suspended") await this.revokeUserSessions(id);
+      const now = new Date();
+      try {
+        await this.serializableTransaction(async (tx) => {
+          await tx.user.update({
+            where: { id },
+            data: {
+              ...(displayName !== undefined ? { displayName } : {}),
+              ...(email !== undefined ? { email } : {}),
+              ...(nextStatus !== undefined ? { isActive: nextStatus === "active" } : {}),
+              ...(input.unlimitedWallet !== undefined ? { unlimitedCredits: Boolean(input.unlimitedWallet) } : {}),
+              ...(deviceLimit !== undefined ? { deviceLimit } : {}),
+            },
+          });
+          if (targetBalance !== undefined) {
+            const account = current.creditAccount
+              ? await tx.userCreditAccount.update({ where: { userId: id }, data: { balanceMicro: targetBalance } })
+              : await tx.userCreditAccount.create({
+                  data: { userId: id, balanceMicro: targetBalance, lifetimeGrantedMicro: 0n },
+                });
+            const previousBalance = current.creditAccount?.balanceMicro || 0n;
+            const adjustment = targetBalance - previousBalance;
+            if (adjustment !== 0n) {
+              await tx.creditLedger.create({
+                data: {
+                  accountId: account.id,
+                  type: LedgerType.ADJUSTMENT,
+                  amountMicro: adjustment,
+                  balanceAfterMicro: targetBalance,
+                  idempotencyKey: `admin-wallet-adjust:${id}:${now.getTime()}:${randomUUID()}`,
+                  description: "Admin wallet balance adjustment",
+                  costSnapshot: { actorId: actorId || null, previousMicroUsd: previousBalance.toString(), targetMicroUsd: targetBalance.toString() },
+                },
+              });
+            }
+          }
+          if (nextStatus) await this.applyPersistentAccessState(tx, id, nextStatus, now);
+          await tx.auditLog.create({
+            data: {
+              actorId: actorId || null,
+              action: nextStatus === "suspended" ? "admin.user_suspended" : nextStatus === "active" ? "admin.user_reactivated" : "admin.user_updated",
+              entityType: "user",
+              entityId: id,
+              metadata: {
+                fields: { displayName: displayName !== undefined, email: email !== undefined, walletUsd: targetBalance !== undefined, deviceLimit: deviceLimit !== undefined, unlimitedWallet: input.unlimitedWallet !== undefined },
+                status: nextStatus || null,
+              },
+            },
+          });
+        });
+      } catch (error) {
+        if (String(error).toLowerCase().includes("unique")) throw new BadRequestException("Email sudah digunakan.");
+        throw error;
+      }
+      if (targetBalance !== undefined) this.creditAccounts?.setBalance(id, Number(targetBalance), "admin-wallet-adjustment");
       return this.userById(id);
     }
 
     const user = Array.from(this.users.values()).find((item) => item.id === id);
     if (!user) throw new BadRequestException("User tidak ditemukan atau akun dilindungi.");
+    if (user.status === "deleted") throw new BadRequestException("Akun yang telah dihapus tidak dapat diubah.");
     if (input.displayName !== undefined) user.displayName = this.validDisplayName(input.displayName);
-    if (input.plan !== undefined) user.plan = this.validPlan(input.plan);
-    if (input.status !== undefined) user.status = input.status === "suspended" ? "suspended" : "active";
+    if (input.email !== undefined) {
+      const email = normalizeEmail(input.email);
+      if (!validEmail(email)) throw new BadRequestException("Format email tidak valid.");
+      if (email !== user.email && this.users.has(email)) throw new BadRequestException("Email sudah digunakan.");
+      this.users.delete(user.email);
+      user.email = email;
+      this.users.set(email, user);
+    }
+    if (input.status === "deleted") throw new BadRequestException("Gunakan aksi hapus akun untuk menghapus member.");
+    if (input.status !== undefined) user.status = input.status;
     if (input.unlimitedWallet !== undefined) user.unlimitedCredits = Boolean(input.unlimitedWallet);
     if (input.walletUsd !== undefined) {
       user.credits = this.nonNegative(input.walletUsd, user.credits);
@@ -567,8 +626,15 @@ export class AuthService {
 
     if (this.usesPostgres()) {
       const client = this.database!.client();
-      const target = await client.user.findUnique({ where: { id }, select: { id: true } });
+      const target = await client.user.findUnique({
+        where: { id },
+        select: { id: true, isActive: true, deletedAt: true },
+      });
       if (!target) throw new BadRequestException("Akun tidak ditemukan.");
+      if (target.deletedAt || !target.isActive)
+        throw new BadRequestException(
+          "Reset password hanya tersedia untuk akun member yang aktif.",
+        );
       const result = await this.serializableTransaction(async (tx) => {
         const actor = actorId
           ? await tx.user.findUnique({ where: { id: actorId }, select: { id: true } })
@@ -614,6 +680,10 @@ export class AuthService {
 
     const user = Array.from(this.users.values()).find((item) => item.id === id);
     if (!user) throw new BadRequestException("Akun tidak ditemukan.");
+    if (user.deletedAt || user.status !== "active")
+      throw new BadRequestException(
+        "Reset password hanya tersedia untuk akun member yang aktif.",
+      );
     for (const credential of this.passwordResetCredentials.values()) {
       if (credential.userId === id && !credential.usedAt && !credential.revokedAt) credential.revokedAt = now.getTime();
     }
@@ -752,19 +822,54 @@ export class AuthService {
     return this.createMemorySession(user);
   }
 
-  async deleteMember(id: string) {
+  async deleteMember(id: string, actorId?: string) {
     if (this.usesPostgres()) {
-      const user = await this.database!.client().user.findUnique({ where: { id }, select: { role: true } });
+      const user = await this.database!.client().user.findUnique({ where: { id }, select: { id: true, role: true, deletedAt: true } });
       if (!user) throw new BadRequestException("User tidak ditemukan.");
       if (user.role !== UserRole.MEMBER) throw new BadRequestException("Akun admin/investor tidak dapat dihapus dari panel.");
-      await this.database!.client().user.delete({ where: { id } });
-      return { ok: true };
+      if (user.deletedAt) return { ok: true, duplicate: true, status: "deleted" as const };
+      const now = new Date();
+      const anonymizedEmail = `deleted-${id}@deleted.cliper.invalid`;
+      await this.serializableTransaction(async (tx) => {
+        await this.applyPersistentAccessState(tx, id, "suspended", now);
+        await tx.passwordResetToken.updateMany({ where: { userId: id, consumedAt: null }, data: { consumedAt: now } });
+        await tx.user.update({
+          where: { id },
+          data: {
+            email: anonymizedEmail,
+            displayName: "Deleted member",
+            passwordHash: `deleted:${randomUUID()}`,
+            passwordResetRequiredAt: null,
+            isActive: false,
+            deletedAt: now,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            actorId: actorId || null,
+            action: "admin.user_deleted",
+            entityType: "user",
+            entityId: id,
+            metadata: { deletionMode: "soft_delete_anonymized", financialHistoryRetained: true },
+          },
+        });
+      });
+      return { ok: true, status: "deleted" as const };
     }
     const entry = Array.from(this.users.entries()).find(([, user]) => user.id === id);
     if (!entry) throw new BadRequestException("User tidak ditemukan atau akun dilindungi.");
+    const user = entry[1];
+    if (user.role !== "member") throw new BadRequestException("Akun admin/investor tidak dapat dihapus dari panel.");
+    if (user.status === "deleted") return { ok: true, duplicate: true, status: "deleted" as const };
     this.users.delete(entry[0]);
+    user.email = `deleted-${user.id}@deleted.cliper.invalid`;
+    user.displayName = "Deleted member";
+    user.passwordHash = `deleted:${randomUUID()}`;
+    user.status = "deleted";
+    user.deletedAt = new Date().toISOString();
+    this.users.set(user.email, user);
     await this.revokeUserSessions(id);
-    return { ok: true };
+    return { ok: true, status: "deleted" as const };
   }
 
   async userById(id: string) {
@@ -796,14 +901,12 @@ export class AuthService {
       await this.database!.client().user.updateMany({
         where: { id },
         data: {
-          ...(input.plan ? { planCode: planForDatabase(input.plan) } : {}),
           ...(input.deviceLimit !== undefined ? { deviceLimit: Math.max(1, Math.round(input.deviceLimit)) } : {}),
         },
       });
     } else {
       const user = Array.from(this.users.values()).find((item) => item.id === id);
       if (user) {
-        if (input.plan) user.plan = input.plan;
         if (input.deviceLimit !== undefined) user.deviceLimit = Math.max(1, Math.round(input.deviceLimit));
         user.credits = Math.max(0, input.balanceMicro / 1_000_000);
       }
@@ -1014,11 +1117,12 @@ export class AuthService {
   }
 
   private safeMemoryUser(user: MemoryUser) {
-    const { passwordHash: _passwordHash, credits, unlimitedCredits, ...safe } = user;
+    const { passwordHash: _passwordHash, credits, unlimitedCredits, plan: _plan, ...safe } = user;
     const activeCredential = Array.from(this.passwordResetCredentials.values())
       .find((item) => item.userId === user.id && !item.usedAt && !item.revokedAt && item.expiresAt > Date.now());
     return {
       ...safe,
+      billingMode: "wallet" as const,
       walletUsd: credits,
       unlimitedWallet: unlimitedCredits,
       passwordRecovery: {
@@ -1037,8 +1141,8 @@ export class AuthService {
       email: user.email,
       displayName: user.displayName,
       role: roleFromDatabase(user.role),
-      plan: planFromDatabase(user.planCode),
-      status: user.isActive ? "active" as const : "suspended" as const,
+      billingMode: "wallet" as const,
+      status: user.deletedAt ? "deleted" as const : user.isActive ? "active" as const : "suspended" as const,
       walletUsd: Number(user.creditAccount?.balanceMicro || 0n) / 1_000_000,
       unlimitedWallet: user.unlimitedCredits,
       deviceLimit: user.deviceLimit,
@@ -1101,6 +1205,30 @@ export class AuthService {
   private defaultWalletUsd(_plan: MemberPlan): number {
     // A plan defines product access; only a verified payment funds a user wallet.
     return 0;
+  }
+
+  private async applyPersistentAccessState(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    status: "active" | "suspended",
+    now: Date,
+  ): Promise<void> {
+    if (status === "suspended") {
+      await Promise.all([
+        tx.session.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } }),
+        tx.desktopSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } }),
+        tx.passwordResetCredential.updateMany({ where: { userId, usedAt: null, revokedAt: null }, data: { revokedAt: now } }),
+        tx.passwordResetSession.updateMany({ where: { userId, consumedAt: null, revokedAt: null }, data: { revokedAt: now } }),
+        tx.apiKey.updateMany({ where: { userId, status: KeyStatus.ACTIVE }, data: { status: KeyStatus.SUSPENDED } }),
+        tx.license.updateMany({ where: { userId, status: KeyStatus.ACTIVE }, data: { status: KeyStatus.SUSPENDED, revokedAt: now } }),
+        tx.device.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } }),
+      ]);
+      return;
+    }
+    await Promise.all([
+      tx.apiKey.updateMany({ where: { userId, status: KeyStatus.SUSPENDED }, data: { status: KeyStatus.ACTIVE } }),
+      tx.license.updateMany({ where: { userId, status: KeyStatus.SUSPENDED }, data: { status: KeyStatus.ACTIVE, revokedAt: null } }),
+    ]);
   }
 
   private nonNegative(value: unknown, fallback: number): number {

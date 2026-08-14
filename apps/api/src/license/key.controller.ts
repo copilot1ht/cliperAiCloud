@@ -25,7 +25,7 @@ export class KeyController {
     const ownerId = request.cliperSession?.userId || "";
     await this.rateLimits.assertKeyCreate(ownerId);
     const user = await this.auth.userById(ownerId);
-    return this.licenses.createKey({ label: input.label, ownerId, plan: user.plan, deviceLimit: user.deviceLimit });
+    return this.licenses.createKey({ label: input.label, ownerId, deviceLimit: user.deviceLimit });
   }
 
   @Post(":id/revoke")

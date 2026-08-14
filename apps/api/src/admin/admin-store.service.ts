@@ -551,19 +551,29 @@ export class AdminStoreService implements OnModuleInit {
   }
 
   planRoutes(): Record<string, Partial<Record<AiModule, string[]>>> {
-    const result: Record<string, Partial<Record<AiModule, string[]>>> = {};
-    for (const rule of this.routesValue.values()) {
-      if (!rule.enabled) continue;
-      result[rule.plan] ||= {};
-      result[rule.plan]![rule.module] = [rule.primary, rule.fallback].filter(Boolean);
+    const walletRoutes: Partial<Record<AiModule, string[]>> = {};
+    const preference = ["enterprise", "pro", "starter", "free"];
+    const enabled = Array.from(this.routesValue.values()).filter((rule) => rule.enabled);
+    for (const module of new Set(enabled.map((rule) => rule.module))) {
+      const selected = preference
+        .map((plan) => enabled.find((rule) => rule.module === module && rule.plan === plan))
+        .find(Boolean);
+      if (selected) walletRoutes[module] = [selected.primary, selected.fallback].filter(Boolean);
     }
-    return result;
+    // The router consumes this legacy option name, but its only active tier is
+    // now wallet. Admin route records remain editable for compatibility.
+    return { wallet: walletRoutes };
   }
 
   moduleMaxTokens(): Partial<Record<AiModule, number>> {
     const result: Partial<Record<AiModule, number>> = {};
-    const proRules = this.listRoutes().filter((item) => item.plan === "pro" && item.enabled);
-    for (const rule of proRules) result[rule.module] = rule.maxTokens;
+    const preference = ["enterprise", "pro", "starter", "free"];
+    for (const module of new Set(Array.from(this.routesValue.values()).filter((item) => item.enabled).map((item) => item.module))) {
+      const rule = preference
+        .map((plan) => Array.from(this.routesValue.values()).find((item) => item.enabled && item.module === module && item.plan === plan))
+        .find(Boolean);
+      if (rule) result[module] = rule.maxTokens;
+    }
     return result;
   }
 

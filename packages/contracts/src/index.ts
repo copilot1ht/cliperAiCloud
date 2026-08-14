@@ -99,7 +99,7 @@ export interface WalletSnapshot {
 export interface LicenseValidationResponse {
   valid: boolean;
   status?: "active" | "expired" | "suspended" | "revoked";
-  plan?: string;
+  billingMode?: "wallet";
   expiresAt?: string;
   deviceSlots?: { used: number; limit: number };
   wallet?: WalletSnapshot;
@@ -121,9 +121,9 @@ export interface DesktopSessionResponse {
   refreshExpiresAt: string;
   offlineGraceUntil: string;
   license: {
-    plan: string;
     wallet: WalletSnapshot;
     keyType: "user" | "internal";
+    billingMode: "wallet";
     cloudConnected: boolean;
     billingEligible: boolean;
     unlimited?: boolean;

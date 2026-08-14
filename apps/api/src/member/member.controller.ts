@@ -34,7 +34,14 @@ export class MemberController {
     const usage = await this.usage.summary(accountId);
     return {
       mode: authStorageMode(),
-      user: { id: user.id, displayName: user.displayName, email: user.email, plan: user.plan, deviceLimit: user.deviceLimit, unlimitedWallet },
+      user: {
+        id: user.id,
+        displayName: user.displayName,
+        email: user.email,
+        deviceLimit: user.deviceLimit,
+        unlimitedWallet,
+      },
+      billingMode: "wallet" as const,
       wallet: {
         currency: "USD",
         availableUsd: unlimitedWallet ? null : microToUsd(balanceMicro),

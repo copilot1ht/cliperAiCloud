@@ -32,25 +32,25 @@ export class GatewayService {
     return this.currentRouter().health();
   }
 
-  async chat(request: CliperChatRequest, accountId = "development-account", plan = "starter", apiKeyId?: string): Promise<CliperChatResponse> {
-    await this.rateLimits.assertAllowed(accountId, plan);
-    return this.rateLimits.withAiConcurrency(accountId, apiKeyId, plan, () =>
-      this.executeChat(request, accountId, plan, apiKeyId),
+  async chat(request: CliperChatRequest, accountId = "development-account", billingMode = "wallet", apiKeyId?: string): Promise<CliperChatResponse> {
+    await this.rateLimits.assertAllowed(accountId, billingMode);
+    return this.rateLimits.withAiConcurrency(accountId, apiKeyId, billingMode, () =>
+      this.executeChat(request, accountId, billingMode, apiKeyId),
     );
   }
 
-  private async executeChat(request: CliperChatRequest, accountId: string, plan: string, apiKeyId?: string): Promise<CliperChatResponse> {
+  private async executeChat(request: CliperChatRequest, accountId: string, billingMode: string, apiKeyId?: string): Promise<CliperChatResponse> {
     await this.adminStore.refreshIfStale();
     const started = Date.now();
-    // The authenticated plan is server-owned. Forward it to the router and all
-    // pricing/job checks instead of trusting (or omitting) client metadata.
-    // Without this normalization every desktop request silently used the
-    // router's starter/default route, even for enterprise accounts.
+    // Billing mode is server-owned. The compatibility `plan` metadata is
+    // deliberately fixed to the wallet route so client input can never select
+    // a legacy routing tier.
     const routedRequest: CliperChatRequest = {
       ...request,
       metadata: {
         ...(request.metadata || {}),
-        plan,
+        plan: billingMode,
+        billingMode,
       },
     };
     const requestId = String(routedRequest.metadata?.requestId || `request-${randomUUID()}`);

@@ -146,11 +146,13 @@ export class RateLimitService {
 
   limits() {
     return {
+      wallet: this.planLimit("wallet"),
       free: this.planLimit("free"),
       starter: this.planLimit("starter"),
       pro: this.planLimit("pro"),
       enterprise: this.planLimit("enterprise"),
       aiConcurrency: {
+        wallet: this.aiConcurrencyLimit("wallet"),
         free: this.aiConcurrencyLimit("free"),
         starter: this.aiConcurrencyLimit("starter"),
         pro: this.aiConcurrencyLimit("pro"),
@@ -222,13 +224,13 @@ export class RateLimitService {
 
   private planLimit(plan: string): number {
     const normalized = String(plan || "free").toLowerCase();
-    const defaults: Record<string, number> = { free: 3, starter: 5, pro: 30, team: 60, enterprise: 120 };
+    const defaults: Record<string, number> = { wallet: 30, free: 3, starter: 5, pro: 30, team: 60, enterprise: 120 };
     return this.configuredLimit(`RATE_LIMIT_${normalized.toUpperCase()}_PER_MINUTE`, defaults[normalized] || defaults.free!);
   }
 
   private aiConcurrencyLimit(plan: string): number {
     const normalized = String(plan || "free").toUpperCase();
-    const defaults: Record<string, number> = { FREE: 1, STARTER: 2, PRO: 4, TEAM: 6, ENTERPRISE: 10 };
+    const defaults: Record<string, number> = { WALLET: 4, FREE: 1, STARTER: 2, PRO: 4, TEAM: 6, ENTERPRISE: 10 };
     return this.configuredLimit(`AI_CONCURRENCY_${normalized}`, defaults[normalized] || defaults.FREE!);
   }
 

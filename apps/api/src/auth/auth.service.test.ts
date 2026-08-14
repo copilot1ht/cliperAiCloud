@@ -48,7 +48,7 @@ describe("AuthService", () => {
     if ("authState" in result) throw new Error("Unexpected password reset session");
     expect(result.user.role).toBe("admin");
     expect(result.redirectTo).toBe("/admin/overview");
-    expect(await auth.userById(result.user.id)).toMatchObject({ role: "admin", plan: "enterprise", deviceLimit: 2, protected: true });
+    expect(await auth.userById(result.user.id)).toMatchObject({ role: "admin", billingMode: "wallet", deviceLimit: 2, protected: true });
   });
 
   it("rejects a malformed configured password hash without leaking a server error", async () => {
@@ -93,12 +93,22 @@ describe("AuthService", () => {
 
   it("lets admin management update and suspend a member without exposing password hashes", async () => {
     const auth = new AuthService();
-    const member = await auth.createMember({ email: "managed@test.local", password: "strong-member-password", displayName: "Managed Member", plan: "starter" });
+    const member = await auth.createMember({ email: "managed@test.local", password: "strong-member-password", displayName: "Managed Member" });
     expect(member).not.toHaveProperty("passwordHash");
-    const updated = await auth.updateMember(member.id, { plan: "pro", walletUsd: 5, status: "suspended" });
-    expect(updated).toMatchObject({ plan: "pro", walletUsd: 5, status: "suspended" });
-    expect((await auth.listUsers()).find((item) => item.id === member.id)).toMatchObject({ plan: "pro", protected: false });
-    expect(await auth.deleteMember(member.id)).toEqual({ ok: true });
+    const updated = await auth.updateMember(member.id, { walletUsd: 5, status: "suspended" });
+    expect(updated).toMatchObject({ billingMode: "wallet", walletUsd: 5, status: "suspended" });
+    expect((await auth.listUsers()).find((item) => item.id === member.id)).toMatchObject({ billingMode: "wallet", protected: false });
+    expect(await auth.deleteMember(member.id)).toMatchObject({ ok: true, status: "deleted" });
+    expect((await auth.listUsers()).find((item) => item.id === member.id)).toMatchObject({ status: "deleted" });
+  });
+
+  it("does not issue an admin password reset for suspended or deleted members", async () => {
+    const auth = new AuthService();
+    const member = await auth.createMember({ email: "inactive-reset@test.local", password: "strong-member-password", displayName: "Inactive Reset" });
+    await auth.updateMember(member.id, { status: "suspended" });
+    await expect(auth.issueAdminTemporaryPassword(member.id)).rejects.toThrow("akun member yang aktif");
+    await auth.deleteMember(member.id);
+    await expect(auth.issueAdminTemporaryPassword(member.id)).rejects.toThrow("akun member yang aktif");
   });
 
   it("temporarily throttles an account after repeated invalid login attempts", async () => {

@@ -160,9 +160,9 @@ export class DesktopSessionService {
       refreshExpiresAt: new Date(current.refreshExpiresAt).toISOString(),
       offlineGraceUntil: new Date(current.offlineGraceUntil).toISOString(),
       license: {
-        plan: current.plan,
         wallet,
         keyType: current.unlimited ? "internal" : "user",
+        billingMode: "wallet",
         cloudConnected: true,
         billingEligible: current.unlimited || wallet.spendableMicroUsd > 0,
         unlimited: current.unlimited,
@@ -284,9 +284,9 @@ export class DesktopSessionService {
       refreshExpiresAt: new Date(record.refreshExpiresAt).toISOString(),
       offlineGraceUntil: new Date(record.offlineGraceUntil).toISOString(),
       license: {
-        plan: record.plan,
         wallet: license.wallet || walletSnapshot(0),
         keyType: license.keyType || (record.unlimited ? "internal" : "user"),
+        billingMode: "wallet",
         cloudConnected: license.cloudConnected === true,
         billingEligible: license.billingEligible === true,
         unlimited: Boolean(license.unlimited),

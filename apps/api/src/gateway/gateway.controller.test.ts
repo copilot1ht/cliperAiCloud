@@ -8,8 +8,8 @@ afterEach(() => {
   else process.env.CLIPER_DEV_PLAN = originalPlan;
 });
 
-describe("GatewayController plan enforcement", () => {
-  it("replaces a client supplied plan with the server-side plan", async () => {
+describe("GatewayController wallet routing", () => {
+  it("replaces a client supplied plan with the canonical wallet billing mode", async () => {
     process.env.CLIPER_DEV_PLAN = "starter";
     const chat = vi.fn().mockResolvedValue({ ok: true });
     const controller = new GatewayController({ chat, providers: vi.fn() } as never, { signResponse: vi.fn() } as never);
@@ -18,7 +18,8 @@ describe("GatewayController plan enforcement", () => {
       { cliperAuth: { accountId: "account-a", apiKeyId: "key-a", plan: "starter", mode: "legacy-key" } } as never,
       { setHeader: vi.fn() } as never,
     );
-    expect(chat.mock.calls[0]?.[0].metadata.plan).toBe("starter");
-    expect(chat.mock.calls[0]?.[2]).toBe("starter");
+    expect(chat.mock.calls[0]?.[0].metadata.plan).toBe("wallet");
+    expect(chat.mock.calls[0]?.[0].metadata.billingMode).toBe("wallet");
+    expect(chat.mock.calls[0]?.[2]).toBe("wallet");
   });
 });

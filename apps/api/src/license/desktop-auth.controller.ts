@@ -17,7 +17,7 @@ export class DesktopAuthController {
     return {
       status: result.valid ? "active" : result.status || "revoked",
       valid: result.valid,
-      plan: result.plan,
+      billingMode: "wallet",
       wallet: result.wallet,
       keyType: result.keyType,
       cloudConnected: result.cloudConnected === true,

@@ -5,8 +5,8 @@ export interface AdminUser {
   email: string;
   displayName: string;
   role: "admin" | "investor" | "member";
-  plan: PlanCode;
-  status: "active" | "suspended";
+  billingMode: "wallet";
+  status: "active" | "suspended" | "deleted";
   walletUsd: number;
   unlimitedWallet: boolean;
   deviceLimit: number;
@@ -18,15 +18,6 @@ export interface AdminUser {
     expiresAt: string | null;
   };
   protected: boolean;
-}
-
-export interface AdminPlan {
-  code: PlanCode;
-  name: string;
-  priceIdr: number;
-  credits: number;
-  deviceLimit: number;
-  active: boolean;
 }
 
 export interface AdminProvider {

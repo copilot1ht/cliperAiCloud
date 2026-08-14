@@ -51,15 +51,15 @@ describe("AdminStoreService", () => {
       modelSource: "api",
     });
     expect(store.providersForRouter().find((item) => item.code === "openai")?.apiKeys).toEqual(["custom-secret"]);
-    const rule = store.listRoutes().find((item) => item.plan === "pro" && item.module === "title")!;
+    const rule = store.listRoutes().find((item) => item.plan === "enterprise" && item.module === "title")!;
     store.updateRoute(rule.id, { primary: "openai", fallback: "gemini" });
-    expect(store.planRoutes().pro?.title).toEqual(["openai", "gemini"]);
+    expect(store.planRoutes().wallet?.title).toEqual(["openai", "gemini"]);
     store.updateRoute(rule.id, { primary: rule.primary, fallback: rule.fallback });
     store.deleteProvider(provider.id);
     expect(store.listProviders().some((item) => item.code === "openai")).toBe(false);
   });
 
-  it("uses OpenAI as the Pro/Enterprise reviewer while keeping DeepSeek for initial ranking", () => {
+  it("uses the wallet routing policy for ranking and highlight modules", () => {
     const store = new AdminStoreService();
     store.saveDetectedProvider({ provider: "openai", apiKey: "reviewer-secret" }, {
       provider: "openai",
@@ -76,10 +76,8 @@ describe("AdminStoreService", () => {
 
     store.repairRoutesForProviders();
 
-    expect(store.planRoutes().enterprise?.highlight?.[0]).toBe("deepseek");
-    expect(store.planRoutes().enterprise?.ranking?.[0]).toBe("openai");
-    expect(store.planRoutes().pro?.ranking?.[0]).toBe("openai");
-    expect(store.planRoutes().starter?.ranking?.[0]).toBe("deepseek");
+    expect(store.planRoutes().wallet?.highlight?.[0]).toBe("deepseek");
+    expect(store.planRoutes().wallet?.ranking?.[0]).toBe("openai");
   });
 
   it("appends validated keys and only accepts detected default models", () => {

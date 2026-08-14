@@ -50,10 +50,10 @@ describe("GatewayService billing boundary", () => {
     expect(response.billing).not.toHaveProperty("provider_cost_usd");
     expect(response).toMatchObject({ provider: "cliper-cloud", model: "auto" });
     expect(usage.record).toHaveBeenCalledWith(internal, "test", expect.any(Number), "member-a", { apiKeyId: undefined });
-    expect(rateLimits.assertAllowed).toHaveBeenCalledWith("member-a", "starter");
+    expect(rateLimits.assertAllowed).toHaveBeenCalledWith("member-a", "wallet");
   });
 
-  it("injects the authenticated plan into the request used by pricing and routing", async () => {
+  it("forces wallet billing metadata for pricing and routing", async () => {
     const internal: CliperInternalChatResponse = {
       id: "request-plan", object: "chat.completion", created: 1, model: "language-model", provider: "openai",
       choices: [{ index: 0, message: { role: "assistant", content: "Judul" }, finish_reason: "stop" }],
@@ -80,14 +80,14 @@ describe("GatewayService billing boundary", () => {
       module: "title",
       metadata: { plan: "starter", requestId: "desktop-request" },
       messages: [{ role: "user", content: "Buat judul" }],
-    }, "member-enterprise", "enterprise", "key-1");
+    }, "member-wallet", "wallet", "key-1");
 
     expect(route).toHaveBeenCalledWith(expect.objectContaining({
       module: "title",
-      metadata: expect.objectContaining({ plan: "enterprise", requestId: "desktop-request" }),
+      metadata: expect.objectContaining({ plan: "wallet", billingMode: "wallet", requestId: "desktop-request" }),
     }));
-    expect(estimateRequest).toHaveBeenCalledWith(expect.objectContaining({ metadata: expect.objectContaining({ plan: "enterprise" }) }));
-    expect(moduleForRequest).toHaveBeenCalledWith(expect.objectContaining({ metadata: expect.objectContaining({ plan: "enterprise" }) }));
+    expect(estimateRequest).toHaveBeenCalledWith(expect.objectContaining({ metadata: expect.objectContaining({ plan: "wallet", billingMode: "wallet" }) }));
+    expect(moduleForRequest).toHaveBeenCalledWith(expect.objectContaining({ metadata: expect.objectContaining({ plan: "wallet", billingMode: "wallet" }) }));
   });
 
   it("defers customer billing when a signed analysis job owns the reservation", async () => {

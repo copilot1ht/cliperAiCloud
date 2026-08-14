@@ -11,7 +11,7 @@ import { formatUsdMicro } from "@/lib/money";
 
 interface MemberOverview {
   mode: string;
-  user: { displayName: string; email: string; plan: string; deviceLimit: number; unlimitedCredits: boolean };
+  user: { displayName: string; email: string; deviceLimit: number; unlimitedCredits: boolean };
   wallet: { availableMicroUsd: number; reservedMicroUsd: number; spendableMicroUsd: number; spentMicroUsd: number; unlimited: boolean };
   keys: { total: number; active: number; devicesUsed: number };
   usage: { requests: number; inputTokens: number; outputTokens: number; chargedMicroUsd: number; recent: Array<{ id: string; module: string; tokens: number; chargedMicroUsd: number; createdAt: string }> };

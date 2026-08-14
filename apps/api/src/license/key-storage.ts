@@ -6,7 +6,6 @@ export interface LicenseKeyMetadata {
   ownerId: string;
   prefix: string;
   label?: string;
-  plan: string;
   status: "active" | "revoked";
   deviceSlots: { used: number; limit: number };
   createdAt: string;
@@ -16,6 +15,9 @@ export interface LicenseKeyMetadata {
 }
 
 interface LicenseKeyRecord extends LicenseKeyMetadata {
+  // Legacy database compatibility only. Wallet billing never exposes or uses a
+  // customer plan to decide whether a key is connected or a job may run.
+  plan: string;
   secretHash: string;
   deviceLimit: number;
   deviceFingerprints: string[];
@@ -100,7 +102,6 @@ export class LicenseKeyStore {
       ownerId: record.ownerId,
       prefix: record.prefix,
       label: record.label,
-      plan: record.plan,
       status: record.status,
       deviceSlots: { used: record.deviceFingerprints.length, limit: record.deviceLimit },
       createdAt: record.createdAt,
