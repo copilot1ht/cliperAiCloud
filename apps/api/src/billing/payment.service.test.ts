@@ -27,6 +27,45 @@ describe("USD wallet helpers", () => {
     );
   });
 
+  it("returns a QR image only for an open invoice and never exposes its raw payload", async () => {
+    const service = new PaymentService({} as never, {} as never, {} as never);
+    const safeInvoice = Reflect.get(service, "safeInvoice") as (
+      invoice: Record<string, unknown>,
+    ) => Promise<{
+      qrString: string | null;
+      qrImageBase64: string | null;
+      qrImageUrl: string | null;
+    }>;
+    const baseInvoice = {
+      number: "CLP-QR-TEST",
+      subtotalIdr: 17_000,
+      taxIdr: 0,
+      totalIdr: 17_000,
+      provider: "xendit",
+      paymentUrl: null,
+      qrString: "0002010102122665TEST-QR-PAYLOAD",
+      issuedAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+      paidAt: null,
+      metadata: { kind: "topup", creditMicro: "1000000" },
+      payment: null,
+      items: [],
+    };
+
+    const open = await safeInvoice({ ...baseInvoice, status: "OPEN" });
+    const paid = await safeInvoice({
+      ...baseInvoice,
+      status: "PAID",
+      paidAt: new Date(),
+    });
+
+    expect(open.qrString).toBeNull();
+    expect(open.qrImageBase64).toMatch(/^data:image\/png;base64,/);
+    expect(paid.qrString).toBeNull();
+    expect(paid.qrImageBase64).toBeNull();
+    expect(paid.qrImageUrl).toBeNull();
+  });
+
 });
 
 describe("non-financial payment webhooks", () => {

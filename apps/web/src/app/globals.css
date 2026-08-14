@@ -1429,6 +1429,37 @@ td code {
   border-radius: 6px;
   font-size: 11px;
 }
+.checkout-confirmation,
+.checkout-unavailable {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: min(100%, 344px);
+  padding: 14px;
+  border: 1px solid #b9e3cf;
+  border-radius: 6px;
+  background: #effaf4;
+  color: #17683f;
+}
+.checkout-confirmation strong,
+.checkout-confirmation span {
+  display: block;
+}
+.checkout-confirmation strong {
+  font-size: 13px;
+}
+.checkout-confirmation span {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.checkout-unavailable {
+  border-color: var(--line);
+  background: #f5f8f8;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
 .checkout-code span {
   color: var(--muted);
   font-size: 10px;

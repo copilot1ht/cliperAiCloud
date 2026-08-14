@@ -1634,9 +1634,13 @@ export class PaymentService {
           : null),
       provider: invoice.provider,
       paymentUrl: invoice.paymentUrl,
-      qrString: invoice.qrString,
+      // The EMV payload is only needed server-side to create the temporary QR
+      // image for an open invoice. Never return it to the browser as text.
+      qrString: null,
       qrImageBase64,
-      qrImageUrl: String(metadata.qrImageUrl || "") || null,
+      qrImageUrl: canShowQr
+        ? String(metadata.qrImageUrl || "") || null
+        : null,
       issuedAt: invoice.issuedAt.toISOString(),
       expiresAt: invoice.expiresAt?.toISOString(),
       paidAt: invoice.paidAt?.toISOString(),

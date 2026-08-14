@@ -361,32 +361,56 @@ export function MemberBilling({
               )}
             </div>
             <div className="checkout-code">
-              <small>
-                {selected.provider === "sandbox"
-                  ? "Sandbox payment code"
-                  : "QRIS checkout"}
-              </small>
-              {selected.qrImageBase64 ? (
-                <div className="qris-image-frame">
-                  <img
-                    src={selected.qrImageBase64}
-                    alt={`QRIS pembayaran ${selected.number}`}
-                    width={320}
-                    height={320}
-                  />
-                </div>
+              {selected.status === "open" ? (
+                <>
+                  <small>
+                    {selected.provider === "sandbox"
+                      ? "Sandbox payment code"
+                      : "QRIS checkout"}
+                  </small>
+                  {selected.qrImageBase64 ? (
+                    <div className="qris-image-frame">
+                      <img
+                        src={selected.qrImageBase64}
+                        alt={`QRIS pembayaran ${selected.number}`}
+                        width={320}
+                        height={320}
+                      />
+                    </div>
+                  ) : (
+                    <div className="checkout-unavailable">
+                      QRIS sedang disiapkan. Refresh status untuk memuat ulang.
+                    </div>
+                  )}
+                  <span>
+                    {selected.provider === "sandbox"
+                      ? "QR ini hanya untuk pengujian lokal. Gunakan tombol simulasi, bukan aplikasi bank."
+                      : "Scan dengan aplikasi bank atau e-wallet. Saldo masuk setelah callback Xendit tervalidasi."}
+                  </span>
+                </>
+              ) : selected.status === "paid" ? (
+                <>
+                  <small>Payment verified</small>
+                  <div className="checkout-confirmation">
+                    <ShieldCheck size={22} aria-hidden="true" />
+                    <div>
+                      <strong>
+                        {formatUsdWallet(selected.purchaseUsd)} berhasil ditambahkan
+                      </strong>
+                      <span>
+                        Pembayaran telah dikonfirmasi oleh server. QRIS ini sudah ditutup.
+                      </span>
+                    </div>
+                  </div>
+                </>
               ) : (
-                <code>
-                  {selected.qrString ||
-                    selected.payment?.externalId ||
-                    "Menunggu QRIS dari provider"}
-                </code>
+                <>
+                  <small>Payment unavailable</small>
+                  <div className="checkout-unavailable">
+                    Invoice ini {selected.status}. Buat top-up baru untuk menerima QRIS baru.
+                  </div>
+                </>
               )}
-              <span>
-                {selected.provider === "sandbox"
-                  ? "QR ini hanya untuk pengujian lokal. Gunakan tombol simulasi, bukan aplikasi bank."
-                  : "Scan dengan aplikasi bank atau e-wallet. Saldo masuk setelah callback Xendit tervalidasi."}
-              </span>
             </div>
           </div>
           <div className="invoice-breakdown" aria-label="Rincian pembayaran">
