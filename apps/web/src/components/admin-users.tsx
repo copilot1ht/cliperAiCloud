@@ -82,7 +82,7 @@ function PasswordResetForm({ user, onClose, onSaved }: { user: AdminUser; onClos
   };
   if (result) return <AdminModal title="Password sementara berhasil dibuat" detail={`Akun ${user.email} sekarang wajib membuat password baru.`} onClose={onClose}>
     <div className="admin-form" aria-live="polite">
-      <p className="form-notice">Password lama dan seluruh sesi web/desktop sudah dinonaktifkan. Password ini hanya ditampilkan satu kali.</p>
+      <p className="form-notice">Password lama dan seluruh sesi web/desktop sudah dinonaktifkan. Salin password ini sekarang dan kirim melalui kanal aman; password tidak dikirim otomatis lewat email dan hanya ditampilkan satu kali.</p>
       <label className="field-label">Password sementara
         <span className="admin-secret-field"><code>{visible ? result.temporaryPassword : "••••••••••••••••••"}</code><button type="button" className="icon-button" aria-label={visible ? "Sembunyikan password" : "Tampilkan password"} onClick={() => setVisible(!visible)}>{visible ? <EyeOff size={15} /> : <Eye size={15} />}</button><button type="button" className="icon-button" aria-label="Salin password sementara" onClick={() => void copy()}><Copy size={15} /></button></span>
       </label>
@@ -92,9 +92,9 @@ function PasswordResetForm({ user, onClose, onSaved }: { user: AdminUser; onClos
       <div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => void copy()}><Copy size={15} /> Salin password</button><button className="button button-primary" onClick={onClose}>Selesai</button></div>
     </div>
   </AdminModal>;
-  return <AdminModal title="Reset password" detail={`Reset ${user.email}? Password lama akan dinonaktifkan dan user akan menerima password sementara.`} onClose={onClose}>
+  return <AdminModal title="Reset password" detail={`Reset ${user.email}? Password lama akan dinonaktifkan dan admin akan menerima password sementara untuk disampaikan ke user.`} onClose={onClose}>
     <form className="admin-form" onSubmit={submit}>
-      <p className="form-notice">Tindakan ini mencabut semua sesi web dan desktop. API key, wallet, dan data user tidak dihapus.</p>
+      <p className="form-notice">Tindakan ini mencabut semua sesi web dan desktop. API key, wallet, dan data user tidak dihapus. Setelah dibuat, salin password sementara dan kirim melalui kanal aman.</p>
       {error && <p className="form-error">{error}</p>}
       <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Batal</button><button className="button button-primary" disabled={saving}>{saving ? "Membuat..." : "Buat password sementara"}</button></div>
     </form>
@@ -143,6 +143,6 @@ export function AdminUsers() {
       {filtered.length ? <div className="table-scroll"><table><thead><tr><th>User</th><th>Role</th><th>Wallet USD</th><th>Devices</th><th>Status</th><th>Password recovery</th><th>Last activity</th><th>Actions</th></tr></thead><tbody>{filtered.map((user) => <tr key={user.id}><td><strong>{user.displayName}</strong><small>{user.email}</small></td><td>{user.role}</td><td>{user.unlimitedWallet ? "Unlimited" : `$${user.walletUsd.toFixed(2)}`}</td><td>{user.deviceLimit || "-"}</td><td><span className={user.status === "active" ? "status-tag healthy" : "status-tag danger-tag"}>{user.status}</span></td><td>{user.passwordRecovery?.status === "reset_required" ? <span className="status-tag fallback">Reset required</span> : <span className="status-tag healthy">Normal</span>}<small>{user.passwordRecovery?.expiresAt ? `Berakhir ${formatDate(user.passwordRecovery.expiresAt)}` : "Admin-assisted"}</small></td><td>{formatDate(user.lastActiveAt)}</td><td><div className="row-actions"><button className="icon-button" title="Reset password" aria-label={`Reset password ${user.email}`} disabled={user.protected} onClick={() => setResetting(user)}><KeyRound size={15} /></button><button className="icon-button" title="Edit user" aria-label={`Edit ${user.email}`} disabled={user.protected} onClick={() => setEditing(user)}><Pencil size={15} /></button><button className="icon-button" title={user.status === "active" ? "Suspend" : "Activate"} aria-label={`${user.status === "active" ? "Suspend" : "Activate"} ${user.email}`} disabled={user.protected} onClick={() => mutate(user, "toggle")}>{user.status === "active" ? <Ban size={15} /> : <CheckCircle2 size={15} />}</button><button className="icon-button danger-icon" title="Delete" aria-label={`Delete ${user.email}`} disabled={user.protected || user.role !== "member"} onClick={() => mutate(user, "delete")}><Trash2 size={15} /></button></div></td></tr>)}</tbody></table></div> : <EmptyState title="No users found" detail="Ubah kata pencarian atau filter status." />}
     </section>
     {editing && <UserForm user={editing === "new" ? undefined : editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
-    {resetting && <PasswordResetForm user={resetting} onClose={() => setResetting(null)} onSaved={() => { setResetting(null); load(); }} />}
+    {resetting && <PasswordResetForm user={resetting} onClose={() => setResetting(null)} onSaved={load} />}
   </>;
 }
