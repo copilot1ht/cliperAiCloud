@@ -1,5 +1,41 @@
 # Cliper Studio Plus Changelog
 
+## v1.11.0 - Stable Desktop Release
+
+Added:
+
+* System status yang mengelompokkan komponen inti, analisis video, cerita/subtitle, dan output berdasarkan pemeriksaan runtime nyata.
+* Folder release berversi yang otomatis berisi Setup, Portable, checksum SHA-256, updater metadata, dan petunjuk upload Google Drive.
+
+Improved:
+
+* Akselerasi perangkat dan CPU fallback kini dijelaskan dengan bahasa produk yang jelas tanpa menyembunyikan status fallback.
+* Paket release Windows memakai nama artefak berversi agar checksum dan tautan distribusi tidak saling tertimpa.
+
+Validation:
+
+* 173 automated tests pass.
+* Dependency scan nyata: Python, yt-dlp, FFmpeg/FFprobe, OpenCV, MediaPipe, Faster-Whisper, dan encoder H.264 tersedia.
+* Render lokal 60 detik lulus: video H.264 720x1280, audio AAC, subtitle terbakar, ASS/SRT, camera director, dan tanpa warning worker.
+
+## v1.11.0-beta.1 - Adaptive Editorial Quality
+
+Added:
+
+* Lightweight Cloud download center for Setup, Portable, checksums, and version history.
+* Admin release catalog backed by GitHub Release assets.
+
+Improved:
+
+* Unified content-aware evidence gates across local ranking and AI review.
+* Long-form conversation detection using duration, dialogue turns, questions, and episode evidence.
+* Profile-specific highlight validation for podcast, tutorial, review, news, vlog, gaming, and music.
+
+Changed:
+
+* Render quality is no longer benchmarked against the legacy subtitle QA sample.
+* YouTube heatmap remains corroborating evidence and never controls crop or score by itself.
+
 ## v1.10.0-beta.3 - Subtitle Readability and User Onboarding
 
 Added:

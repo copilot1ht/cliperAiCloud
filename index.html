@@ -3,6 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file: https:; media-src 'self' blob: file: https:; connect-src 'self' https: http://127.0.0.1:* http://localhost:*; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'"
+    />
     <title>Cliper Studio Plus</title>
     <link rel="icon" href="./assets/icon.png" />
     <link rel="stylesheet" href="./styles.css" />
@@ -11,7 +15,7 @@
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark"><img src="./assets/icon.png" alt="" /></div>
+          <div class="brand-mark"><img src="./assets/cliper-logo-mark.png" alt="Cliper Studio Plus" /></div>
           <div>
             <strong>Cliper</strong>
             <span>Studio Plus</span>
@@ -56,13 +60,13 @@
       <main class="workspace">
         <header class="topbar">
           <div>
-            <p class="eyebrow">Project</p>
-          <h1>Cliper Studio Plus</h1>
+            <p class="eyebrow">Creator workspace</p>
+            <h1>Cliper Studio Plus</h1>
           </div>
           <div class="status-row">
             <span class="status-pill" id="apiStatus">Cliper AI Cloud belum terhubung</span>
             <span class="status-pill" id="clipCounter">0 clip dipilih</span>
-            <span class="status-pill version-pill" id="appVersion">v1.7.0</span>
+            <span class="status-pill version-pill" id="appVersion">v-</span>
             <button class="icon-button" id="saveConfig" title="Simpan setting">
               <svg viewBox="0 0 24 24"><path d="M5 4h12l2 2v14H5V4Zm3 0v6h8V4M8 20v-6h8v6" /></svg>
             </button>
@@ -92,8 +96,9 @@
 
               <div class="form-grid">
                 <label class="field auto-advanced-field">
-                  <span>Maks output otomatis</span>
-                  <input id="clipCount" type="number" min="1" max="20" value="6" />
+                  <span>Jumlah rekomendasi</span>
+                  <input id="clipCount" type="number" min="0" step="1" value="0" aria-describedby="clipCountHelp" />
+                  <small id="clipCountHelp">0 = semua rekomendasi layak. Masukkan angka untuk membatasi hasil.</small>
                 </label>
                 <label class="field auto-advanced-field">
                   <span>Bahasa subtitle</span>
@@ -104,11 +109,7 @@
                 <label class="field auto-advanced-field">
                   <span>AI scoring</span>
                   <select id="scoreMode">
-                    <option>Random Viral Mix</option>
-                    <option>Hook + retention</option>
-                    <option>Edukasi paling jelas</option>
-                    <option>Kontroversi ringan</option>
-                    <option>Komedi / reaksi</option>
+                    <option>Content-aware editor score</option>
                   </select>
                 </label>
                 <div class="auto-duration-card">
@@ -166,23 +167,23 @@
                   <label class="field">
                     <span>Mode</span>
                     <select id="selectionMode">
-                      <option value="full">Full Video</option>
-                      <option value="range">Current Range</option>
-                      <option value="multiple">Multiple Range</option>
+                      <option value="full">Seluruh Video</option>
+                      <option value="range">Selected Range</option>
+                      <option value="multiple">Multiple Ranges</option>
                     </select>
                   </label>
                   <label class="field">
                     <span>Start</span>
-                    <input id="rangeStart" placeholder="00:00:00" />
+                    <input id="rangeStart" inputmode="numeric" placeholder="00:00" readonly />
                   </label>
                   <label class="field">
                     <span>End</span>
-                    <input id="rangeEnd" placeholder="00:20:00" />
+                    <input id="rangeEnd" inputmode="numeric" placeholder="Menunggu metadata" readonly />
                   </label>
                 </div>
                 <div class="analysis-seekbar">
-                  <input id="analysisStartRange" type="range" min="0" max="100" value="0" />
-                  <input id="analysisEndRange" type="range" min="0" max="100" value="100" />
+                  <input id="analysisStartRange" type="range" min="0" max="1" value="0" disabled />
+                  <input id="analysisEndRange" type="range" min="0" max="1" value="1" disabled />
                 </div>
                 <div class="analysis-time-row">
                   <span id="analysisStartBadge">00:00</span>
@@ -212,7 +213,7 @@
             </div>
             <div class="toolbar">
               <span class="status-pill" id="aiPipelineStatus">AI Production Pipeline Active</span>
-              <button class="secondary-action" id="selectAllButton">Pilih semua</button>
+              <button class="secondary-action" id="selectAllButton">Pilih semua terlihat</button>
               <button class="primary-action compact-action" id="processSelected">Render pilihan</button>
             </div>
           </div>
@@ -224,10 +225,13 @@
             <label>
               <span>Kualitas</span>
               <select id="momentQualityFilter">
+                <option value="qualified" selected>Rekomendasi 70+</option>
                 <option value="all">Semua</option>
-                <option value="excellent">Excellent 85+</option>
-                <option value="good">Good 70-84</option>
-                <option value="review">Review &lt;70</option>
+                <option value="auto">Terpilih otomatis</option>
+                <option value="recommended">Rekomendasi untuk ditinjau</option>
+                <option value="excellent">Unggul 85+</option>
+                <option value="good">Bagus 70-84</option>
+                <option value="review">Tinjau &lt;70</option>
                 <option value="selected">Dipilih</option>
               </select>
             </label>
@@ -251,7 +255,7 @@
                 <div class="review-subtitle-preview" id="reviewSubtitlePreview">Subtitle preview akan tampil di sini</div>
               </div>
               <div class="review-editor">
-                <p class="eyebrow">Pre-render review</p>
+                <p class="eyebrow">Tinjau sebelum render</p>
                 <h3 id="reviewClipTitle">Pilih clip untuk preview</h3>
                 <div class="review-meta-row">
                   <span id="reviewScore">Score -</span>
@@ -286,6 +290,16 @@
                 <div class="review-warning" id="reviewWarning">Pilih moment untuk melihat warning cerita.</div>
                 <div class="review-evidence" id="reviewEvidence"></div>
                 <p class="review-reason" id="reviewReason">Alasan pemilihan AI akan tampil di sini.</p>
+                <div class="review-rationale">
+                  <div>
+                    <small>Kekuatan</small>
+                    <p id="reviewStrengths">Belum ada evidence.</p>
+                  </div>
+                  <div>
+                    <small>Perlu ditinjau</small>
+                    <p id="reviewWeaknesses">Belum ada evidence.</p>
+                  </div>
+                </div>
                 <div class="review-transcript" id="reviewTranscript">Transcript moment akan tampil di sini.</div>
                 <div class="action-row review-actions">
                   <button class="secondary-action" id="reviewPlayPause">Play/Pause</button>
@@ -301,15 +315,22 @@
         </section>
 
         <section class="view" id="view-render">
+          <div class="render-error-banner" id="renderErrorBanner" role="alert" hidden>
+            <div>
+              <strong id="renderErrorTitle">Proses gagal</strong>
+              <span id="renderErrorMessage">Periksa detail error di log proses.</span>
+            </div>
+            <button class="secondary-action" id="renderErrorClose" type="button">Tutup</button>
+          </div>
           <div class="render-layout">
             <section class="panel">
               <div class="section-heading flush">
                 <div>
                   <p class="eyebrow">Worker</p>
-                  <h2 id="renderScreenTitle">Processing clips...</h2>
-                  <span class="muted-copy" id="renderScreenSubtitle">Processing clips with selected enhancements.</span>
+                  <h2 id="renderScreenTitle">Menyiapkan proses...</h2>
+                  <span class="muted-copy" id="renderScreenSubtitle">Progress analisis dan render akan tampil di sini.</span>
                 </div>
-              <button class="danger-action" id="cancelJob">Cancel</button>
+              <button class="danger-action" id="cancelJob">Batalkan</button>
               </div>
               <div class="progress-label"><span>Progress</span><strong id="progressPercent">0%</strong></div>
               <div class="meter"><span id="progressBar"></span></div>
@@ -352,11 +373,12 @@
 
           <div class="settings-tabs" role="tablist" aria-label="Settings sections">
             <button class="settings-tab active" data-settings-tab="api">API</button>
-            <button class="settings-tab" data-settings-tab="runtime">Plugin & Runtime</button>
+            <button class="settings-tab" data-settings-tab="runtime">System</button>
+            <button class="settings-tab" data-settings-tab="editing">AI Editing</button>
             <button class="settings-tab" data-settings-tab="output">Output</button>
             <button class="settings-tab" data-settings-tab="subtitle">Subtitle</button>
             <button class="settings-tab" data-settings-tab="watermark">Watermark</button>
-            <button class="settings-tab" data-settings-tab="cookies">Cookies Manager</button>
+            <button class="settings-tab" data-settings-tab="cookies">YouTube Session</button>
           </div>
 
           <div class="settings-panel active" id="settings-api">
@@ -375,12 +397,22 @@
               <p class="eyebrow">Connection</p>
               <h2>Endpoint utama</h2>
               <input id="providerType" type="hidden" value="cloud" />
+              <div class="field provider-selector-field">
+                <span>Provider</span>
+                <div class="provider-choice-grid cloud-only-choice">
+                  <label class="provider-card active" data-provider="cloud">
+                    <input type="radio" name="providerTypeRadios" value="cloud" checked />
+                    <strong>Cliper AI Cloud</strong>
+                    <small>Recommended</small>
+                  </label>
+                </div>
+              </div>
               <label class="field">
-                <span>AI provider</span>
-                <input id="baseUrl" value="https://api.cliper.cloud/v1" readonly />
+                <span>Endpoint</span>
+                <input id="baseUrl" value="http://127.0.0.1:4100/v1" readonly />
               </label>
               <label class="field">
-                <span>Cliper AI Cloud API key</span>
+                <span>API Key</span>
                 <div class="api-key-field">
                   <input id="apiKey" type="password" placeholder="clip_sk_xxxxxxxxx" />
                   <button class="icon-button api-eye-button" id="toggleApiKeyVisibility" type="button" title="Tampilkan API key">
@@ -389,9 +421,9 @@
                 </div>
               </label>
               <label class="field">
-                <span>Model routing</span>
+                <span>Model</span>
                 <input id="highlightModel" value="auto" readonly />
-                <small>Model dipilih otomatis oleh Cliper AI Cloud sesuai tugas dan biaya.</small>
+                <small id="modelHelpText">Model dipilih otomatis oleh Cliper AI Cloud sesuai tugas dan biaya.</small>
               </label>
               <div class="provider-status-box" id="providerStatusBox">
                 <span>Status</span>
@@ -400,7 +432,7 @@
               <div class="ai-usage-card">
                 <span>Today</span>
                 <strong id="aiTokenSummary">0 input / 0 output tokens</strong>
-                <em id="aiCostSummary">Estimated cost: Rp 0</em>
+                <em id="aiCostSummary">Billing dan biaya provider dihitung oleh Cliper Cloud</em>
               </div>
               <div class="action-row">
                 <button class="primary-action" id="testApiButton" type="button">Hubungkan &amp; Test Cloud</button>
@@ -410,21 +442,42 @@
 
           <div class="settings-panel" id="settings-runtime">
             <section class="panel settings-form">
-              <p class="eyebrow">GPU acceleration</p>
-              <h2>Device & Runtime</h2>
-              <div class="info-row"><span>Detected GPU</span><strong id="detectedGpu">Detect untuk membaca GPU</strong></div>
-              <label class="toggle-row"><input id="gpuToggle" type="checkbox" checked /> Enable GPU acceleration</label>
-              <div class="info-row"><span>Active encoder</span><strong id="activeEncoder">CPU fallback - libx264</strong></div>
-              <button class="secondary-action" id="detectGpuButton">Detect GPU</button>
+              <p class="eyebrow">Performance</p>
+              <h2>Performa perangkat</h2>
+              <p class="panel-copy">Cliper memakai akselerasi perangkat bila tersedia dan otomatis kembali ke CPU yang stabil bila diperlukan.</p>
+              <div class="info-row"><span>Perangkat grafis</span><strong id="detectedGpu">Periksa untuk membaca perangkat</strong></div>
+              <label class="toggle-row"><input id="gpuToggle" type="checkbox" checked /> Gunakan akselerasi perangkat jika tersedia</label>
+              <div class="info-row"><span>Mesin render</span><strong id="activeEncoder">CPU stabil - libx264</strong></div>
+              <button class="secondary-action" id="detectGpuButton">Periksa perangkat</button>
             </section>
             <section class="panel">
-              <p class="eyebrow">Plugin & Runtime</p>
-              <h2>Dependency status</h2>
+              <p class="eyebrow">System status</p>
+              <h2>Kesiapan Cliper Studio</h2>
+              <p class="panel-copy">Periksa komponen yang dipakai Cliper untuk mengunduh, memahami, mengedit, dan mengekspor video di perangkat ini.</p>
               <div class="runtime-list" id="runtimeList"></div>
+              <p class="runtime-install-status" id="runtimeInstallStatus" role="status">Pemeriksaan sistem belum dijalankan.</p>
               <div class="action-row">
-                <button class="secondary-action" id="checkDependencyButton">Check ulang</button>
-                <button class="secondary-action" id="openRuntimeGuide">Buka panduan</button>
+                <button class="primary-action" id="installRuntimeButton">Siapkan sistem</button>
+                <button class="secondary-action" id="checkDependencyButton">Periksa semua</button>
+                <button class="secondary-action" id="openRuntimeGuide">Panduan</button>
               </div>
+            </section>
+          </div>
+
+          <div class="settings-panel" id="settings-editing">
+            <section class="panel settings-form">
+              <p class="eyebrow">AI Editing</p>
+              <h2>Natural edit controls</h2>
+              <label class="toggle-row"><input id="smartCropToggle" type="checkbox" checked /> Smart portrait crop</label>
+              <label class="toggle-row"><input id="faceTrackToggle" type="checkbox" checked /> Human-aware tracking</label>
+              <label class="toggle-row"><input id="dynamicZoomToggle" type="checkbox" checked /> Intentional dynamic zoom</label>
+              <label class="toggle-row"><input id="autoCutToggle" type="checkbox" checked /> Natural boundary trim</label>
+            </section>
+            <section class="panel settings-form">
+              <p class="eyebrow">Quality</p>
+              <h2>Audio and picture</h2>
+              <label class="toggle-row"><input id="audioEnhanceToggle" type="checkbox" checked /> Dialog enhancement</label>
+              <label class="toggle-row"><input id="autoVideoEnhancementToggle" type="checkbox" checked /> Natural video enhancement</label>
             </section>
           </div>
 
@@ -449,10 +502,6 @@
                 <span>FFprobe path</span>
                 <input id="ffprobePath" placeholder="C:\\ffmpeg\\bin\\ffprobe.exe atau PATH" />
               </label>
-              <label class="toggle-row"><input id="overwriteExisting" type="checkbox" /> Overwrite existing files</label>
-              <label class="toggle-row"><input id="autoRename" type="checkbox" checked /> Auto rename duplicates</label>
-              <label class="toggle-row"><input id="createProjectFolder" type="checkbox" checked /> Create project folder</label>
-              <label class="toggle-row"><input id="deleteTempAfterExport" type="checkbox" checked /> Delete temp files after export</label>
               <label class="field">
                 <span>Quality preset</span>
                 <select id="outputQualityProfile">
@@ -503,8 +552,9 @@
             <section class="panel settings-form visual-editor-panel">
               <p class="eyebrow">Subtitle & Hook</p>
               <h2>Subtitle style editor</h2>
-              <label class="toggle-row"><input id="subtitleBurnToggle" type="checkbox" /> Burn subtitle to video</label>
-              <label class="toggle-row"><input id="hookOpeningToggle" type="checkbox" /> Show hook opening</label>
+              <label class="toggle-row"><input id="subtitleBurnToggle" type="checkbox" checked /> Burn subtitle to video</label>
+              <label class="toggle-row"><input id="hookOpeningToggle" type="checkbox" checked /> Show hook opening</label>
+              <label class="toggle-row"><input id="ttsHookToggle" type="checkbox" disabled /> Hook voice (TTS) <small id="ttsHookStatus">Menunggu validasi suara</small></label>
               <label class="toggle-row"><input id="subtitleWordHighlightToggle" type="checkbox" checked /> Word highlight</label>
               <div class="editor-grid">
                 <label class="field">
@@ -541,8 +591,8 @@
                   </div>
                 </label>
                 <label class="range-field">
-                  <span>Font size</span>
-                  <input id="subtitleFontSize" type="range" min="32" max="96" value="60" />
+                  <span class="range-label">Font size <output id="subtitleFontSizeValue">84 px</output></span>
+                  <input id="subtitleFontSize" type="range" min="40" max="128" value="84" />
                 </label>
                 <label class="field">
                   <span>Animation</span>
@@ -569,29 +619,34 @@
                   <span>Active word color</span>
                   <select id="subtitleActiveColor">
                     <option value="#19ff47">Hijau</option>
-                    <option value="#ffe600">Kuning</option>
+                    <option value="#ffe600" selected>Kuning</option>
                     <option value="#4da3ff">Biru</option>
                     <option value="#ff4d4d">Merah</option>
                     <option value="#ffffff">Putih</option>
                   </select>
                 </label>
                 <label class="color-field"><span>Stroke</span><input id="subtitleStrokeColor" type="color" value="#000000" /></label>
-                <label class="range-field"><span>Shadow</span><input id="subtitleShadow" type="range" min="0" max="8" value="4" /></label>
+                <label class="range-field"><span>Shadow</span><input id="subtitleShadow" type="range" min="0" max="8" value="3" /></label>
               </div>
+              <input id="subtitlePreset" type="hidden" value="capcut" />
+              <input id="subtitleLetterSpacing" type="hidden" value="1.1" />
+              <input id="subtitleX" type="hidden" value="50" />
+              <input id="subtitleY" type="hidden" value="82" />
               <div class="preset-row">
-                <button type="button" data-subtitle-preset="opus">Opus</button>
-                <button type="button" data-subtitle-preset="capcut">CapCut</button>
-                <button type="button" data-subtitle-preset="tiktok">TikTok</button>
-                <button type="button" data-subtitle-preset="news">News</button>
-                <button type="button" data-subtitle-preset="podcast">Podcast</button>
-                <button type="button" data-subtitle-preset="gaming">Gaming</button>
+                <button type="button" data-subtitle-preset="opus" aria-pressed="false" title="Karaoke hijau dengan pop cepat">Opus</button>
+                <button class="active" type="button" data-subtitle-preset="capcut" aria-pressed="true" title="Highlight kuning dengan scale halus">CapCut</button>
+                <button type="button" data-subtitle-preset="tiktok" aria-pressed="false" title="Teks besar dengan bounce responsif">TikTok</button>
+                <button type="button" data-subtitle-preset="news" aria-pressed="false" title="Subtitle bersih dengan fade">News</button>
+                <button type="button" data-subtitle-preset="podcast" aria-pressed="false" title="Subtitle podcast yang tenang dan stabil">Podcast</button>
+                <button type="button" data-subtitle-preset="gaming" aria-pressed="false" title="Teks besar dengan aksen kuning dan bounce">Gaming</button>
               </div>
             </section>
             <section class="panel preview-editor-panel">
-              <p class="eyebrow">Live preview</p>
-              <div class="phone-preview subtitle-phone-preview">
+              <p class="eyebrow">Preview output</p>
+              <div class="phone-preview subtitle-phone-preview" id="subtitlePreviewFrame">
                 <div class="subtitle-preview-text" id="subtitlePreviewText">TAPI <span>GUE</span> HERAN</div>
               </div>
+              <p class="muted-copy">Geser subtitle langsung pada frame. Ukuran, posisi, outline, dan spacing memakai skala output yang sama saat render.</p>
             </section>
           </div>
 
@@ -609,9 +664,9 @@
                 </div>
               </label>
               <div class="editor-grid">
-                <label class="range-field"><span>Logo size</span><input id="logoScale" type="range" min="8" max="60" value="18" /></label>
-                <label class="range-field"><span>Logo opacity</span><input id="logoOpacity" type="range" min="10" max="100" value="90" /></label>
-                <label class="range-field"><span>Logo rotation</span><input id="logoRotation" type="range" min="-45" max="45" value="0" /></label>
+                <label class="range-field"><span class="range-label">Logo size <output id="logoScaleValue">18%</output></span><input id="logoScale" type="range" min="8" max="60" value="18" /></label>
+                <label class="range-field"><span class="range-label">Logo opacity <output id="logoOpacityValue">90%</output></span><input id="logoOpacity" type="range" min="10" max="100" value="90" /></label>
+                <label class="range-field"><span class="range-label">Logo rotation <output id="logoRotationValue">0°</output></span><input id="logoRotation" type="range" min="-45" max="45" value="0" /></label>
                 <label class="field">
                   <span>Text watermark</span>
                   <input id="watermarkText" placeholder="@channel atau brand" />
@@ -627,8 +682,8 @@
                     <button class="secondary-action" id="chooseWatermarkFont" type="button">Upload</button>
                   </div>
                 </label>
-                <label class="range-field"><span>Text size</span><input id="watermarkTextSize" type="range" min="16" max="72" value="28" /></label>
-                <label class="range-field"><span>Text opacity</span><input id="watermarkOpacity" type="range" min="10" max="100" value="68" /></label>
+                <label class="range-field"><span class="range-label">Text size <output id="watermarkTextSizeValue">42 px</output></span><input id="watermarkTextSize" type="range" min="20" max="96" value="42" /></label>
+                <label class="range-field"><span class="range-label">Text opacity <output id="watermarkOpacityValue">68%</output></span><input id="watermarkOpacity" type="range" min="10" max="100" value="68" /></label>
                 <label class="color-field"><span>Text color</span><input id="watermarkTextColor" type="color" value="#ffffff" /></label>
                 <label class="color-field"><span>Stroke</span><input id="watermarkTextStroke" type="color" value="#000000" /></label>
                 <label class="range-field"><span>Shadow</span><input id="watermarkTextShadow" type="range" min="0" max="8" value="2" /></label>
@@ -644,19 +699,19 @@
                 <button type="button" data-brand-preset="bottom-center">Bottom Center</button>
                 <button type="button" data-brand-preset="bottom-right">Bottom Right</button>
               </div>
-              <input id="logoX" type="hidden" value="82" />
-              <input id="logoY" type="hidden" value="8" />
-              <input id="watermarkTextX" type="hidden" value="78" />
-              <input id="watermarkTextY" type="hidden" value="16" />
+              <input id="logoX" type="hidden" value="84" />
+              <input id="logoY" type="hidden" value="12" />
+              <input id="watermarkTextX" type="hidden" value="82" />
+              <input id="watermarkTextY" type="hidden" value="20" />
               <input id="watermarkPosition" type="hidden" value="Top right" />
             </section>
             <section class="panel preview-editor-panel">
-              <p class="eyebrow">Preview 9:16</p>
+              <p class="eyebrow">Preview output</p>
               <div class="phone-preview brand-phone-preview" id="brandPreviewFrame">
                 <img id="brandPreviewLogo" alt="Logo preview" />
                 <div class="brand-preview-text" id="brandPreviewText">@cliperai</div>
               </div>
-              <p class="muted-copy">Geser logo atau text langsung pada preview. Posisi tersimpan sebagai persentase frame 9:16.</p>
+              <p class="muted-copy">Geser logo atau teks langsung pada frame. Posisi dan ukuran mengikuti output final, termasuk 720p, 1080p, 2K, dan 4K.</p>
             </section>
           </div>
 
@@ -664,29 +719,29 @@
             <section class="panel cookies-summary">
               <div class="panel-heading">
                 <div>
-                  <p class="eyebrow">Cookies Manager</p>
-                  <h2 id="cookiesStatusTitle">Cookies belum dipasang</h2>
+                  <p class="eyebrow">YouTube Session</p>
+                  <h2 id="cookiesStatusTitle">Session belum tersedia</h2>
                 </div>
                 <span class="status-pill" id="cookiesStatusBadge">Belum dipasang</span>
               </div>
               <div class="cookies-dropzone" id="cookiesDropZone">
-                <strong>Import cookies.txt</strong>
-                <span>Drag & drop file di sini atau klik Import Cookies. Aplikasi hanya menyimpan lokasi file, bukan isi cookies.</span>
+                <strong>Import atau perbarui session</strong>
+                <span>Drag & drop cookies.txt atau klik Update Session. Salinan dilindungi akses file OS, disimpan lokal, dan tidak dikirim ke Cliper Cloud.</span>
               </div>
               <div class="cookie-info-grid">
                 <div><span>Nama file</span><strong id="cookiesFileName">-</strong></div>
                 <div><span>Ukuran</span><strong id="cookiesFileSize">-</strong></div>
-                <div><span>Tanggal import</span><strong id="cookiesImportDate">-</strong></div>
+                <div><span>Terakhir diperbarui</span><strong id="cookiesImportDate">-</strong></div>
                 <div><span>Terakhir dipakai</span><strong id="cookiesLastUsed">-</strong></div>
-                <div><span>Umur cookies</span><strong id="cookiesAge">-</strong></div>
-                <div><span>Status test</span><strong id="cookiesTestStatus">Belum dites</strong></div>
-                <div><span>Test URL</span><strong id="cookiesTestUrl">-</strong></div>
+                <div><span>Umur session</span><strong id="cookiesAge">-</strong></div>
+                <div><span>Pemeriksaan terakhir</span><strong id="cookiesTestStatus">Belum diperiksa</strong></div>
+                <div><span>Sumber</span><strong id="cookiesTestUrl">-</strong></div>
               </div>
               <div class="action-row">
-                <button class="primary-action" id="importCookiesButton">Import Cookies</button>
-                <button class="secondary-action" id="replaceCookiesButton">Ganti Cookies</button>
-                <button class="secondary-action" id="testCookiesButton">Test Cookies</button>
-                <button class="danger-action" id="removeCookiesButton">Hapus</button>
+                <button class="primary-action" id="importCookiesButton">Update Session</button>
+                <button class="secondary-action" id="replaceCookiesButton">Import File</button>
+                <button class="secondary-action" id="testCookiesButton">Periksa Session</button>
+                <button class="danger-action" id="removeCookiesButton">Hapus Session</button>
               </div>
             </section>
 
@@ -723,16 +778,16 @@
             </section>
 
             <section class="panel reminder-card">
-              <p class="eyebrow">Reminder</p>
-              <h2>Perbarui cookies setiap sekitar 1 minggu</h2>
-              <p>Cookies browser dapat berubah setelah logout akun, login ulang, browser update, atau Google refresh session. Jika mulai banyak video gagal didownload, export ulang cookies terbaru.</p>
+              <p class="eyebrow">Session lifecycle</p>
+              <h2>Perbarui hanya saat autentikasi benar-benar gagal</h2>
+              <p>Satu session dipakai untuk banyak video dan tetap tersedia setelah aplikasi atau worker dimulai ulang. HTTP 403 umum tidak otomatis dianggap sebagai session kadaluarsa.</p>
             </section>
           </div>
         </section>
       </main>
     </div>
 
-    <div class="toast" id="toast" role="status"></div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="./app.js"></script>
   </body>
 </html>

@@ -7,6 +7,9 @@ dist-beta3/
 # Local render fixtures and generated media are intentionally not versioned.
 qa-render-output*/
 qa-render-payload*.json
+Local Test Builds/
+PC-LAIN-TEST/
+.git-local-backup/
 
 # Cliper AI Cloud is maintained as its own nested Git repository.
 WEB PRODUCTION SAAS/
@@ -20,8 +23,18 @@ worker/*_backup.py
 
 .env
 .env.local
+# YouTube session credentials are local-only and must never enter Git.
+**/auth/youtube/
+**/cookies.txt
+**/*.cookies
+**/session-meta.json
+# Never keep pasted provider/API credentials as local text files.
+sk-*.txt
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
 builder-debug.yml
+
+.vercel
+.env*

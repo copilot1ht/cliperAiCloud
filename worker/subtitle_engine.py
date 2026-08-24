@@ -40,7 +40,11 @@ def srt_time(seconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
-def subtitle_phrase_chunks(text, max_chars=38, max_words=6):
+CAPTION_MAX_CHARS = 32
+CAPTION_MAX_WORDS = 5
+
+
+def subtitle_phrase_chunks(text, max_chars=CAPTION_MAX_CHARS, max_words=CAPTION_MAX_WORDS):
     text = clean_text(text)
     if not text:
         return []
@@ -73,7 +77,7 @@ def subtitle_phrase_chunks(text, max_chars=38, max_words=6):
     return merged
 
 
-def timed_chunks_for_segment(start, end, text, max_chars=38, max_words=6):
+def timed_chunks_for_segment(start, end, text, max_chars=CAPTION_MAX_CHARS, max_words=CAPTION_MAX_WORDS):
     chunks = subtitle_phrase_chunks(text, max_chars=max_chars, max_words=max_words)
     if not chunks:
         return []
@@ -94,6 +98,59 @@ def timed_chunks_for_segment(start, end, text, max_chars=38, max_words=6):
         if cursor >= float(end):
             break
     return events
+
+
+def chunk_word_items(words, max_chars=CAPTION_MAX_CHARS, max_words=CAPTION_MAX_WORDS):
+    """Keep a word-aligned caption inside the 9:16 safe text width.
+
+    Whisper can return an entire spoken sentence as one segment with perfectly
+    good word timestamps. Rendering that sentence as one karaoke event lets
+    libass wrap it unpredictably, which can push text beyond the portrait
+    frame. Split only between words, retain their timestamps, and let the
+    renderer switch to the next compact phrase at the next spoken word.
+    """
+    chunks = []
+    current = []
+
+    def flush():
+        nonlocal current
+        if current:
+            chunks.append(current)
+            current = []
+
+    for raw_item in words or []:
+        if not isinstance(raw_item, dict):
+            continue
+        word = clean_text(raw_item.get("word") or "")
+        if not word:
+            continue
+        item = dict(raw_item)
+        item["word"] = word
+        proposed = current + [item]
+        proposed_text = " ".join(entry["word"] for entry in proposed)
+        if current and (len(proposed) > max_words or len(proposed_text) > max_chars):
+            flush()
+        current.append(item)
+        if re.search(r"[,.!?…:]$", word) and (len(current) >= 3 or len(" ".join(entry["word"] for entry in current)) >= 14):
+            flush()
+    flush()
+
+    # Avoid a one-word flash at the end when it can safely belong to the
+    # preceding phrase. Never merge past the same width limits used above.
+    merged = []
+    for chunk in chunks:
+        chunk_text = " ".join(entry["word"] for entry in chunk)
+        if merged:
+            previous_text = " ".join(entry["word"] for entry in merged[-1])
+            if (
+                len(chunk) <= 1
+                and len(merged[-1]) + len(chunk) <= max_words
+                and len(f"{previous_text} {chunk_text}") <= max_chars
+            ):
+                merged[-1].extend(chunk)
+                continue
+        merged.append(chunk)
+    return merged
 
 
 def ass_color(value, fallback="#ffffff"):
@@ -176,13 +233,19 @@ class SubtitleEngine:
 
     def finalize_events(self, events, duration):
         finalized = []
-        last_end = 0.0
         duration = max(0.1, float(duration or 0.1))
         for item in sorted(events or [], key=lambda event: float(event.get("start") or 0.0)):
             start = max(0.0, float(item.get("start") or 0.0))
             end = min(duration, float(item.get("end") or start))
-            if start < last_end:
-                start = last_end
+            if finalized and start < float(finalized[-1]["end"]):
+                # Lead padding may overlap adjacent captions. Keep the new
+                # caption locked to its audio and trim the previous caption,
+                # otherwise small corrections accumulate into visible drift.
+                previous = finalized[-1]
+                if start - float(previous["start"]) >= 0.18:
+                    previous["end"] = round(start, 3)
+                else:
+                    start = float(previous["end"])
             if end <= start:
                 end = min(duration, start + 0.24)
             if end - start < 0.18:
@@ -191,8 +254,18 @@ class SubtitleEngine:
             next_item["start"] = round(start, 3)
             next_item["end"] = round(end, 3)
             finalized.append(next_item)
-            last_end = end
         return finalized
+
+    @staticmethod
+    def is_exact_timeline_duplicate(event, events):
+        if not events:
+            return False
+        previous = events[-1]
+        return (
+            clean_text(previous.get("text") or "").lower() == clean_text(event.get("text") or "").lower()
+            and abs(float(previous.get("start") or 0.0) - float(event.get("start") or 0.0)) <= 0.03
+            and abs(float(previous.get("end") or 0.0) - float(event.get("end") or 0.0)) <= 0.03
+        )
 
     def normalize_segments(self, moment, transcript, duration):
         duration = max(0.1, float(duration or 0.1))
@@ -256,29 +329,46 @@ class SubtitleEngine:
 
     def build_events(self, moment, transcript, duration, fallback_text="", max_events=32):
         events = []
-        seen = set()
         for segment in self.normalize_segments(moment, transcript, duration):
             if segment.get("words"):
-                key = clean_text(segment["text"]).lower()
-                if key and key not in seen:
-                    events.append({
-                        "start": segment["start"],
-                        "end": segment["end"],
-                        "text": segment["text"],
+                # Do not make one full transcript segment a single karaoke
+                # caption. A segment can contain 20+ words, while the visual
+                # style permits only two compact lines in portrait output.
+                word_chunks = chunk_word_items(segment.get("words") or [])
+                for chunk_index, word_chunk in enumerate(word_chunks):
+                    start = max(float(segment["start"]), float(word_chunk[0].get("start") or segment["start"]))
+                    spoken_end = float(word_chunk[-1].get("end") or segment["end"])
+                    if chunk_index + 1 < len(word_chunks):
+                        # Keep the fully read phrase visible until the next
+                        # compact phrase starts; finalize_events trims this
+                        # boundary safely if lead padding overlaps it.
+                        next_start = float(word_chunks[chunk_index + 1][0].get("start") or spoken_end)
+                        end = min(float(segment["end"]), max(spoken_end, next_start))
+                    else:
+                        # Keep the last phrase through the segment end pad so
+                        # the final active word can return to its neutral
+                        # color instead of disappearing abruptly.
+                        end = float(segment["end"])
+                    if end <= start:
+                        continue
+                    event = {
+                        "start": round(start, 3),
+                        "end": round(end, 3),
+                        "text": clean_text(" ".join(item.get("word") or "" for item in word_chunk)),
                         "speaker_id": segment.get("speaker_id") or "",
-                        "words": segment.get("words") or [],
-                    })
-                    seen.add(key)
+                        "words": word_chunk,
+                    }
+                    if not self.is_exact_timeline_duplicate(event, events):
+                        events.append(event)
                     if len(events) >= max_events:
                         return self.finalize_events(events, duration)
                 continue
             for event in timed_chunks_for_segment(segment["start"], segment["end"], segment["text"]):
-                key = clean_text(event["text"]).lower()
-                if not key or key in seen:
+                if not clean_text(event["text"]):
                     continue
                 event["speaker_id"] = segment.get("speaker_id") or ""
-                events.append(event)
-                seen.add(key)
+                if not self.is_exact_timeline_duplicate(event, events):
+                    events.append(event)
                 if len(events) >= max_events:
                     return self.finalize_events(events, duration)
         if events:

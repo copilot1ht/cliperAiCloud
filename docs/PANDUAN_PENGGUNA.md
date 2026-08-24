@@ -1,6 +1,6 @@
 # Panduan Pengguna Cliper Studio Plus
 
-Versi panduan: 1.10.0-beta.3
+Versi panduan: 1.11.0
 Platform: Windows 10/11 64-bit
 
 Panduan ini menjelaskan persiapan PC, instalasi dependency, konfigurasi Custom AI, pencarian highlight, subtitle, render, cookies, dan troubleshooting.
@@ -103,8 +103,12 @@ python -m pip install --user -r requirements-runtime.txt
 Atau gunakan helper:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install-runtime.ps1
+powershell -ExecutionPolicy Bypass -File scripts\install-runtime.ps1 -InstallPython -InstallFFmpeg -InstallNode
 ```
+
+Cara paling mudah pada PC baru adalah membuka `Settings > Plugin & Runtime`,
+lalu klik `Install otomatis`. Aplikasi memasang Python, FFmpeg, Node.js, dan
+library worker yang belum tersedia. Setelah selesai, klik `Check ulang`.
 
 ### C. FFmpeg dan FFprobe
 
@@ -162,7 +166,7 @@ Windows SmartScreen dapat memberi peringatan karena build beta belum memiliki se
 Di halaman Studio:
 
 ```text
-Jumlah clip       : Auto atau 3-6
+Jumlah rekomendasi: 0 untuk semua rekomendasi layak, atau 3-6 untuk proses cepat
 Durasi minimum    : 30 detik
 Durasi target     : 60-75 detik
 Durasi maksimum   : 120 detik

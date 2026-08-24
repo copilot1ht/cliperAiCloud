@@ -1,22 +1,31 @@
-import re
-
-
 class SpeakerEngine:
     def assign_transcript_speakers(self, transcript):
         speakers = []
-        previous_speaker = "A"
+        previous_speaker = ""
         for item in transcript or []:
             text = str(item.get("text") or "")
             lower = text.lower()
-            if re.search(r"\b(gue|gua|aku|saya)\b", lower):
-                speaker = "A"
-            elif re.search(r"\b(lo|lu|kamu|anda|dia)\b", lower):
-                speaker = "B"
-            else:
-                speaker = previous_speaker
-            previous_speaker = speaker
+            explicit_speaker = str(
+                item.get("speaker_id")
+                or item.get("speaker")
+                or item.get("speaker_label")
+                or ""
+            ).strip()
+            # Pronouns identify who is being discussed, not who is speaking.
+            # The old aku/kamu heuristic frequently switched the camera to a
+            # nonexistent speaker. Preserve diarization labels when available;
+            # otherwise hold the last known speaker until audio/visual evidence
+            # supplies a real identity.
+            speaker = explicit_speaker or previous_speaker
+            if explicit_speaker:
+                previous_speaker = explicit_speaker
             enriched = dict(item)
-            enriched["speaker_id"] = speaker
+            if speaker:
+                enriched["speaker_id"] = speaker
+                enriched["speaker_verified"] = True
+            else:
+                enriched.pop("speaker_id", None)
+                enriched["speaker_verified"] = False
             enriched["emotion_score"] = self._emotion_score(lower)
             enriched["importance_score"] = self._importance_score(lower)
             speakers.append(enriched)

@@ -127,9 +127,36 @@ for (const output of outputs) {
 
   const metadataPath = resolveFromSession(root, output.json);
   const fallbackMetadata = path.join(metadataDir, `${path.basename(mp4, ".mp4")}.json`);
-  if (!metadataPath || !fs.existsSync(metadataPath)) {
-    if (!fs.existsSync(fallbackMetadata)) {
-      fail(`metadata JSON missing for ${path.basename(mp4)}`);
+  const resolvedMetadata = metadataPath && fs.existsSync(metadataPath)
+    ? metadataPath
+    : (fs.existsSync(fallbackMetadata) ? fallbackMetadata : "");
+  if (!resolvedMetadata) {
+    fail(`metadata JSON missing for ${path.basename(mp4)}`);
+  } else {
+    const metadata = readJson(resolvedMetadata);
+    const renderAudit = metadata.render || {};
+    const requiredAuditFields = [
+      "requestedEncoder",
+      "actualEncoder",
+      "fallbackUsed",
+      "fallbackReason"
+    ];
+    for (const field of requiredAuditFields) {
+      if (!(field in renderAudit)) {
+        fail(`render audit field missing (${field}): ${path.basename(resolvedMetadata)}`);
+      }
+    }
+    if (!String(renderAudit.actualEncoder || "").trim()) {
+      fail(`actual encoder is missing: ${path.basename(resolvedMetadata)}`);
+    }
+    if (typeof renderAudit.fallbackUsed !== "boolean") {
+      fail(`fallbackUsed is not boolean: ${path.basename(resolvedMetadata)}`);
+    }
+    if (!renderAudit.fallbackUsed && renderAudit.fallbackReason !== null) {
+      fail(`fallback reason is present without fallback: ${path.basename(resolvedMetadata)}`);
+    }
+    if (renderAudit.fallbackUsed && !String(renderAudit.fallbackReason || "").trim()) {
+      fail(`fallback reason is missing: ${path.basename(resolvedMetadata)}`);
     }
   }
 

@@ -6,7 +6,9 @@ const state = {
   scanCount: 0,
   cookiesPath: "",
   cookiesInfo: null,
+  pendingSessionResume: null,
   config: {},
+  settingsContract: null,
   dependencies: null,
   activeSettingsTab: "api",
   renderStartedAt: null,
@@ -19,18 +21,27 @@ const state = {
   videoDuration: 0,
   previewImageUrl: "",
   momentSearch: "",
-  momentQualityFilter: "all",
+  momentQualityFilter: "qualified",
   momentSort: "score",
   apiLastTestedAt: "",
   apiLastLatencyMs: 0,
   apiLastResponse: "",
+  cloudConnectionOk: false,
+  cloudRouterReady: false,
+  cloudConnectionKeyFingerprint: "",
+  processingError: null,
+  processingRunId: 0,
+  cancelRequested: false,
   aiUsageToday: { date: "", inputTokens: 0, outputTokens: 0, estimatedCostRp: 0 },
+  subtitlePreviewTimer: null,
   logLines: [
     "[ready] Menunggu link YouTube"
   ]
 };
 
-const APP_VERSION = "1.10.0-beta.3";
+let appVersion = "";
+const AUTO_SELECT_MIN_SCORE = 70;
+const MANUAL_RENDER_MIN_SCORE = 65;
 
 let momentBank = [];
 
@@ -56,9 +67,21 @@ const providerTasks = [
   ["aiTitleToggle", "Title maker", "Title, hashtag, description"]
 ];
 
-const aiProviderDefaults = {
-  cloud: { label: "Cliper Cloud Gateway", baseUrl: "https://api.cliper.cloud/v1", model: "auto", requiresKey: true }
+const aiProviders = {
+  cloud: { label: "Cliper AI Cloud", baseUrl: "https://api.cliperaicloud.online/v1", model: "auto", readonly: true }
 };
+const aiProviderDefaults = aiProviders;
+
+function normalizeCloudEndpoint(value) {
+  const fallback = aiProviders.cloud.baseUrl;
+  const candidate = String(value || "").trim().replace(/\/+$/, "");
+  if (!candidate) return fallback;
+  // A clip_sk key belongs to Cliper Cloud, never to a provider API directly.
+  if (/api\.deepseek\.com|api\.openai\.com|generativelanguage\.googleapis\.com/i.test(candidate)) {
+    return fallback;
+  }
+  return candidate;
+}
 
 const PRODUCTION_RENDER_PRESET = {
   smartCrop: true,
@@ -71,6 +94,7 @@ const PRODUCTION_RENDER_PRESET = {
   addTtsHook: false,
   audioEnhance: true,
   autoVideoEnhancement: true,
+  gpuAcceleration: true,
   logoOverlay: false,
   creditText: false,
   exportThumbnailPreview: false,
@@ -115,32 +139,268 @@ const OUTPUT_QUALITY_PRESETS = {
 };
 
 function getProductionRenderPreset() {
-  return { ...PRODUCTION_RENDER_PRESET };
+  const settings = normalizeRendererSettings(state.config);
+  const bindings = state.settingsContract?.uiBindings || {};
+  for (const [setting, elementId] of Object.entries(bindings)) {
+    const node = document.getElementById(elementId);
+    if (node) settings[setting] = Boolean(fieldValue(elementId, settings[setting]));
+  }
+  return {
+    ...PRODUCTION_RENDER_PRESET,
+    ...enforceRendererSettingDependencies(settings)
+  };
+}
+
+function syncRendererSettingDependencies() {
+  const dependencies = state.settingsContract?.dependencies || {};
+  for (const [setting, parent] of Object.entries(dependencies)) {
+    const childId = state.settingsContract?.uiBindings?.[setting];
+    const parentId = state.settingsContract?.uiBindings?.[parent];
+    const child = childId ? document.getElementById(childId) : null;
+    const parentNode = parentId ? document.getElementById(parentId) : null;
+    if (child && parentNode && child !== parentNode) {
+      child.disabled = !Boolean(parentNode.checked);
+    }
+  }
+  const ttsHook = document.getElementById("ttsHookToggle");
+  const ttsAvailable = state.settingsContract?.featureFlags?.ttsTimelineV2 === true;
+  if (ttsHook && !ttsAvailable) {
+    ttsHook.checked = false;
+    ttsHook.disabled = true;
+  }
+  const ttsStatus = document.getElementById("ttsHookStatus");
+  if (ttsStatus) {
+    ttsStatus.textContent = ttsAvailable ? "Tersedia" : "Menunggu validasi suara";
+  }
 }
 
 function getOutputQualityPreset(profile) {
   return OUTPUT_QUALITY_PRESETS[profile] || OUTPUT_QUALITY_PRESETS.balanced;
 }
 
+function settingsContractDefaults() {
+  return {
+    ...PRODUCTION_RENDER_PRESET,
+    ...(state.settingsContract?.defaults || {})
+  };
+}
+
+function booleanSetting(value, fallback) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off", ""].includes(normalized)) return false;
+  }
+  return Boolean(fallback);
+}
+
+function enforceRendererSettingDependencies(settings) {
+  const normalized = { ...settings };
+  const dependencies = state.settingsContract?.dependencies || {
+    dynamicZoom: "smartCrop",
+    faceTrack: "smartCrop",
+    burnSubtitle: "addCaptions",
+    addTtsHook: "addHook"
+  };
+  for (const [setting, parent] of Object.entries(dependencies)) {
+    if (!normalized[parent]) normalized[setting] = false;
+  }
+  return normalized;
+}
+
+function normalizeRendererSettings(source = {}) {
+  const contract = state.settingsContract || {};
+  const defaults = settingsContractDefaults();
+  const nested = source?.rendererSettings && typeof source.rendererSettings === "object"
+    ? source.rendererSettings
+    : {};
+  const names = contract.booleanSettings || Object.keys(defaults).filter(
+    (name) => typeof defaults[name] === "boolean"
+  );
+  const aliases = contract.legacyAliases || {};
+  const normalized = {};
+  for (const name of names) {
+    const candidates = [nested[name], source?.[name]];
+    for (const alias of aliases[name] || []) {
+      candidates.push(nested[alias], source?.[alias]);
+    }
+    const selected = candidates.find((value) => value !== undefined && value !== null);
+    normalized[name] = booleanSetting(selected, defaults[name]);
+  }
+  return enforceRendererSettingDependencies(normalized);
+}
+
+async function loadSettingsContract() {
+  try {
+    const contract = await window.cliper?.getSettingsContract?.();
+    if (
+      contract
+      && Number.isSafeInteger(contract.version)
+      && contract.defaults
+      && Array.isArray(contract.booleanSettings)
+    ) {
+      state.settingsContract = contract;
+      return;
+    }
+  } catch (error) {
+    pushLog(`[settings] contract fallback: ${error.message}`);
+  }
+  state.settingsContract = {
+    version: 1,
+    booleanSettings: Object.keys(PRODUCTION_RENDER_PRESET).filter(
+      (name) => typeof PRODUCTION_RENDER_PRESET[name] === "boolean"
+    ),
+    defaults: { ...PRODUCTION_RENDER_PRESET },
+    uiBindings: {
+      smartCrop: "smartCropToggle",
+      dynamicZoom: "dynamicZoomToggle",
+      faceTrack: "faceTrackToggle",
+      addCaptions: "subtitleBurnToggle",
+      burnSubtitle: "subtitleBurnToggle",
+      autoCut: "autoCutToggle",
+      addHook: "hookOpeningToggle",
+      addTtsHook: "ttsHookToggle",
+      audioEnhance: "audioEnhanceToggle",
+      autoVideoEnhancement: "autoVideoEnhancementToggle",
+      gpuAcceleration: "gpuToggle"
+    },
+    legacyAliases: {
+      addCaptions: ["subtitleBurnToggle"],
+      burnSubtitle: ["subtitleBurnToggle"],
+      addHook: ["hookOpeningToggle"],
+      addTtsHook: ["ttsHookToggle"],
+      audioEnhance: ["audioEnhanceToggle"],
+      gpuAcceleration: ["gpuToggle"]
+    },
+    dependencies: {
+      dynamicZoom: "smartCrop",
+      faceTrack: "smartCrop",
+      burnSubtitle: "addCaptions",
+      addTtsHook: "addHook"
+    },
+    featureFlags: {
+      hookV2: true,
+      ttsTimelineV2: false,
+      momentScoringV2: true,
+      naturalEditDirector: true,
+      twoPersonEditing: true,
+      publishingIntelligence: false,
+      publishingGuard: false
+    }
+  };
+}
+
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
-function toast(message) {
+function selectedProviderType() {
+  return "cloud";
+}
+
+function setSelectedProviderType(type) {
+  type = "cloud";
+  const hidden = $("#providerType");
+  if (hidden) hidden.value = type;
+  $$(".provider-card").forEach((card) => {
+    const isActive = card.dataset.provider === type;
+    card.classList.toggle("active", isActive);
+    const input = card.querySelector("input[type='radio']");
+    if (input) input.checked = isActive;
+  });
+  applyProviderDefaults(false);
+}
+
+function updateTestButtonLabel() {
+  const provider = aiProviders[selectedProviderType()] || aiProviders.cloud;
+  const button = $("#testApiButton");
+  if (button) {
+    button.textContent = provider.readonly ? "Hubungkan & Test Cloud" : "Hubungkan & Test Provider";
+  }
+}
+
+function updateModelHelpText() {
+  const provider = aiProviders[selectedProviderType()] || aiProviders.cloud;
+  const help = $("#modelHelpText");
+  if (!help) return;
+  if (provider.readonly) {
+    help.textContent = "Model dipilih otomatis oleh Cliper AI Cloud sesuai tugas dan biaya.";
+  } else {
+    help.textContent = "Contoh: deepseek-chat, gpt-4.1, o4-mini, claude-sonnet-4, llama3.3, auto.";
+  }
+}
+
+function toast(message, options = {}) {
   const node = $("#toast");
   node.textContent = message;
+  const isError = Boolean(options.error);
+  node.classList.toggle("error", isError);
+  node.setAttribute("role", isError ? "alert" : "status");
+  node.setAttribute("aria-live", isError ? "assertive" : "polite");
   node.classList.add("show");
   clearTimeout(node.timer);
-  node.timer = setTimeout(() => node.classList.remove("show"), 2200);
+  const duration = Number(options.duration) > 0 ? Number(options.duration) : (isError ? 9000 : 2200);
+  node.timer = setTimeout(() => {
+    node.classList.remove("show", "error");
+    node.setAttribute("role", "status");
+    node.setAttribute("aria-live", "polite");
+  }, duration);
+}
+
+function syncProcessingErrorBanner() {
+  const banner = $("#renderErrorBanner");
+  if (!banner) return;
+  const error = state.processingError;
+  // A stale error must not sit above a new active job. The worker status is
+  // the source of truth for whether this banner belongs on screen.
+  const jobIsError = String($("#jobBadge")?.textContent || "").trim().toLowerCase() === "error";
+  const visible = Boolean(error && error.message && jobIsError);
+  banner.hidden = !visible;
+  banner.classList.toggle("is-visible", visible);
+  banner.setAttribute("aria-hidden", visible ? "false" : "true");
+  if (!visible) return;
+  setText("#renderErrorTitle", error.title || "Proses gagal");
+  setText("#renderErrorMessage", error.message);
+}
+
+function clearProcessingError() {
+  state.processingError = null;
+  syncProcessingErrorBanner();
+}
+
+function setProcessingError(message, phase = "analyze") {
+  const cleanMessage = String(message || "Worker gagal tanpa detail error.").trim();
+  state.processingError = {
+    phase,
+    title: phase === "render" ? "Render dihentikan karena error" : "Analisis dihentikan karena error",
+    message: cleanMessage,
+  };
+  syncProcessingErrorBanner();
+}
+
+function showProcessingCancelled(phase = "analyze") {
+  clearInterval(state.processingTimer);
+  state.processingTimer = null;
+  clearProcessingError();
+  $("#jobBadge").textContent = "Cancelled";
+  $("#cancelJob").disabled = true;
+  setText("#renderScreenTitle", phase === "render" ? "Render dibatalkan" : "Analisis dibatalkan");
+  setText("#renderScreenSubtitle", "Proses dihentikan oleh user.");
+  updateRenderStats({ progress: state.progress || 0, stage: "Cancelled" });
 }
 
 function setView(view) {
   state.view = view;
   $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $$(".view").forEach((panel) => panel.classList.toggle("active", panel.id === `view-${view}`));
+  if (view === "render") syncProcessingErrorBanner();
 }
 
 function selectedMoments() {
-  return momentBank.filter((item) => !item.rejected && item.renderEligible !== false && state.selectedMoments.has(item.id));
+  // Score eligibility decides automatic selection only. A creator may still
+  // render any non-rejected candidate after reviewing it manually.
+  return momentBank.filter((item) => !item.rejected && state.selectedMoments.has(item.id));
 }
 
 function parseTimeInput(value, fallback = 0) {
@@ -161,7 +421,7 @@ function activeMoment() {
 }
 
 function videoDurationLimit() {
-  return Math.max(1, Number(state.lastAnalysis?.video?.duration || $("#momentPreviewVideo")?.duration || 0) || 1);
+  return Math.max(1, Number(state.lastAnalysis?.video?.duration || state.videoDuration || $("#momentPreviewVideo")?.duration || 0) || 1);
 }
 
 function normalizeMomentTiming(moment) {
@@ -347,6 +607,8 @@ function renderMomentReview() {
     setText("#reviewClipTitle", "Belum ada moment");
     setText("#reviewScore", "Score -");
     setText("#reviewDuration", "Duration -");
+    setText("#reviewStrengths", "Belum ada evidence.");
+    setText("#reviewWeaknesses", "Belum ada evidence.");
     return;
   }
   normalizeMomentTiming(moment);
@@ -361,21 +623,36 @@ function renderMomentReview() {
     video.currentTime = moment.start;
   }
   setText("#reviewClipTitle", `Clip ${moment.id}: ${moment.title}`);
-  setText("#reviewScore", `Score ${moment.score}/100`);
-  setText("#reviewReason", moment.reason || "Kandidat dipilih berdasarkan hook, story, payoff, dan retention evidence.");
+  setText(
+    "#reviewScore",
+    moment.hasScoreEvidence ? `Score ${moment.score}/100` : "Score perlu dinilai ulang",
+  );
+  setText(
+    "#reviewReason",
+    moment.reason || "Kandidat dipilih berdasarkan hook, story, payoff, dan retention evidence.",
+  );
+  setText(
+    "#reviewStrengths",
+    (moment.selectionReasons || []).join(" · ") || moment.reason || "Evidence kandidat tersedia untuk ditinjau.",
+  );
+  setText(
+    "#reviewWeaknesses",
+    (moment.weaknesses || []).join(" · ") || "Tidak ada kelemahan kritis yang terdeteksi.",
+  );
   setText("#reviewTranscript", moment.transcript || "Transcript tidak tersedia.");
   const evidence = $("#reviewEvidence");
   if (evidence) {
-    const metrics = moment.metrics || {};
+    const components = momentScoreComponents(moment);
     const items = [
-      ["Hook", metrics.hook],
-      ["Story", metrics.story_complete || metrics.flow],
-      ["Payoff", metrics.payoff],
-      ["Retention", metrics.retention_predictor],
-      ["Emotion", metrics.emotion],
-      ["Conflict", metrics.conflict],
+      ["Hook", components.hook],
+      ["Story", components.story],
+      ["Payoff", components.payoff],
+      ["Retention", components.retention],
+      ["Standalone", components.standalone],
     ];
-    evidence.innerHTML = items.map(([label, value]) => `<span><small>${label}</small><strong>${Number(value || 0) || "-"}</strong></span>`).join("");
+    evidence.innerHTML = items
+      .map(([label, value]) => `<span><small>${label}</small><strong>${formatMomentMetric(value)}</strong></span>`)
+      .join("");
   }
   syncReviewFields(moment);
   updateReviewSubtitle();
@@ -429,8 +706,13 @@ function regenerateActiveMoment() {
     titleSuggestion: text ? text.split(/\s+/).slice(0, 10).join(" ") : `${moment.title} alternatif`,
     ai_selected: false,
     segment_type: "Alternative",
-    reason: "Alternatif lokal dari area dekat moment sebelumnya.",
-    score: Math.max(60, Number(moment.score || 70) - 4),
+    reason: "Alternatif boundary lokal. Jalankan analisa ulang untuk memperoleh score evidence-based.",
+    score: null,
+    metrics: null,
+    scoreProvenance: null,
+    manualReview: true,
+    evidenceGate: false,
+    qualityTier: "review",
     edited: true
   }, momentBank.length, state.lastAnalysis?.video || {});
   moment.rejected = true;
@@ -445,10 +727,11 @@ function regenerateActiveMoment() {
 
 function updateCounters() {
   const count = selectedMoments().length;
+  const duration = Math.max(0, Number(state.videoDuration || state.lastAnalysis?.video?.duration || 0));
   $("#clipCounter").textContent = `${count} clip dipilih`;
-  $("#previewDuration").textContent = state.lastAnalysis
-    ? `${count} clip auto selected`
-    : "Belum dianalisa";
+  $("#previewDuration").textContent = duration
+    ? `${formatDuration(duration)}${state.lastAnalysis ? ` · ${count} clip dipilih` : ""}`
+    : "Durasi belum dimuat";
   $("#captionMetric").textContent = state.lastAnalysis ? ($("#captionStyle") ? $("#captionStyle").value : "Caption aktif") : "Belum diproses";
   updateProcessButtons();
 }
@@ -464,18 +747,68 @@ function aiFeatureConfig() {
 }
 
 function momentQuality(item) {
-  if (item.score >= 85) return { key: "excellent", label: "Excellent" };
-  if (item.score >= 70) return { key: "good", label: "Good" };
-  return { key: "review", label: "Review" };
+  const tier = String(item.qualityTier || item.quality_tier || "").trim().toLowerCase();
+  if (tier === "strong") return { key: "excellent", label: "Unggul" };
+  if (tier === "good") return { key: "good", label: "Bagus" };
+  if (tier === "review") return { key: "review", label: "Tinjau" };
+  if (tier === "reject") return { key: "reject", label: "Tidak layak" };
+
+  const evidenceGate = item.evidenceGate ?? item.evidence_gate;
+  if (item.manualReview || evidenceGate === false) return { key: "review", label: "Tinjau" };
+  if (item.score >= 85) return { key: "excellent", label: "Unggul" };
+  if (item.score >= 70) return { key: "good", label: "Bagus" };
+  return { key: "review", label: "Tinjau" };
 }
 
+function formatMomentMetric(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? String(Math.round(numeric)) : "-";
+}
+
+function momentScoreComponents(item) {
+  const metrics = item?.metrics && typeof item.metrics === "object" ? item.metrics : {};
+  const provenance = item?.scoreProvenance || item?.score_provenance || metrics.score_provenance || {};
+  const scorecard = metrics.scorecard || provenance.scorecard || {};
+  const arc = scorecard.arc && typeof scorecard.arc === "object" ? scorecard.arc : {};
+  const dimensions = item?.qualityDimensions || metrics.quality_dimensions || scorecard.dimensions || {};
+
+  return {
+    hook: dimensions.hookPotential ?? metrics.hook,
+    story: dimensions.storyCompleteness ?? metrics.story_complete ?? metrics.flow,
+    payoff: dimensions.payoffStrength ?? metrics.payoff ?? arc.payoff,
+    retention: dimensions.retentionPotential ?? metrics.retention_predictor ?? arc.retention_proxy,
+    standalone: dimensions.contextClarity ?? metrics.standalone ?? arc.standalone,
+  };
+}
+
+function momentReviewLabel(item) {
+  const reviewerStatus = String(item?.reviewer_status || item?.reviewerStatus || "").trim().toLowerCase();
+  if (reviewerStatus === "approved") return "AI review tersedia";
+  if (reviewerStatus === "unavailable" || reviewerStatus === "missing") return "AI review tidak tersedia";
+  if (item?.ai_selected) return "Dipilih AI";
+  return "Evidence lokal";
+}
+
+function applyMomentDisplayPolicy() {
+  const visible = momentBank.filter((item) => !item.rejected);
+  const qualified = visible.filter((item) =>
+    ["excellent", "good"].includes(momentQuality(item).key)
+  );
+  state.momentQualityFilter = qualified.length ? "qualified" : "all";
+  const control = $("#momentQualityFilter");
+  if (control) control.value = state.momentQualityFilter;
+}
 function filteredMoments() {
   const query = String(state.momentSearch || "").trim().toLowerCase();
   const qualityFilter = state.momentQualityFilter || "all";
   const items = momentBank.filter((item) => {
     if (item.rejected) return false;
+    if (momentQuality(item).key === "reject") return false;
     if (qualityFilter === "selected" && !state.selectedMoments.has(item.id)) return false;
-    if (!["all", "selected"].includes(qualityFilter) && momentQuality(item).key !== qualityFilter) return false;
+    if (qualityFilter === "auto" && !item.autoRender) return false;
+    if (qualityFilter === "recommended" && (item.autoRender || !item.renderEligible)) return false;
+    if (qualityFilter === "qualified" && !["excellent", "good"].includes(momentQuality(item).key)) return false;
+    if (!["all", "selected", "auto", "recommended", "qualified"].includes(qualityFilter) && momentQuality(item).key !== qualityFilter) return false;
     if (!query) return true;
     const haystack = `${item.title || ""} ${item.hook || ""} ${item.transcript || ""} ${item.topic || ""} ${item.category || ""}`.toLowerCase();
     return haystack.includes(query);
@@ -493,7 +826,15 @@ function filteredMoments() {
 function renderMoments() {
   const grid = $("#momentGrid");
   const visibleMoments = filteredMoments();
-  setText("#momentResultCount", `${visibleMoments.length} kandidat`);
+  const eligibleMoments = momentBank.filter((item) => !item.rejected && item.renderEligible);
+  const autoCount = eligibleMoments.filter((item) => item.autoRender).length;
+  const reviewCount = eligibleMoments.filter((item) => !item.autoRender).length;
+  setText("#momentResultCount", `${autoCount} otomatis · ${reviewCount} rekomendasi · ${visibleMoments.length} tampil`);
+  const selectAllButton = $("#selectAllButton");
+  if (selectAllButton) {
+    const allVisibleSelected = visibleMoments.length > 0 && visibleMoments.every((item) => state.selectedMoments.has(item.id));
+    selectAllButton.textContent = allVisibleSelected ? "Kosongkan terlihat" : "Pilih semua terlihat";
+  }
   if (visibleMoments.length === 0) {
     const analysisFinished = Boolean(state.lastAnalysis);
     grid.innerHTML = `
@@ -509,34 +850,37 @@ function renderMoments() {
     .map((item) => {
       const checked = state.selectedMoments.has(item.id);
       const active = state.activeMomentId === item.id;
-      const disabled = item.renderEligible === false;
       const quality = momentQuality(item);
       const thumbnail = item.previewThumbnail ? toFilePreviewSrc(item.previewThumbnail) : "";
+      const selectionLabel = item.autoRender ? "Terpilih otomatis" : momentQuality(item).key === "review" ? "Tinjau manual" : "Rekomendasi";
+      const components = momentScoreComponents(item);
       return `
-        <article class="moment-card quality-${quality.key} ${checked ? "selected" : ""} ${active ? "active-review" : ""} ${disabled ? "low-quality" : ""}" data-moment-row="${item.id}" tabindex="0">
+        <article class="moment-card quality-${quality.key} ${checked ? "selected" : ""} ${active ? "active-review" : ""} ${item.lowQuality ? "low-quality" : ""}" data-moment-row="${item.id}" tabindex="0">
           <div class="moment-thumbnail">
             ${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : ""}
-            <span class="moment-source">${escapeHtml(item.type)}</span>
-            <span class="moment-score"><strong>${item.score}</strong><em>${quality.label}</em></span>
+            <span class="moment-source">${escapeHtml(selectionLabel)}</span>
+            <span class="moment-score"><strong>${item.hasScoreEvidence ? item.score : "-"}</strong><em>${quality.label}</em></span>
             <span class="moment-time">${escapeHtml(item.time)}</span>
             <label class="moment-select" title="Pilih untuk render">
-              <input type="checkbox" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} data-toggle-moment="${item.id}" />
+              <input type="checkbox" ${checked ? "checked" : ""} data-toggle-moment="${item.id}" />
               <span>✓</span>
             </label>
           </div>
           <div class="moment-body">
             <h3>${escapeHtml(item.title)}</h3>
             <p class="moment-hook">${escapeHtml(item.hook || item.titleSuggestion || "")}</p>
-            ${item.metrics ? `
+            ${item.hasScoreEvidence ? `
               <div class="moment-metrics">
-                <span>Hook ${item.metrics.hook || "-"}</span>
-                <span>Story ${item.metrics.story_complete || item.metrics.flow || "-"}</span>
-                <span>Viral ${item.metrics.virality || item.metrics.trend || "-"}</span>
+                <span>Hook ${formatMomentMetric(components.hook)}</span>
+                <span>Story ${formatMomentMetric(components.story)}</span>
+                <span>Payoff ${formatMomentMetric(components.payoff)}</span>
+                <span>Retention ${formatMomentMetric(components.retention)}</span>
+                <span>Standalone ${formatMomentMetric(components.standalone)}</span>
               </div>
-            ` : ""}
+            ` : `<p class="moment-reason">Boundary alternatif perlu dianalisis ulang.</p>`}
             <div class="moment-card-footer">
               <span>${escapeHtml(item.category || "Insight")}</span>
-              <span>${item.duration}</span>
+              <span>${item.duration} · ${escapeHtml(momentReviewLabel(item))}</span>
             </div>
           </div>
         </article>
@@ -551,16 +895,27 @@ function normalizeMomentForUi(item, index, video = {}) {
   const end = Number(item.end || 0);
   const rawDuration = Number(item.duration || (end > start ? end - start : 0));
   const durationSeconds = Math.max(0, Math.round(rawDuration));
-  const score = Math.max(0, Math.min(100, Math.round(Number(item.score || 0))));
+  const rawScore = Number(item.score);
+  const metrics = item.metrics && typeof item.metrics === "object" ? item.metrics : null;
+  const scoreProvenance = item.scoreProvenance || item.score_provenance || metrics?.score_provenance;
+  const hasScoreEvidence = Number.isFinite(rawScore) && rawScore > 0 && Boolean(metrics || scoreProvenance);
+  const score = hasScoreEvidence ? Math.max(0, Math.min(100, Math.round(rawScore))) : 0;
   const type = item.ai_selected ? (item.ai_source || "AI Provider") : (item.segment_type || item.type || "Local Heuristic");
   const title = item.titleSuggestion || item.title || `Moment ${index + 1}`;
-  const metrics = item.metrics && typeof item.metrics === "object" ? item.metrics : null;
+  const evidenceGate = item.ai_evidence_gate === undefined ? item.evidence_gate : item.ai_evidence_gate;
+  const reviewerStatus = String(item.reviewer_status || "").trim().toLowerCase();
+  const manualReview = item.manual_review_candidate === true
+    || item.manualReview === true
+    || ["rejected", "missing", "unavailable"].includes(reviewerStatus);
+  const qualityTier = String(item.quality_tier || item.qualityTier || "").trim().toLowerCase();
+
   return {
     ...item,
     id: item.id || index + 1,
     start,
     end,
     score,
+    hasScoreEvidence,
     type,
     title,
     durationSeconds,
@@ -569,6 +924,11 @@ function normalizeMomentForUi(item, index, video = {}) {
     previewThumbnail: item.preview_thumbnail_path || video.thumbnail || "",
     titleSuggestion: item.titleSuggestion || item.hook || title,
     reason: item.reason || "",
+    selectionReasons: Array.isArray(item.selectionReasons)
+      ? item.selectionReasons
+      : Array.isArray(item.selection_reasons) ? item.selection_reasons : [],
+    weaknesses: Array.isArray(item.weaknesses) ? item.weaknesses : [],
+    qualityDimensions: item.qualityDimensions || item.quality_dimensions || metrics?.quality_dimensions || {},
     category: item.category || item.segment_type || "Insight",
     speaker: item.speaker || item.speaker_label || "Speaker auto",
     sourcePath: item.source_path || item.sourcePath || video.source_path || "",
@@ -577,10 +937,12 @@ function normalizeMomentForUi(item, index, video = {}) {
     metrics,
     grade: item.grade || "",
     priority: item.priority || (score >= 90 ? "A" : score >= 80 ? "B" : score >= 70 ? "C" : score >= 60 ? "LOW" : "REJECT"),
-    autoRender: item.auto_render === true && score >= 78,
-    manualReview: item.manual_review_candidate === true,
-    renderEligible: item.manual_review_candidate === true || (item.render_eligible !== false && score >= 65),
-    lowQuality: item.low_quality === true || score < 65
+    qualityTier,
+    evidenceGate,
+    autoRender: item.auto_render === true && score >= AUTO_SELECT_MIN_SCORE && evidenceGate === true && !manualReview,
+    manualReview,
+    renderEligible: manualReview || (item.render_eligible !== false && score >= MANUAL_RENDER_MIN_SCORE),
+    lowQuality: item.low_quality === true || score < MANUAL_RENDER_MIN_SCORE
   };
 }
 
@@ -595,13 +957,21 @@ function collectPayload() {
   const logoOverlayEnabled = Boolean(watermarkEnabled && logoPath);
   const sourceChannel = state.lastAnalysis?.video?.channel || "YouTube";
   const watermarkText = $("#watermarkText")?.value?.trim() || (logoOverlayEnabled ? "Cliper Studio Plus" : "");
+  const requestedClipCount = Math.max(0, Math.floor(Number($("#clipCount").value || 0)));
+  const settingsContractVersion = Number(state.settingsContract?.version || 1);
   return {
     sourceMode: "youtube",
     url: $("#youtubeUrl").value.trim(),
-    clipCount: Number($("#clipCount").value || 5),
+    // Keep the source duration explicit for Cloud job reservation. The Worker
+    // also receives the selected duration when a range is chosen below.
+    videoDuration: Math.max(0, Number(state.videoDuration || state.lastAnalysis?.video?.duration || 0)),
+    // Zero is an explicit product contract: return every qualified,
+    // non-overlapping recommendation found in the chosen timeline.
+    clipCount: requestedClipCount,
+    allRecommendedClips: requestedClipCount === 0,
     fullAutoMode: true,
     autoClipCount: true,
-    autoRenderMinScore: 78,
+    autoRenderMinScore: AUTO_SELECT_MIN_SCORE,
     subtitleLang: $("#subtitleLang").value,
     minDuration: Number(fieldValue("minDuration", 30)),
     targetDuration: Number(fieldValue("targetDuration", 75)),
@@ -611,7 +981,7 @@ function collectPayload() {
     rangeStart: fieldValue("rangeStart", ""),
     rangeEnd: fieldValue("rangeEnd", ""),
     multipleRanges: fieldValue("multipleRanges", ""),
-    scoreMode: $("#scoreMode").value,
+    scoreMode: "Content-aware editor score",
     cookiesPath: state.cookiesPath,
     outputFolder: $("#outputFolder")?.value || "outputs/clips",
     projectName: $("#projectName")?.value || "Cliper Studio Plus",
@@ -625,15 +995,19 @@ function collectPayload() {
     resolutionProfile: $("#resolutionProfile")?.value,
     crfProfile: $("#crfProfile")?.value,
     fpsProfile: $("#fpsProfile")?.value,
-    autoVideoEnhancement: true,
-    gpuAcceleration: $("#gpuToggle")?.checked,
+    settingsContractVersion,
+    featureFlags: { ...(state.settingsContract?.featureFlags || {}) },
+    rendererSettings: { ...productionPreset },
+    settingsRequested: { ...productionPreset },
+    autoVideoEnhancement: productionPreset.autoVideoEnhancement,
+    gpuAcceleration: productionPreset.gpuAcceleration,
     activeEncoder: $("#activeEncoder")?.textContent,
     productionPreset,
     transformativeMode: false,
     introContext: false,
     editorialDisclaimer: true,
     noReuploadMode: true,
-    smartCrop: true,
+    smartCrop: productionPreset.smartCrop,
     dynamicZoom: productionPreset.dynamicZoom,
     addCaptions: productionPreset.addCaptions,
     burnSubtitle: productionPreset.burnSubtitle,
@@ -644,13 +1018,12 @@ function collectPayload() {
     contextDuration: 1.8,
     faceTrack: productionPreset.faceTrack,
     audioEnhance: productionPreset.audioEnhance,
-    autoVideoEnhancement: true,
     creditText: creditTextEnabled,
     sourceCreditText: `Source: ${sourceChannel}`,
     logoOverlay: logoOverlayEnabled,
     logoPath,
-    logoX: percentField("logoX", 82),
-    logoY: percentField("logoY", 8),
+    logoX: percentField("logoX", 84),
+    logoY: percentField("logoY", 12),
     logoScale: numberField("logoScale", 18),
     logoOpacity: numberField("logoOpacity", 90),
     logoRotation: numberField("logoRotation", 0),
@@ -659,9 +1032,9 @@ function collectPayload() {
     watermarkText,
     watermarkOpacity: $("#watermarkOpacity")?.value,
     watermarkPosition: $("#watermarkPosition")?.value,
-    watermarkTextX: percentField("watermarkTextX", 78),
-    watermarkTextY: percentField("watermarkTextY", 16),
-    watermarkTextSize: numberField("watermarkTextSize", 28),
+    watermarkTextX: percentField("watermarkTextX", 82),
+    watermarkTextY: percentField("watermarkTextY", 20),
+    watermarkTextSize: numberField("watermarkTextSize", 42),
     watermarkTextColor: fieldValue("watermarkTextColor", "#ffffff"),
     watermarkTextStroke: fieldValue("watermarkTextStroke", "#000000"),
     watermarkTextShadow: numberField("watermarkTextShadow", 2),
@@ -690,12 +1063,17 @@ function collectPayload() {
     subtitleWordHighlight: fieldValue("subtitleWordHighlightToggle", true),
     subtitleFontFamily: fieldValue("subtitleFontFamily", "Arial Black"),
     subtitleFontPath: fieldValue("subtitleFontPath", ""),
-    subtitleFontSize: numberField("subtitleFontSize", 60),
+    subtitleFontSize: numberField("subtitleFontSize", 84),
+    subtitleX: percentField("subtitleX", 50),
+    subtitleY: percentField("subtitleY", 82),
     subtitlePrimaryColor: fieldValue("subtitlePrimaryColor", "#ffffff"),
-    subtitleActiveColor: fieldValue("subtitleActiveColor", "#19ff47"),
+    subtitleActiveColor: fieldValue("subtitleActiveColor", "#ffe600"),
     subtitleStrokeColor: fieldValue("subtitleStrokeColor", "#000000"),
-    subtitleShadow: numberField("subtitleShadow", 4),
+    subtitleShadow: numberField("subtitleShadow", 3),
     subtitleAnimation: fieldValue("subtitleAnimation", "Scale"),
+    subtitleLetterSpacing: numberField("subtitleLetterSpacing", 1.1),
+    subtitlePreset: fieldValue("subtitlePreset", "capcut"),
+    overlayGeometryVersion: 2,
     formatProfile: $("#formatProfile")?.value
   };
 }
@@ -845,49 +1223,184 @@ function setSourceMode() {
   setText("#modeBadge", "Local worker");
 }
 
-function updateTimelinePreview() {
+function analysisDuration() {
+  return Math.max(0, Number(state.videoDuration || state.lastAnalysis?.video?.duration || 0));
+}
+
+function parseAnalysisTimeValue(value) {
+  const raw = String(value ?? "").trim().replace(",", ".");
+  if (!raw) return null;
+  const parts = raw.split(":");
+  if (parts.length > 3 || parts.some((part) => !part.trim())) return null;
+  const numbers = parts.map((part) => Number(part));
+  if (numbers.some((part) => !Number.isFinite(part) || part < 0)) return null;
+  if (numbers.length >= 2 && numbers[numbers.length - 1] >= 60) return null;
+  if (numbers.length === 3 && numbers[1] >= 60) return null;
+  if (numbers.length === 3) return numbers[0] * 3600 + numbers[1] * 60 + numbers[2];
+  if (numbers.length === 2) return numbers[0] * 60 + numbers[1];
+  return numbers[0];
+}
+
+function parseMultipleAnalysisRangeInput(value, duration) {
+  const ranges = [];
+  const invalidEntries = [];
+  for (const item of String(value || "").split(/\n|,/)) {
+    const text = item.trim();
+    if (!text) continue;
+    if (!text.includes("-")) {
+      invalidEntries.push(text);
+      continue;
+    }
+    const [left, right] = text.split("-", 2);
+    const parsedStart = parseAnalysisTimeValue(left);
+    const parsedEnd = parseAnalysisTimeValue(right);
+    if (parsedStart === null || parsedEnd === null) {
+      invalidEntries.push(text);
+      continue;
+    }
+    const start = Math.max(0, Math.min(parsedStart, duration));
+    const end = Math.max(0, Math.min(parsedEnd, duration));
+    if (end > start) ranges.push([start, end]);
+    else invalidEntries.push(text);
+  }
+  const mergedRanges = ranges
+    .sort((left, right) => left[0] - right[0])
+    .reduce((merged, range) => {
+      const previous = merged[merged.length - 1];
+      if (previous && range[0] <= previous[1]) {
+        previous[1] = Math.max(previous[1], range[1]);
+      } else {
+        merged.push([...range]);
+      }
+      return merged;
+    }, []);
+  return { ranges: mergedRanges, invalidEntries };
+}
+
+function parseMultipleAnalysisRanges(value, duration) {
+  return parseMultipleAnalysisRangeInput(value, duration).ranges;
+}
+
+function currentAnalysisSelection() {
+  const mode = fieldValue("selectionMode", "full");
+  const duration = analysisDuration();
+  if (!duration) {
+    return { mode, duration: 0, ranges: [], valid: false, message: "Tunggu metadata dan durasi video selesai dimuat." };
+  }
+  if (mode === "full") {
+    return { mode, duration, ranges: [], valid: true, selectedDuration: duration };
+  }
+  if (mode === "multiple") {
+    const parsed = parseMultipleAnalysisRangeInput(fieldValue("multipleRanges", ""), duration);
+    const ranges = parsed.ranges;
+    if (parsed.invalidEntries.length) {
+      return {
+        mode,
+        duration,
+        ranges: [],
+        valid: false,
+        message: `Perbaiki ${parsed.invalidEntries.length} multiple range yang tidak valid. Gunakan format 00:10:00-00:20:00.`,
+      };
+    }
+    if (!ranges.length) {
+      return { mode, duration, ranges: [], valid: false, message: "Masukkan minimal satu multiple range yang valid." };
+    }
+    return {
+      mode,
+      duration,
+      ranges,
+      valid: true,
+      selectedDuration: ranges.reduce((total, [start, end]) => total + (end - start), 0),
+    };
+  }
+  const parsedStart = parseAnalysisTimeValue(fieldValue("rangeStart", ""));
+  const parsedEnd = parseAnalysisTimeValue(fieldValue("rangeEnd", ""));
+  if (parsedStart === null || parsedEnd === null) {
+    return { mode, duration, ranges: [], valid: false, message: "Format Start/End tidak valid. Gunakan MM:SS atau HH:MM:SS." };
+  }
+  const start = Math.max(0, Math.min(parsedStart, duration));
+  const end = Math.max(0, Math.min(parsedEnd, duration));
+  if (end <= start) {
+    return { mode, duration, ranges: [], valid: false, message: "Waktu End harus lebih besar dari Start dan berada dalam durasi video." };
+  }
+  return { mode, duration, ranges: [[start, end]], valid: true, selectedDuration: end - start };
+}
+
+function momentInsideAnalysisRanges(moment, ranges) {
+  if (!Array.isArray(ranges) || !ranges.length) return true;
+  const start = Number(moment?.start || 0);
+  const end = Number(moment?.end || start);
+  return ranges.some(([rangeStart, rangeEnd]) => (
+    start >= Number(rangeStart) - 0.05 && end <= Number(rangeEnd) + 0.05
+  ));
+}
+
+function updateTimelinePreview(options = {}) {
+  const normalizeInputs = options.normalizeInputs !== false;
   const mode = fieldValue("selectionMode", "full");
   const badge = $("#timelineRangeBadge");
   const multipleField = $("#multipleRangesField");
   if (multipleField) multipleField.style.display = mode === "multiple" ? "grid" : "none";
-  const duration = Math.max(0, Number(state.videoDuration || state.lastAnalysis?.video?.duration || 0));
-  const maxValue = Math.max(100, Math.round((duration || 100) * 10));
+  const duration = analysisDuration();
+  const maxValue = Math.max(1, Math.round(duration * 10));
   const startRange = $("#analysisStartRange");
   const endRange = $("#analysisEndRange");
+  const startInput = $("#rangeStart");
+  const endInput = $("#rangeEnd");
   if (startRange) startRange.max = String(maxValue);
   if (endRange) endRange.max = String(maxValue);
+  if (startRange) startRange.disabled = !duration || mode !== "range";
+  if (endRange) endRange.disabled = !duration || mode !== "range";
+  if (startInput) startInput.readOnly = !duration || mode !== "range";
+  if (endInput) endInput.readOnly = !duration || mode !== "range";
 
   let start = parseTimeInput(fieldValue("rangeStart", "0"), 0);
-  let end = parseTimeInput(fieldValue("rangeEnd", ""), duration || maxValue / 10);
+  let end = parseTimeInput(fieldValue("rangeEnd", ""), duration);
+  if (!duration) {
+    start = 0;
+    end = 0;
+  }
   if (mode === "full") {
     start = 0;
-    end = duration || maxValue / 10;
-  } else {
-    start = Math.max(0, Math.min(start, Math.max(0, (duration || maxValue / 10) - 1)));
-    end = Math.max(start + 1, Math.min(end || duration || start + 1, duration || maxValue / 10));
+    end = duration;
+    if (normalizeInputs) {
+      setValue("#rangeStart", formatDuration(start));
+      setValue("#rangeEnd", duration ? formatDuration(end) : "");
+    }
+  } else if (mode === "range" && duration) {
+    start = Math.max(0, Math.min(start, Math.max(0, duration - 1)));
+    end = Math.max(start + 1, Math.min(end || duration, duration));
+    if (normalizeInputs) {
+      setValue("#rangeStart", formatDuration(start));
+      setValue("#rangeEnd", formatDuration(end));
+    }
   }
   if (startRange) startRange.value = String(Math.round(start * 10));
   if (endRange) endRange.value = String(Math.round(end * 10));
   setText("#analysisStartBadge", formatDuration(start));
-  setText("#analysisEndBadge", mode === "full" && !duration ? "End" : formatDuration(end));
+  setText("#analysisEndBadge", duration ? formatDuration(end) : "Menunggu metadata");
 
   if (!badge) return;
   if (mode === "range") {
-    badge.textContent = `${formatDuration(start)} - ${formatDuration(end)}`;
+    badge.textContent = duration ? `${formatDuration(start)} - ${formatDuration(end)}` : "Range belum siap";
   } else if (mode === "multiple") {
-    const count = (fieldValue("multipleRanges", "").split(/\n|,/).map((item) => item.trim()).filter(Boolean)).length;
-    badge.textContent = `${count || 0} range`;
+    const parsed = parseMultipleAnalysisRangeInput(fieldValue("multipleRanges", ""), duration);
+    const ranges = parsed.ranges;
+    const selectedDuration = ranges.reduce((total, [rangeStart, rangeEnd]) => total + (rangeEnd - rangeStart), 0);
+    badge.textContent = parsed.invalidEntries.length
+      ? `${parsed.invalidEntries.length} range tidak valid`
+      : `${ranges.length} range${selectedDuration ? ` · ${formatDuration(selectedDuration)}` : ""}`;
   } else {
-    badge.textContent = duration ? `Full video · ${formatDuration(duration)}` : "Full video";
+    badge.textContent = duration ? `Full video · ${formatDuration(duration)}` : "Full video · menunggu metadata";
   }
 }
 
 function updateAnalysisRangeFromSeekbar(changedEdge = "end") {
-  const duration = Math.max(0, Number(state.videoDuration || state.lastAnalysis?.video?.duration || 0));
+  const duration = analysisDuration();
   const startRange = $("#analysisStartRange");
   const endRange = $("#analysisEndRange");
-  if (!startRange || !endRange) return;
-  const maxSeconds = duration || Math.max(Number(endRange.max || 100) / 10, 1);
+  if (!startRange || !endRange || !duration) return;
+  const maxSeconds = duration;
   let start = Math.max(0, Math.min(Number(startRange.value || 0) / 10, maxSeconds));
   let end = Math.max(0, Math.min(Number(endRange.value || 0) / 10, maxSeconds));
   if (end - start < 1) {
@@ -900,17 +1413,55 @@ function updateAnalysisRangeFromSeekbar(changedEdge = "end") {
   updateTimelinePreview();
 }
 
+const OVERLAY_DESIGN_WIDTH = 1080;
+
+function selectedOutputDimensions() {
+  const resolution = String(fieldValue("resolutionProfile", "1080p") || "1080p").toLowerCase();
+  const format = String(fieldValue("formatProfile", "9:16 YouTube Shorts") || "9:16").toLowerCase();
+  const width = ({ "720p": 720, "1080p": 1080, "2k": 1440, "4k": 2160 })[resolution] || 1080;
+  if (format.includes("1:1")) return { width, height: width };
+  if (format.includes("16:9")) return { width: Math.round(width * 16 / 9), height: width };
+  return { width, height: Math.round(width * 16 / 9) };
+}
+
+function syncPreviewFrameGeometry(frame) {
+  if (!frame) return;
+  const { width, height } = selectedOutputDimensions();
+  const ratio = width / height;
+  frame.style.aspectRatio = `${width} / ${height}`;
+  frame.style.maxWidth = ratio > 1.2 ? "520px" : ratio > 0.8 ? "440px" : "340px";
+  frame.dataset.outputWidth = String(width);
+  frame.dataset.outputHeight = String(height);
+}
+
+function previewPixelScale(frame) {
+  const { width } = selectedOutputDimensions();
+  const previewWidth = frame?.clientWidth || (width > 1080 ? 340 : Math.min(340, width));
+  return previewWidth / width;
+}
+
+function previewPixelsFromDesign(value, frame) {
+  const { width } = selectedOutputDimensions();
+  const renderPixels = Number(value || 0) * width / OVERLAY_DESIGN_WIDTH;
+  return renderPixels * previewPixelScale(frame);
+}
+
+function updateRangeReadout(id, value, suffix) {
+  const output = $(`#${id}Value`);
+  if (output) output.value = `${Math.round(Number(value || 0))}${suffix}`;
+}
+
 function setBrandPreset(preset) {
   const positions = {
-    "top-left": [16, 8, 18, 16, "Top left"],
-    "top-center": [50, 8, 50, 16, "Top center"],
-    "top-right": [84, 8, 78, 16, "Top right"],
+    "top-left": [14, 12, 18, 20, "Top left"],
+    "top-center": [50, 12, 50, 20, "Top center"],
+    "top-right": [86, 12, 82, 20, "Top right"],
     "middle-left": [16, 50, 18, 58, "Middle left"],
     "center": [50, 42, 50, 52, "Center"],
     "middle-right": [84, 50, 78, 58, "Middle right"],
-    "bottom-left": [16, 84, 18, 92, "Bottom left"],
-    "bottom-center": [50, 84, 50, 92, "Bottom center"],
-    "bottom-right": [84, 84, 78, 92, "Bottom right"]
+    "bottom-left": [14, 88, 18, 80, "Bottom left"],
+    "bottom-center": [50, 88, 50, 80, "Bottom center"],
+    "bottom-right": [86, 88, 82, 80, "Bottom right"]
   };
   const next = positions[preset] || positions["top-right"];
   setValue("#logoX", next[0]);
@@ -922,13 +1473,15 @@ function setBrandPreset(preset) {
 }
 
 function updateBrandPreview() {
+  const frame = $("#brandPreviewFrame");
   const logo = $("#brandPreviewLogo");
   const text = $("#brandPreviewText");
+  syncPreviewFrameGeometry(frame);
   const logoPath = fieldValue("logoAssetPath", "");
   if (logo) {
     logo.src = toFilePreviewSrc(logoPath || "assets/icon-512.png");
-    logo.style.left = `${percentField("logoX", 82)}%`;
-    logo.style.top = `${percentField("logoY", 8)}%`;
+    logo.style.left = `${percentField("logoX", 84)}%`;
+    logo.style.top = `${percentField("logoY", 12)}%`;
     logo.style.width = `${Math.max(8, Math.min(60, numberField("logoScale", 18)))}%`;
     logo.style.opacity = `${Math.max(0.1, Math.min(1, numberField("logoOpacity", 90) / 100))}`;
     logo.style.transform = `translate(-50%, -50%) rotate(${numberField("logoRotation", 0)}deg)`;
@@ -937,15 +1490,23 @@ function updateBrandPreview() {
     const value = fieldValue("watermarkText", "@cliperai") || "@cliperai";
     text.textContent = value;
     refreshWatermarkFontFace();
-    text.style.left = `${percentField("watermarkTextX", 78)}%`;
-    text.style.top = `${percentField("watermarkTextY", 16)}%`;
+    text.style.left = `${percentField("watermarkTextX", 82)}%`;
+    text.style.top = `${percentField("watermarkTextY", 20)}%`;
     text.style.fontFamily = `"${fieldValue("watermarkFontFamily", "Arial Black")}", Arial, sans-serif`;
-    text.style.fontSize = `${Math.max(12, Math.min(72, numberField("watermarkTextSize", 28))) * 0.52}px`;
+    const textSize = Math.max(20, Math.min(96, numberField("watermarkTextSize", 42)));
+    text.style.fontSize = `${previewPixelsFromDesign(textSize, frame)}px`;
     text.style.color = fieldValue("watermarkTextColor", "#ffffff");
     text.style.opacity = `${Math.max(0.1, Math.min(1, numberField("watermarkOpacity", 68) / 100))}`;
-    const shadow = numberField("watermarkTextShadow", 2);
-    text.style.textShadow = shadow ? `0 ${shadow}px 0 ${fieldValue("watermarkTextStroke", "#000000")}, 0 0 ${shadow * 4}px rgba(0,0,0,.65)` : "none";
+    const shadow = previewPixelsFromDesign(numberField("watermarkTextShadow", 2), frame);
+    const outline = previewPixelsFromDesign(2, frame);
+    text.style.webkitTextStroke = `${outline}px ${fieldValue("watermarkTextStroke", "#000000")}`;
+    text.style.textShadow = shadow ? `${shadow}px ${shadow}px ${shadow * 1.5}px rgba(0,0,0,.55)` : "none";
   }
+  updateRangeReadout("logoScale", numberField("logoScale", 18), "%");
+  updateRangeReadout("logoOpacity", numberField("logoOpacity", 90), "%");
+  updateRangeReadout("logoRotation", numberField("logoRotation", 0), "°");
+  updateRangeReadout("watermarkTextSize", numberField("watermarkTextSize", 42), " px");
+  updateRangeReadout("watermarkOpacity", numberField("watermarkOpacity", 68), "%");
 }
 
 function refreshWatermarkFontFace() {
@@ -964,24 +1525,102 @@ function refreshWatermarkFontFace() {
   style.textContent = `@font-face{font-family:"${fontFamily.replace(/"/g, "")}";src:url("${toFilePreviewSrc(fontPath)}");}`;
 }
 
+function markSubtitlePreset(preset = "") {
+  setValue("#subtitlePreset", preset);
+  $$("[data-subtitle-preset]").forEach((button) => {
+    const active = button.dataset.subtitlePreset === preset;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
 function applySubtitlePreset(preset) {
   const presets = {
-    opus: ["Karaoke bold", "Arial Black", 58, "#ffffff", "#19ff47", "#000000", 3, "Pop"],
-    capcut: ["TikTok style", "Arial Black", 56, "#ffffff", "#19ff47", "#000000", 3, "Scale"],
-    tiktok: ["TikTok style", "Arial Black", 60, "#ffffff", "#24ff5a", "#000000", 4, "Bounce"],
-    news: ["Clean subtitle", "Arial", 46, "#ffffff", "#ffd54a", "#10202a", 1, "Fade"],
-    podcast: ["YouTube Shorts style", "Arial Black", 52, "#ffffff", "#20e070", "#000000", 2, "Pop"],
-    gaming: ["Karaoke bold", "Arial Black", 62, "#ffffff", "#ffdd00", "#000000", 4, "Bounce"]
+    opus: {
+      captionStyle: "Karaoke bold",
+      fontFamily: "Arial Black",
+      fontSize: 86,
+      primaryColor: "#ffffff",
+      activeColor: "#19ff47",
+      strokeColor: "#000000",
+      shadow: 3,
+      animation: "Pop",
+      letterSpacing: 1.4,
+      wordHighlight: true
+    },
+    capcut: {
+      captionStyle: "TikTok style",
+      fontFamily: "Arial Black",
+      fontSize: 84,
+      primaryColor: "#ffffff",
+      activeColor: "#ffe600",
+      strokeColor: "#000000",
+      shadow: 3,
+      animation: "Scale",
+      letterSpacing: 1.1,
+      wordHighlight: true
+    },
+    tiktok: {
+      captionStyle: "TikTok style",
+      fontFamily: "Arial Black",
+      fontSize: 92,
+      primaryColor: "#ffffff",
+      activeColor: "#19ff47",
+      strokeColor: "#000000",
+      shadow: 4,
+      animation: "Bounce",
+      letterSpacing: 0.8,
+      wordHighlight: true
+    },
+    news: {
+      captionStyle: "Clean subtitle",
+      fontFamily: "Arial",
+      fontSize: 64,
+      primaryColor: "#ffffff",
+      activeColor: "#ffe600",
+      strokeColor: "#10202a",
+      shadow: 1,
+      animation: "Fade",
+      letterSpacing: 0.3,
+      wordHighlight: false
+    },
+    podcast: {
+      captionStyle: "YouTube Shorts style",
+      fontFamily: "Arial Black",
+      fontSize: 76,
+      primaryColor: "#ffffff",
+      activeColor: "#19ff47",
+      strokeColor: "#000000",
+      shadow: 2,
+      animation: "Scale",
+      letterSpacing: 1.2,
+      wordHighlight: true
+    },
+    gaming: {
+      captionStyle: "Karaoke bold",
+      fontFamily: "Arial Black",
+      fontSize: 94,
+      primaryColor: "#ffffff",
+      activeColor: "#ffe600",
+      strokeColor: "#000000",
+      shadow: 4,
+      animation: "Bounce",
+      letterSpacing: 0.6,
+      wordHighlight: true
+    }
   };
   const next = presets[preset] || presets.opus;
-  setValue("#captionStyle", next[0]);
-  setValue("#subtitleFontFamily", next[1]);
-  setValue("#subtitleFontSize", next[2]);
-  setValue("#subtitlePrimaryColor", next[3]);
-  setValue("#subtitleActiveColor", next[4]);
-  setValue("#subtitleStrokeColor", next[5]);
-  setValue("#subtitleShadow", next[6]);
-  setValue("#subtitleAnimation", next[7]);
+  setValue("#captionStyle", next.captionStyle);
+  setValue("#subtitleFontFamily", next.fontFamily);
+  setValue("#subtitleFontSize", next.fontSize);
+  setValue("#subtitlePrimaryColor", next.primaryColor);
+  setValue("#subtitleActiveColor", next.activeColor);
+  setValue("#subtitleStrokeColor", next.strokeColor);
+  setValue("#subtitleShadow", next.shadow);
+  setValue("#subtitleAnimation", next.animation);
+  setValue("#subtitleLetterSpacing", next.letterSpacing);
+  setValue("#subtitleWordHighlightToggle", next.wordHighlight);
+  markSubtitlePreset(preset);
   updateSubtitlePreview();
 }
 
@@ -998,7 +1637,7 @@ function applyOutputQualityPreset(profile = fieldValue("outputQualityProfile", "
     setValue("#subtitleBurnToggle", true);
     setValue("#hookOpeningToggle", true);
     setValue("#audioEnhanceToggle", true);
-    setValue("#subtitleFontSize", "60");
+    setValue("#subtitleFontSize", "90");
     setValue("#subtitleActiveColor", "#19ff47");
     setValue("#subtitleShadow", "4");
     updateSubtitlePreview();
@@ -1027,43 +1666,75 @@ function refreshSubtitleFontFace() {
 }
 
 function updateSubtitlePreview() {
+  const frame = $("#subtitlePreviewFrame");
   const preview = $("#subtitlePreviewText");
   if (!preview) return;
+  syncPreviewFrameGeometry(frame);
+  if (state.subtitlePreviewTimer) {
+    clearInterval(state.subtitlePreviewTimer);
+    state.subtitlePreviewTimer = null;
+  }
   refreshSubtitleFontFace();
   const words = (fieldValue("subtitlePreviewInput", "TAPI GUE HERAN") || "TAPI GUE HERAN").trim().split(/\s+/);
-  const activeIndex = words.length > 1 ? 1 : 0;
-  preview.innerHTML = words.map((word, index) => {
-    const safeWord = escapeHtml(word);
-    return index === activeIndex ? `<span>${safeWord}</span>` : safeWord;
-  }).join(" ");
+  const animation = String(fieldValue("subtitleAnimation", "Scale") || "Scale").toLowerCase();
+  const wordHighlight = Boolean(fieldValue("subtitleWordHighlightToggle", true));
+  let activeIndex = words.length > 1 ? 1 : 0;
+  const renderFrame = () => {
+    const visibleWords = animation === "typewriter" ? words.slice(0, activeIndex + 1) : words;
+    const renderedWords = visibleWords.map((word, index) => {
+      const safeWord = escapeHtml(word);
+      return wordHighlight && index === activeIndex ? `<span>${safeWord}</span>` : safeWord;
+    }).join(" ");
+    preview.innerHTML = wordHighlight ? renderedWords : `<span class="subtitle-line-effect">${renderedWords}</span>`;
+  };
+  preview.className = `subtitle-preview-text animation-${animation}`;
+  renderFrame();
   preview.style.fontFamily = `"${fieldValue("subtitleFontFamily", "Arial Black")}", Arial, sans-serif`;
-  preview.style.fontSize = `${Math.max(28, Math.min(96, numberField("subtitleFontSize", 60))) * 0.52}px`;
+  const fontSize = Math.max(40, Math.min(128, numberField("subtitleFontSize", 84)));
+  preview.style.left = `${percentField("subtitleX", 50)}%`;
+  preview.style.top = `${percentField("subtitleY", 82)}%`;
+  preview.style.fontSize = `${previewPixelsFromDesign(fontSize, frame)}px`;
+  preview.style.letterSpacing = `${previewPixelsFromDesign(Math.max(0, Math.min(3, numberField("subtitleLetterSpacing", 1.1))), frame)}px`;
   preview.style.color = fieldValue("subtitlePrimaryColor", "#ffffff");
-  const active = preview.querySelector("span");
-  if (active) active.style.color = fieldValue("subtitleActiveColor", "#19ff47");
-  const shadow = numberField("subtitleShadow", 4);
-  preview.style.textShadow = shadow ? `0 ${shadow}px 0 ${fieldValue("subtitleStrokeColor", "#000000")}, 0 0 ${shadow * 4}px rgba(0,0,0,.75)` : "none";
+  preview.style.setProperty("--subtitle-active-color", fieldValue("subtitleActiveColor", "#ffe600"));
+  const shadow = previewPixelsFromDesign(numberField("subtitleShadow", 3), frame);
+  const outline = previewPixelsFromDesign(5, frame);
+  preview.style.webkitTextStroke = `${outline}px ${fieldValue("subtitleStrokeColor", "#000000")}`;
+  preview.style.textShadow = shadow ? `${shadow}px ${shadow}px ${shadow * 1.5}px rgba(0,0,0,.72)` : "none";
+  updateRangeReadout("subtitleFontSize", fontSize, " px");
+  if (words.length > 1 && !window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+    state.subtitlePreviewTimer = setInterval(() => {
+      activeIndex = (activeIndex + 1) % words.length;
+      renderFrame();
+    }, animation === "bounce" ? 760 : 680);
+  }
 }
 
-function bindPreviewDrag(element, xId, yId) {
+function bindPreviewDrag(element, xId, yId, options = {}) {
   if (!element) return;
   element.addEventListener("pointerdown", (event) => {
-    const frame = $("#brandPreviewFrame");
+    const frame = $(options.frameSelector || "#brandPreviewFrame");
     if (!frame) return;
     event.preventDefault();
     element.setPointerCapture(event.pointerId);
     const move = (moveEvent) => {
       const rect = frame.getBoundingClientRect();
+      const elementRect = element.getBoundingClientRect();
+      const halfWidth = Math.min(49, elementRect.width / rect.width * 50);
+      const halfHeight = Math.min(49, elementRect.height / rect.height * 50);
       const x = ((moveEvent.clientX - rect.left) / rect.width) * 100;
       const y = ((moveEvent.clientY - rect.top) / rect.height) * 100;
-      setValue(`#${xId}`, Math.round(Math.max(0, Math.min(100, x))));
-      setValue(`#${yId}`, Math.round(Math.max(0, Math.min(100, y))));
-      updateBrandPreview();
+      const nextX = Math.max(halfWidth, Math.min(100 - halfWidth, x));
+      const nextY = Math.max(halfHeight, Math.min(100 - halfHeight, y));
+      setValue(`#${xId}`, Math.round(nextX * 10) / 10);
+      setValue(`#${yId}`, Math.round(nextY * 10) / 10);
+      (options.update || updateBrandPreview)();
     };
     const stop = () => {
       element.removeEventListener("pointermove", move);
       element.removeEventListener("pointerup", stop);
       element.removeEventListener("pointercancel", stop);
+      saveConfig({ silent: true });
     };
     element.addEventListener("pointermove", move);
     element.addEventListener("pointerup", stop);
@@ -1201,11 +1872,19 @@ function normalizeCookiesInfo(config = {}) {
   const meta = config.cookies_meta || config.cookies || {};
   return {
     path,
+    present: meta.present !== false,
+    state: meta.state || "SESSION_PRESENT",
+    source: meta.source || "manual_import",
+    browser: meta.browser || "unknown",
     fileName: meta.fileName || path.split(/[\\/]/).pop() || "cookies.txt",
     sizeBytes: meta.sizeBytes || meta.size || 0,
-    importedAt: config.cookies_last_import || meta.importedAt || meta.importDate || "",
+    importedAt: config.cookies_last_import || meta.updatedAt || meta.importedAt || meta.importDate || "",
     lastUsed: config.cookies_last_used || meta.lastUsed || "",
-    lastTest: config.cookies_last_test || meta.lastTest || "",
+    lastTest: config.cookies_last_test || meta.lastChecked || meta.lastTest || "",
+    lastSuccess: meta.lastSuccess || "",
+    lastFailure: meta.lastFailure || "",
+    errorClass: meta.errorClass || "",
+    reason: meta.reason || "",
     status: config.cookies_status || meta.status || "Cookies Loaded",
     testStatus: meta.testStatus || config.cookies_test_status || "Belum dites",
     testUrl: meta.testUrl || config.cookies_test_url || "",
@@ -1217,55 +1896,191 @@ function renderCookiesManager() {
   const info = state.cookiesInfo;
   const hasCookies = Boolean(state.cookiesPath && info);
   const importedAt = info?.importedAt;
-  const age = daysSince(importedAt);
-  const statusTitle = hasCookies ? "Cookies Loaded" : "Cookies belum dipasang";
-  const statusBadge = hasCookies ? "Loaded" : "Belum dipasang";
-  const stale = hasCookies && age !== null && age > 7;
+  const sessionState = String(info?.state || "NO_SESSION");
+  const needsUpdate = ["SESSION_INVALID", "SESSION_UPDATE_REQUIRED"].includes(sessionState);
+  const hasError = sessionState === "SESSION_ERROR";
+  const statusTitle = !hasCookies
+    ? "YouTube Session belum tersedia"
+    : needsUpdate
+      ? "YouTube Session perlu diperbarui"
+      : sessionState === "SESSION_VALID"
+        ? "YouTube Session aktif"
+        : "YouTube Session tersimpan";
+  const statusBadge = !hasCookies
+    ? "Belum tersedia"
+    : needsUpdate
+      ? "Update required"
+      : hasError
+        ? "Periksa session"
+        : sessionState === "SESSION_VALID" ? "Valid" : "Tersimpan";
 
-  setText("#cookiesStatusTitle", hasCookies ? "✓ Cookies Loaded" : "⚠ Cookies belum dipasang");
-  setText("#cookiesStatusBadge", stale ? "Perlu update" : statusBadge);
+  setText("#cookiesStatusTitle", statusTitle);
+  setText("#cookiesStatusBadge", statusBadge);
   setText("#cookiesFileName", hasCookies ? info.fileName : "-");
   setText("#cookiesFileSize", hasCookies ? formatBytes(info.sizeBytes) : "-");
   setText("#cookiesImportDate", hasCookies ? formatDate(importedAt) : "-");
   setText("#cookiesLastUsed", hasCookies ? formatDate(info.lastUsed) : "-");
   setText("#cookiesAge", hasCookies ? cookieAgeText(importedAt) : "-");
-  setText("#cookiesTestStatus", hasCookies ? (info.testStatus || info.status || "Belum dites") : "Belum dites");
-  setText("#cookiesTestUrl", hasCookies ? (info.testUrl || "-") : "-");
-  setText("#cookieState", hasCookies ? info.path : "Belum dipilih");
-  setText("#cookiesAgeBadge", stale ? "Cookies mungkin perlu diperbarui." : statusTitle);
+  setText("#cookiesTestStatus", hasCookies ? (info.reason || info.testStatus || info.status || "Belum diperiksa") : "Belum diperiksa");
+  setText("#cookiesTestUrl", hasCookies ? `${info.source || "manual_import"} · ${info.browser || "browser tidak diketahui"}` : "-");
+  setText("#cookieState", hasCookies ? "Session tersimpan aman di perangkat" : "Belum dipilih");
+  setText("#cookiesAgeBadge", statusTitle);
 
   const badge = $("#cookiesAgeBadge");
   if (badge) {
-    badge.classList.toggle("warning", Boolean(stale));
-    badge.classList.toggle("ok", hasCookies && !stale);
+    badge.classList.toggle("warning", needsUpdate || hasError);
+    badge.classList.toggle("ok", hasCookies && !needsUpdate && !hasError);
   }
   const status = $("#cookiesStatusBadge");
   if (status) {
-    status.classList.toggle("warning", Boolean(stale));
-    status.classList.toggle("ok", hasCookies && !stale);
+    status.classList.toggle("warning", needsUpdate || hasError);
+    status.classList.toggle("ok", hasCookies && !needsUpdate && !hasError);
   }
+}
+
+function heatmapRuntimeCapability() {
+  const heatmap = state.lastAnalysis?.video?.heatmap;
+  if (!heatmap) {
+    return { value: "Bukti tambahan bila tersedia", state: "optional" };
+  }
+  const markerCount = Math.max(0, Number(heatmap.markerCount || 0));
+  const peakCount = Math.max(0, Number(heatmap.peakCount || 0));
+  const status = String(heatmap.status || "unavailable");
+  if (status === "available") {
+    return {
+      value: `${markerCount} marker · ${peakCount} peak relevan`,
+      state: "ready"
+    };
+  }
+  if (status === "available_outside_selection") {
+    return { value: "Tersedia, tidak ada peak di area pilihan", state: "optional" };
+  }
+  if (status === "available_no_distinct_peak") {
+    return { value: "Tersedia, belum ada peak yang cukup berbeda", state: "optional" };
+  }
+  if (status === "not_youtube") {
+    return { value: "Hanya tersedia untuk video YouTube publik", state: "optional" };
+  }
+  if (status === "network_unavailable") {
+    return { value: "Jaringan YouTube belum tersedia saat analisis", state: "fallback" };
+  }
+  if (status === "not_public") {
+    return { value: "Most Replayed publik tidak tersedia", state: "optional" };
+  }
+  return { value: "Belum tersedia untuk analisis ini", state: "optional" };
+}
+
+const GPU_ENCODER_LABELS = {
+  h264_nvenc: "NVIDIA NVENC",
+  h264_amf: "AMD AMF",
+  h264_qsv: "Intel Quick Sync"
+};
+
+function detectedHardwareStatus(deps = state.dependencies, useGpu = Boolean($("#gpuToggle")?.checked)) {
+  const available = Array.isArray(deps?.encoders?.available) ? deps.encoders.available : [];
+  const hardware = ["h264_nvenc", "h264_amf", "h264_qsv"].filter((encoder) => available.includes(encoder));
+  const labels = hardware.map((encoder) => GPU_ENCODER_LABELS[encoder]);
+  const cpuReady = available.includes("libx264");
+
+  if (!deps?.ffmpeg?.ok) {
+    return {
+      detected: "FFmpeg belum siap",
+      active: "Menunggu FFmpeg untuk mendeteksi encoder"
+    };
+  }
+  if (!useGpu) {
+    return {
+      detected: labels.length ? `${labels.join(", ")} tersedia` : "Encoder GPU tidak tersedia lewat FFmpeg",
+      active: cpuReady ? "CPU dipilih - libx264" : "Encoder CPU belum tersedia"
+    };
+  }
+  if (hardware.length) {
+    const primary = hardware[0];
+    const fallback = [...hardware.slice(1), ...(cpuReady ? ["libx264"] : [])]
+      .map((encoder) => GPU_ENCODER_LABELS[encoder] || encoder)
+      .join(" -> ");
+    return {
+      detected: `${labels.join(", ")} terdeteksi oleh FFmpeg`,
+      active: `${GPU_ENCODER_LABELS[primary]} dipilih${fallback ? `; cadangan ${fallback}` : ""}`
+    };
+  }
+  return {
+    detected: "Tidak ada encoder GPU yang tersedia lewat FFmpeg",
+    active: cpuReady ? "CPU fallback - libx264" : "Encoder belum tersedia"
+  };
+}
+
+function refreshHardwareStatus(deps = state.dependencies) {
+  const hardware = detectedHardwareStatus(deps);
+  setText("#detectedGpu", hardware.detected);
+  setText("#activeEncoder", hardware.active);
+  return hardware;
+}
+
+function runtimeCapabilityRegistry(deps = state.dependencies) {
+  const checked = Boolean(deps);
+  const valueOrPending = (value, ok) => (ok ? value : checked ? "Perlu disiapkan" : "Belum diperiksa");
+  const hardwareEncoders = Array.isArray(deps?.encoders?.available)
+    ? deps.encoders.available.filter((encoder) => encoder !== "libx264")
+    : [];
+  const hardwareStatus = detectedHardwareStatus(deps);
+  const hasCpuEncoder = deps?.encoders?.available?.includes("libx264");
+  const heatmap = heatmapRuntimeCapability();
+
+  return [
+    {
+      group: "Komponen inti",
+      items: [
+        { name: "Python worker", value: valueOrPending(deps?.python?.version || "Siap", deps?.python?.ok), state: deps?.python?.ok ? "ready" : "needs-setup" },
+        { name: "Unduh video", value: valueOrPending(deps?.yt_dlp?.version || "Siap", deps?.yt_dlp?.ok), state: deps?.yt_dlp?.ok ? "ready" : "needs-setup" },
+        { name: "FFmpeg render", value: valueOrPending("Siap", deps?.ffmpeg?.ok), state: deps?.ffmpeg?.ok ? "ready" : "needs-setup" },
+        { name: "Pemeriksa media", value: valueOrPending("Siap", deps?.ffprobe?.ok), state: deps?.ffprobe?.ok ? "ready" : "needs-setup" }
+      ]
+    },
+    {
+      group: "Analisis video",
+      items: [
+        { name: "Deteksi adegan", value: "Terpasang di Cliper", state: "available" },
+        { name: "Pelacakan wajah", value: deps?.opencv?.ok ? `OpenCV ${deps.opencv.version || "siap"}` : "Fallback crop aktif", state: deps?.opencv?.ok ? "ready" : "fallback" },
+        { name: "Pelacakan orang", value: deps?.mediapipe?.ok ? `MediaPipe ${deps.mediapipe.version || "siap"}` : "Opsional", state: deps?.mediapipe?.ok ? "ready" : "optional" },
+        { name: "Pembicara aktif", value: "Dipilih dari bukti audio dan visual", state: "available" },
+        { name: "YouTube heatmap", ...heatmap }
+      ]
+    },
+    {
+      group: "Cerita dan subtitle",
+      items: [
+        { name: "Transkripsi lokal", value: deps?.faster_whisper?.ok ? `Faster-Whisper ${deps.faster_whisper.version || "siap"}` : "Gunakan subtitle sumber bila tersedia", state: deps?.faster_whisper?.ok ? "ready" : "optional" },
+        { name: "Penyusun cerita", value: "Terpasang di Cliper", state: "available" },
+        { name: "Subtitle clip-local", value: deps?.ffmpeg?.ok ? "Siap dibakar ke video" : valueOrPending("Menunggu FFmpeg", false), state: deps?.ffmpeg?.ok ? "ready" : "needs-setup" },
+        { name: "Cliper AI Cloud", value: state.cloudConnectionOk ? (state.cloudRouterReady ? "Terhubung" : "Terhubung, provider sedang disiapkan") : "Hubungkan API key untuk bantuan AI", state: state.cloudConnectionOk ? "ready" : "optional" }
+      ]
+    },
+    {
+      group: "Output",
+      items: [
+        { name: "Encoder perangkat", value: hardwareEncoders.length ? hardwareStatus.detected : hasCpuEncoder ? "CPU stabil - libx264" : valueOrPending("Menunggu FFmpeg", false), state: hardwareEncoders.length ? "ready" : hasCpuEncoder ? "fallback" : "needs-setup" },
+        { name: "Watermark dan hook", value: "Siap saat diaktifkan di pengaturan", state: "available" },
+        { name: "Validasi MP4", value: deps?.ffprobe?.ok ? "Video dan audio diperiksa setelah render" : valueOrPending("Menunggu FFprobe", false), state: deps?.ffprobe?.ok ? "ready" : "needs-setup" }
+      ]
+    }
+  ];
 }
 
 function renderRuntimeList(deps = state.dependencies) {
   const list = $("#runtimeList");
   if (!list) return;
-  const items = [
-    ["Python", deps?.python?.version || (deps?.python?.ok ? "Ready" : "Belum dicek"), deps?.python?.ok],
-    ["yt-dlp", deps?.yt_dlp?.version || (deps?.yt_dlp?.ok ? "Ready" : "Belum dicek"), deps?.yt_dlp?.ok],
-    ["FFmpeg", deps?.ffmpeg?.ok ? "Ready" : "Belum dicek", deps?.ffmpeg?.ok],
-    ["FFprobe", deps?.ffprobe?.ok ? "Ready" : "Belum dicek", deps?.ffprobe?.ok],
-    ["OpenAI SDK", deps?.openai?.ok ? "Ready" : "Opsional", deps?.openai?.ok],
-    ["OpenCV face tracking", deps?.opencv?.ok ? deps.opencv.version : "Fallback crop", deps?.opencv?.ok],
-    ["MediaPipe", deps?.mediapipe?.ok ? deps.mediapipe.version : "Opsional", deps?.mediapipe?.ok],
-    ["GPU encoder", deps?.encoders?.available?.length ? deps.encoders.available.join(", ") : "CPU fallback", deps?.encoders?.available?.some((item) => item !== "libx264")],
-    ["Auto Video Enhancement", "Always active", true]
-  ];
-  list.innerHTML = items
-    .map(([name, value, ok]) => `
-      <div class="runtime-item ${ok ? "ok" : ""}">
-        <span>${name}</span>
-        <strong>${value}</strong>
-      </div>
+  list.innerHTML = runtimeCapabilityRegistry(deps)
+    .map(({ group, items }) => `
+      <section class="runtime-group">
+        <h3>${group}</h3>
+        ${items.map(({ name, value, state }) => `
+          <div class="runtime-item runtime-${state}">
+            <span>${name}</span>
+            <strong>${value}</strong>
+          </div>
+        `).join("")}
+      </section>
     `)
     .join("");
 }
@@ -1277,16 +2092,17 @@ function setSettingsTab(tab) {
 }
 
 function isValidYoutubeUrl(url) {
-  return /(?:youtube\.com\/watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{11})/.test(String(url).trim());
+  return /(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|live\/|embed\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/.test(String(url).trim());
 }
 
 function isAiEnabled() {
   const payload = providerPayload();
-  return payload.providerType === "cloud" && Boolean(payload.apiKey && payload.baseUrl && payload.model);
+  return Boolean(payload.apiKey && payload.baseUrl && payload.model);
 }
 
 let metadataTimer = null;
 let metadataUrl = "";
+let metadataPendingUrl = "";
 
 function populateSubtitleLanguages(video = {}) {
   const select = $("#subtitleLang");
@@ -1311,20 +2127,14 @@ async function fetchMetadata(url) {
   if (!window.cliper) {
     setText("#previewTitle", "Buka .exe untuk metadata nyata");
     setText("#previewUrl", url || "Masukkan link YouTube");
-    return;
+    return false;
   }
   if (!isValidYoutubeUrl(url)) {
     setText("#previewTitle", "URL tidak valid");
     setText("#previewUrl", url || "Masukkan link YouTube");
-    return;
+    return false;
   }
-  if (aiProviderRequiresConnectedStatus()) {
-    setView("settings");
-    setSettingsTab("api");
-    toast("Hubungkan Cliper AI Cloud terlebih dahulu");
-    return;
-  }
-  metadataUrl = url;
+  metadataPendingUrl = url;
   pushLog(`[metadata] fetching metadata for ${url}`);
   setText("#previewTitle", "Memuat metadata...");
   setText("#previewUrl", url);
@@ -1344,14 +2154,24 @@ async function fetchMetadata(url) {
       maxDuration: 180
     };
     const result = await window.cliper.analyze(payload);
+    if ($("#youtubeUrl").value.trim() !== url) return false;
     if (result.type === "error") {
       setText("#previewTitle", "Metadata gagal");
       setText("#subtitleMetric", "Metadata error");
       pushLog(`[metadata] gagal: ${result.message}`);
-      return;
+      return false;
     }
     const data = result.result;
     state.videoDuration = Number(data.video?.duration || 0);
+    if (!Number.isFinite(state.videoDuration) || state.videoDuration <= 0) {
+      state.videoDuration = 0;
+      setText("#previewTitle", "Durasi metadata tidak tersedia");
+      setText("#previewDuration", "Durasi tidak tersedia");
+      pushLog("[metadata] duration kosong atau tidak valid");
+      updateTimelinePreview();
+      return false;
+    }
+    metadataUrl = url;
     setText("#previewTitle", data.video?.title || "Tidak ada judul");
     setText("#previewUrl", data.video?.webpage_url || url);
     setText("#subtitleMetric", data.video?.subtitle_language || "No subtitle");
@@ -1362,21 +2182,43 @@ async function fetchMetadata(url) {
     state.lastTranscript = [];
     state.activeMomentId = null;
     updateTimelinePreview();
-    pushLog(`[metadata] berhasil dimuat: ${data.video?.title || url}`);
+    updateCounters();
+    pushLog(`[metadata] berhasil dimuat: ${data.video?.title || url} · duration=${formatDuration(state.videoDuration)} (${state.videoDuration}s)`);
+    return true;
   } catch (error) {
     setText("#previewTitle", "Metadata gagal");
     setText("#subtitleMetric", "Metadata error");
     pushLog(`[metadata] error: ${error?.message || error}`);
+    return false;
+  } finally {
+    if (metadataPendingUrl === url) metadataPendingUrl = "";
   }
 }
 
-function scheduleMetadataFetch() {
+function scheduleMetadataFetch(force = false) {
   const url = $("#youtubeUrl").value.trim();
-  if (!url || url === metadataUrl) {
+  if (!url || (!force && (url === metadataUrl || url === metadataPendingUrl))) {
     return;
   }
   clearTimeout(metadataTimer);
   metadataTimer = setTimeout(() => fetchMetadata(url), 700);
+}
+
+function resetSourceMetadata(nextUrl = "") {
+  if (nextUrl && nextUrl === metadataUrl) return;
+  state.videoDuration = 0;
+  state.lastAnalysis = null;
+  state.lastTranscript = [];
+  state.activeMomentId = null;
+  state.previewImageUrl = "";
+  metadataUrl = "";
+  setValue("#selectionMode", "full");
+  setValue("#rangeStart", "00:00");
+  setValue("#rangeEnd", "");
+  setValue("#multipleRanges", "");
+  setText("#previewScore", "-");
+  updateTimelinePreview();
+  updateCounters();
 }
 
 async function markCookiesUsed() {
@@ -1419,13 +2261,13 @@ function renderProviders() {
   const providerList = $("#providerList");
   if (!providerList) return;
   const payload = providerPayload();
-  const provider = aiProviderDefaults.cloud;
-  const model = "Auto";
-  const ready = Boolean(payload.providerType === "cloud" && payload.baseUrl && payload.apiKey);
+  const provider = aiProviders[payload.providerType] || aiProviders.cloud;
+  const model = payload.model ? payload.model : "Auto";
+  const ready = Boolean(payload.baseUrl && payload.apiKey && payload.model);
   const statusText = $("#providerStatusText")?.textContent || "";
   const features = payload.aiFeatures || aiFeatureConfig();
   const activeFeatureCount = Object.values(features).filter(Boolean).length;
-  if (/connected|valid|sukses|ready/i.test(statusText)) {
+  if (isConnectedProviderStatus(statusText)) {
     setText("#aiModeTitle", `${provider.label} active ✓ · ${activeFeatureCount} module ON`);
   } else {
     setText("#aiModeTitle", `${provider.label} belum terhubung`);
@@ -1441,7 +2283,7 @@ function renderProviders() {
           aiTtsToggle: "tts"
         }[toggleId];
         const enabled = Boolean(features[key]);
-        const engine = enabled && ready ? `${provider.label} · ${model}` : "Menunggu koneksi cloud";
+        const engine = enabled && ready ? `${provider.label} · ${model}` : "Menunggu koneksi provider";
         return `
         <article class="provider-item ${enabled ? "" : "disabled"}">
           <div>
@@ -1477,12 +2319,15 @@ async function openSessionFolder(index) {
 }
 
 function providerPayload() {
+  const providerType = selectedProviderType();
   const apiKey = $("#apiKey")?.value?.trim();
   const features = aiFeatureConfig();
-  const selectedModel = "auto";
+  const selectedModel = $("#highlightModel")?.value?.trim() || (providerType === "cloud" ? aiProviders.cloud.model : "");
+  const baseUrl = providerType === "cloud" ? aiProviders.cloud.baseUrl : $("#baseUrl")?.value?.trim();
   const maxTokensByModule = {
     test: 320,
     highlight: 1600,
+    ranking: 1400,
     title: 480,
     hook: 420,
     caption: 700,
@@ -1491,6 +2336,7 @@ function providerPayload() {
   const timeoutMsByModule = {
     test: 30000,
     highlight: 90000,
+    ranking: 90000,
     title: 45000,
     hook: 45000,
     caption: 45000,
@@ -1499,21 +2345,22 @@ function providerPayload() {
   };
   const aiRetryByModule = {
     highlight: 3,
+    ranking: 2,
     title: 2,
     hook: 2,
     caption: 2,
     test: 2,
     default: 2
   };
-  const baseUrl = aiProviderDefaults.cloud.baseUrl;
   return {
-    providerType: "cloud",
+    providerType,
     baseUrl,
     apiKey,
     model: selectedModel,
     highlightModel: selectedModel,
     moduleModels: {
       highlight: selectedModel,
+      ranking: selectedModel,
       caption: selectedModel,
       hook: selectedModel,
       title: selectedModel,
@@ -1534,6 +2381,12 @@ function maskApiKey(key) {
   return `${key.slice(0, 4)}...${key.slice(-4)}`;
 }
 
+function apiKeyFingerprint(key) {
+  const value = String(key || "");
+  if (!value) return "";
+  return `${value.length}:${value.slice(0, 8)}:${value.slice(-8)}`;
+}
+
 function setProviderStatus(message, ok = false) {
   setText("#providerStatusText", message);
   const box = $("#providerStatusBox");
@@ -1542,6 +2395,76 @@ function setProviderStatus(message, ok = false) {
     box.classList.toggle("warning", !ok && message !== "Belum dites");
   }
   renderProviders();
+}
+
+function renderCloudConnectionStatus(hasKey = Boolean($("#apiKey")?.value?.trim())) {
+  const summary = !hasKey
+    ? "Cliper AI Cloud belum terhubung"
+    : state.cloudConnectionOk
+      ? "Cliper AI Cloud aktif"
+      : "API key tersimpan · hubungkan untuk verifikasi";
+  setText("#apiStatus", summary);
+  setText("#aiModeTitle", state.cloudConnectionOk ? "Cliper AI Cloud aktif" : hasKey ? "Cliper AI Cloud perlu diverifikasi" : "Cliper AI Cloud belum terhubung");
+}
+
+async function showProcessingError(result, phase = "analyze", runId = state.processingRunId) {
+  if (runId !== state.processingRunId || state.cancelRequested) {
+    showProcessingCancelled(phase);
+    return;
+  }
+  const message = String(result?.message || "Worker gagal tanpa detail error.").trim();
+  clearInterval(state.processingTimer);
+  state.processingTimer = null;
+  state.jobMode = phase === "render" ? "render" : "analyze";
+  state.renderStartedAt = state.renderStartedAt || Date.now();
+
+  let cancelled = false;
+  if (window.cliper?.cancel) {
+    try {
+      const cancelResult = await window.cliper.cancel();
+      cancelled = Boolean(cancelResult?.ok);
+    } catch (error) {
+      pushLog(`[cancel] worker error cleanup gagal: ${error.message}`);
+    }
+  }
+
+  $("#jobBadge").textContent = "Error";
+  $("#cancelJob").disabled = true;
+  setText("#renderScreenTitle", phase === "render" ? "Render gagal" : "Analisis gagal");
+  setText("#renderScreenSubtitle", message);
+  updateRenderStats({ progress: state.progress || 0, stage: "Error" });
+  setProcessingError(message, phase);
+  const errorLine = `[error] ${message}`;
+  const errorAlreadyLogged = state.logLines.slice(-4).some((line) => String(line).trim() === errorLine);
+  if (!errorAlreadyLogged) pushLog(errorLine);
+  if (cancelled) pushLog("[cancelled] worker dibatalkan otomatis setelah error");
+  toast(message, { error: true, duration: 12000 });
+  if (/\b(AUTH_REQUIRED|SESSION_UPDATE_REQUIRED|COOKIE_INVALID|COOKIE_EXPIRED)\b/i.test(message)) {
+    state.pendingSessionResume = { phase, attempts: 0 };
+    setView("settings");
+    setSettingsTab("cookies");
+    toast("YouTube Session perlu diperbarui. Analisis akan dilanjutkan setelah session valid.", {
+      error: true,
+      duration: 12000
+    });
+  }
+}
+
+async function resumePendingSessionJob() {
+  const pending = state.pendingSessionResume;
+  if (!pending || pending.attempts >= 1) return;
+  state.pendingSessionResume = null;
+  toast("Session valid. Melanjutkan pekerjaan sebelumnya...");
+  if (pending.phase === "render") {
+    await startProcessing();
+  } else {
+    await findMoments();
+  }
+}
+
+function isConnectedProviderStatus(status) {
+  const text = String(status || "");
+  return /connected|valid|sukses|ready|ai router ok/i.test(text) || /\b(active|aktif)\b/i.test(text);
 }
 
 function todayKey() {
@@ -1567,12 +2490,11 @@ function addAiUsage(usage = {}) {
     return;
   }
   const current = normalizeAiUsage(state.aiUsageToday);
-  const estimateRp = Math.ceil((input + output) / 1000 * 8);
   state.aiUsageToday = {
     date: todayKey(),
     inputTokens: current.inputTokens + input,
     outputTokens: current.outputTokens + output,
-    estimatedCostRp: current.estimatedCostRp + estimateRp
+    estimatedCostRp: 0
   };
   renderAiUsage();
 }
@@ -1581,13 +2503,16 @@ function renderAiUsage() {
   const usage = normalizeAiUsage(state.aiUsageToday);
   state.aiUsageToday = usage;
   setText("#aiTokenSummary", `${usage.inputTokens.toLocaleString("id-ID")} input / ${usage.outputTokens.toLocaleString("id-ID")} output tokens`);
-  setText("#aiCostSummary", `Estimated cost: Rp ${usage.estimatedCostRp.toLocaleString("id-ID")}`);
+  setText("#aiCostSummary", "Billing dan biaya provider dihitung oleh Cliper Cloud");
 }
 
 function providerErrorMessage(status, payload) {
   const text = String(status || "Test API gagal");
+  if (/provider.*(?:belum|tidak).*(?:aktif|siap|tersedia)|router.*(?:belum|tidak).*(?:siap|tersedia)|provider setup/i.test(text)) {
+    return "Cliper Cloud terhubung, tetapi AI provider belum disiapkan oleh admin";
+  }
   if (/invalid|unauthorized|401|forbidden|api key/i.test(text)) {
-    return `Invalid API key - pastikan key cocok untuk ${aiProviderDefaults[payload.providerType]?.label || payload.providerType}`;
+    return `Invalid API key - pastikan key cocok untuk ${aiProviders[payload.providerType]?.label || payload.providerType}`;
   }
   if (/rate limit|rate_limit|429|too many requests/i.test(text)) {
     return "Rate Limited - tunggu sebentar atau gunakan provider lain";
@@ -1608,40 +2533,64 @@ function providerErrorMessage(status, payload) {
 }
 
 function applyProviderDefaults(force = false) {
-  const providerType = "cloud";
-  const preset = aiProviderDefaults.cloud;
+  const providerType = selectedProviderType();
+  const provider = aiProviders[providerType] || aiProviders.cloud;
   const base = $("#baseUrl");
   const key = $("#apiKey");
   const model = $("#highlightModel");
-  const isKnownDefault = Object.values(aiProviderDefaults).some((item) => item.baseUrl && item.baseUrl === base?.value);
-  if (base && (force || !base.value || isKnownDefault)) {
-    base.value = preset.baseUrl;
+  if (base) {
+    if (providerType === "cloud") {
+      base.value = provider.baseUrl;
+    } else if (force && !base.value) {
+      base.value = "";
+    }
+    base.readOnly = provider.readonly;
+    base.placeholder = providerType === "cloud" ? provider.baseUrl : "https://api.openai.com/v1";
   }
   if (model) {
-    model.value = "auto";
-    model.readOnly = true;
+    if (providerType === "cloud" || !model.value) {
+      model.value = provider.model || "";
+    }
+    model.readOnly = provider.readonly;
+    model.placeholder = providerType === "cloud" ? "" : "deepseek-chat, gpt-4.1, o4-mini, claude-sonnet-4, llama3.3, auto";
   }
   if (key) {
     key.disabled = false;
     key.placeholder = "clip_sk_xxxxxxxxx";
   }
-  if (base) {
-    base.value = preset.baseUrl;
-    base.disabled = true;
+  const connected = isConnectedProviderStatus($("#providerStatusText")?.textContent || "");
+  setProviderStatus(key?.value?.trim() ? (connected ? $("#providerStatusText").textContent : "API key tersimpan · test connection") : `${provider.label} belum terhubung`, connected);
+  renderCloudConnectionStatus(Boolean(key?.value?.trim()));
+  const settingsPanel = document.querySelector(".settings-form");
+  if (settingsPanel) {
+    settingsPanel.classList.toggle("provider-cloud", providerType === "cloud");
   }
-  const connected = /connected|valid|sukses|ready/i.test($("#providerStatusText")?.textContent || "");
-  setProviderStatus(key?.value?.trim() ? (connected ? $("#providerStatusText").textContent : "API key tersimpan · test connection") : "Cliper AI Cloud belum terhubung", connected);
-  setText("#apiStatus", key?.value?.trim() ? "Cliper Cloud API key tersimpan" : "Cliper AI Cloud belum terhubung");
+  updateTestButtonLabel();
+  updateModelHelpText();
   renderProviders();
 }
 
 async function testProvider(options = {}) {
   const payload = providerPayload();
-  const preset = aiProviderDefaults.cloud;
+  const provider = aiProviders[payload.providerType] || aiProviders.cloud;
   if (!payload.apiKey) {
-    const status = "API key Cliper AI Cloud wajib diisi";
+    const status = `API key ${provider.label} wajib diisi`;
     setProviderStatus(status, false);
-    setText("#apiStatus", "Cliper AI Cloud belum terhubung");
+    renderCloudConnectionStatus(false);
+    if (!options.silent) toast(status);
+    return { ok: false, status };
+  }
+  if (!payload.baseUrl) {
+    const status = `Base URL ${provider.label} wajib diisi`;
+    setProviderStatus(status, false);
+    renderCloudConnectionStatus(false);
+    if (!options.silent) toast(status);
+    return { ok: false, status };
+  }
+  if (!payload.model) {
+    const status = `Model ${provider.label} wajib diisi`;
+    setProviderStatus(status, false);
+    renderCloudConnectionStatus(false);
     if (!options.silent) toast(status);
     return { ok: false, status };
   }
@@ -1653,7 +2602,7 @@ async function testProvider(options = {}) {
   const maskedKey = maskApiKey(payload.apiKey);
   setProviderStatus("Testing API...", true);
   await saveConfig({ silent: true });
-  pushLog(`[ai] Test API request sent to ${preset.label}, model=${payload.model}, key=${maskedKey}`);
+  pushLog(`[ai] Test API request sent to ${provider.label}, model=${payload.model}, key=${maskedKey}`);
   const start = performance.now();
   const result = await window.cliper.testProvider(payload);
   const duration = Math.round(performance.now() - start);
@@ -1661,7 +2610,11 @@ async function testProvider(options = {}) {
   if (result?.type === "error" || !response?.ok) {
     const status = response?.status || response?.message || result?.message || "Test API gagal";
     const message = providerErrorMessage(status, payload);
+    state.cloudConnectionOk = false;
+    state.cloudRouterReady = false;
+    state.cloudConnectionKeyFingerprint = "";
     setProviderStatus(message, false);
+    renderCloudConnectionStatus(Boolean(payload.apiKey));
     pushLog(`[ai] Test API failed provider=${payload.providerType} baseUrl=${payload.baseUrl} model=${payload.model} error=${status}`);
     toast(message);
     await saveConfig({ silent: true });
@@ -1670,25 +2623,67 @@ async function testProvider(options = {}) {
   const responseText = response.response || "OK";
   const usage = response.usage ? `usage=${JSON.stringify(response.usage)}` : "usage=unknown";
   addAiUsage(response.usage_total || response.usage || {});
-  setProviderStatus(`Connected ✓ ${payload.providerType}`, true);
-  setText("#apiStatus", `Connected ✓ ${payload.providerType}`);
+  state.cloudRouterReady = response.routerReady !== false;
+  setProviderStatus(response.status || "Connected · Cliper AI Cloud · AI Router OK", true);
+  if (payload.providerType === "cloud") {
+    state.cloudConnectionOk = true;
+    state.cloudConnectionKeyFingerprint = apiKeyFingerprint(payload.apiKey);
+  }
+  renderCloudConnectionStatus(Boolean(payload.apiKey));
   pushLog(`[ai] Test API response received in ${duration}ms, ${usage}`);
   pushLog(`[ai] provider=${payload.providerType} model=${payload.model} response=${responseText}`);
   if (payload.providerType === "cloud" && response.license) {
-    pushLog(`[cloud] plan=${response.license.plan || "-"} status=${response.license.status || "active"} credits=${response.license.credits || 0}`);
+    const cloudBalance = response.license.unlimited
+      ? "unlimited"
+      : `$${Number(response.license.wallet?.availableUsd ?? response.license.availableUsd ?? 0).toFixed(2)}`;
+    pushLog(`[cloud] billing_mode=${response.license.billingMode || "wallet"} status=${response.license.status || "active"} wallet_usd=${cloudBalance}`);
   }
   state.apiLastLatencyMs = duration;
   state.apiLastResponse = responseText;
-  if (!options.silent) toast("Test API sukses");
+  if (!options.silent) {
+    toast(state.cloudRouterReady ? "Test API sukses" : "Cloud terhubung; admin perlu menyiapkan AI provider");
+  }
   await saveConfig({ silent: true });
   return { ...response, latencyMs: duration };
 }
 
+function initializeProviderControls() {
+  $$(".provider-card").forEach((card) => {
+    card.addEventListener("click", () => {
+      setSelectedProviderType(card.dataset.provider);
+    });
+    const input = card.querySelector("input[type='radio']");
+    if (input) {
+      input.addEventListener("change", () => {
+        if (input.checked) setSelectedProviderType(input.value);
+      });
+    }
+  });
+  const baseInput = $("#baseUrl");
+  if (baseInput) {
+    baseInput.addEventListener("input", () => {
+      setProviderStatus("API key tersimpan · test connection", false);
+    });
+  }
+  const modelInput = $("#highlightModel");
+  if (modelInput) {
+    modelInput.addEventListener("input", () => {
+      setProviderStatus("API key tersimpan · test connection", false);
+    });
+  }
+}
+
 function aiProviderRequiresConnectedStatus() {
   const payload = providerPayload();
-  if (payload.providerType !== "cloud" || !payload.apiKey) return true;
-  const status = $("#providerStatusText")?.textContent || "";
-  return !/connected|valid|sukses|ready/i.test(status);
+  if (payload.providerType === "cloud") {
+    if (!payload.apiKey) return true;
+    if (state.cloudConnectionOk && state.cloudRouterReady && state.cloudConnectionKeyFingerprint === apiKeyFingerprint(payload.apiKey)) {
+      return false;
+    }
+    const status = $("#providerStatusText")?.textContent || "";
+    return !isConnectedProviderStatus(status);
+  }
+  return !payload.apiKey || !payload.baseUrl || !payload.model;
 }
 
 function drawPreview() {
@@ -1746,18 +2741,27 @@ async function scanSubtitles() {
   const deps = result.result || {};
   state.dependencies = deps;
   renderRuntimeList(deps);
-  setText("#subtitleMetric", deps.yt_dlp?.ok ? "yt-dlp ready" : "yt-dlp missing");
-  setText("#apiStatus", deps.ffmpeg?.ok ? "FFmpeg ready" : "FFmpeg belum ada");
-  setText("#runtimeMetric", deps.ffmpeg?.ok ? "Runtime ready" : "FFmpeg belum ada");
-  setText("#detectedGpu", "Auto detect aktif setelah FFmpeg tersedia");
-  setText("#activeEncoder", $("#gpuToggle")?.checked && deps.ffmpeg?.ok ? "h264_amf jika tersedia, fallback libx264" : "CPU fallback - libx264");
+  setText("#subtitleMetric", deps.yt_dlp?.ok ? "Download siap" : "Perlu menyiapkan yt-dlp");
+  // The top status pill reports Cloud authentication, not local FFmpeg state.
+  // Runtime readiness is shown separately in #runtimeMetric.
+  renderCloudConnectionStatus(Boolean($("#apiKey")?.value?.trim()));
+  setText("#runtimeMetric", deps.ffmpeg?.ok ? "Sistem siap" : "Sistem perlu disiapkan");
+  refreshHardwareStatus(deps);
   pushLog(`[dependency] python=${deps.python?.version || "-"} yt-dlp=${deps.yt_dlp?.ok ? deps.yt_dlp.version : "missing"} ffmpeg=${deps.ffmpeg?.ok ? "ready" : "missing"}`);
-  toast("Dependency dicek");
+  const status = $("#runtimeInstallStatus");
+  if (status) {
+    status.classList.remove("error", "running");
+    status.textContent = deps.ffmpeg?.ok && deps.yt_dlp?.ok
+      ? "Sistem inti siap. Komponen opsional akan dipakai otomatis bila tersedia."
+      : "Ada komponen inti yang belum siap. Gunakan Siapkan sistem untuk memasangnya.";
+  }
+  toast("Sistem diperiksa");
 }
 
 async function findMoments() {
   setSourceMode("youtube");
-  const target = Math.max(1, Math.min(20, Number($("#clipCount").value) || 6));
+  const requestedClipCount = Math.max(0, Math.floor(Number($("#clipCount").value || 0)));
+  const target = requestedClipCount || "semua rekomendasi layak";
   if (!$("#youtubeUrl").value.trim()) {
     toast("Masukkan YouTube URL dulu");
     return;
@@ -1771,36 +2775,68 @@ async function findMoments() {
   if (aiProviderRequiresConnectedStatus()) {
     setView("settings");
     setSettingsTab("api");
-    const message = providerPayload().apiKey ? "Test API Cliper AI Cloud dulu sampai Connected." : "Masukkan API key Cliper AI Cloud terlebih dahulu.";
+    const payload = providerPayload();
+    const provider = aiProviders[payload.providerType] || aiProviders.cloud;
+    const message = payload.apiKey
+      ? `Test API ${provider.label} dulu sampai Connected.`
+      : `Masukkan API key ${provider.label} terlebih dahulu.`;
     pushLog(`[ai] analisa diblokir: ${message}`);
     toast(message);
     return;
   }
+  const url = $("#youtubeUrl").value.trim();
+  if (!state.videoDuration || metadataUrl !== url) {
+    const metadataReady = await fetchMetadata(url);
+    if (!metadataReady) {
+      toast("Metadata dan durasi video belum berhasil dimuat");
+      return;
+    }
+  }
+  const selection = currentAnalysisSelection();
+  if (!selection.valid) {
+    toast(selection.message);
+    pushLog(`[timeline] analisa diblokir: ${selection.message}`);
+    return;
+  }
 
   clearInterval(state.processingTimer);
+  const runId = ++state.processingRunId;
+  state.cancelRequested = false;
+  clearProcessingError();
   state.progress = 0;
   resetStepStatus("analyze");
   $("#progressBar").style.width = "0%";
   $("#jobBadge").textContent = "Analyzing";
-  setText("#renderScreenTitle", "Finding highlights...");
-  setText("#renderScreenSubtitle", "Downloading subtitle and analyzing the transcript with AI.");
+  $("#cancelJob").disabled = false;
+  setText("#renderScreenTitle", "Mencari moment terbaik...");
+  setText("#renderScreenSubtitle", "Mengambil transcript dan memahami isi video dengan AI.");
   updateRenderStats({ progress: 0, stage: "Download subtitle", clipIndex: null, totalClips: null });
   renderSteps();
-  pushLog(`[analyze] mulai analisa nyata: ${$("#youtubeUrl").value}`);
+  const areaText = selection.mode === "full"
+    ? `full ${formatDuration(selection.duration)}`
+    : `${selection.ranges.map(([start, end]) => `${formatDuration(start)}-${formatDuration(end)}`).join(", ")} · total ${formatDuration(selection.selectedDuration)}`;
+  pushLog(`[analyze] mulai analisa nyata: ${$("#youtubeUrl").value} · area=${areaText}`);
   setView("render");
-  const result = await window.cliper.analyze(collectPayload());
+  const result = await window.cliper.analyze({
+    ...collectPayload(),
+    videoDuration: selection.duration,
+    sourceDuration: selection.duration,
+    analysisRanges: selection.ranges,
+  });
+  if (runId !== state.processingRunId) return;
   if (result.type === "error") {
-    $("#jobBadge").textContent = "Error";
-    pushLog(`[error] ${result.message}`);
-    toast(result.message);
+    await showProcessingError(result, "analyze", runId);
     return;
   }
 
+  clearProcessingError();
+  state.cancelRequested = false;
   const data = result.result || {};
   addAiUsage(data.ai_usage || {});
   const diagnostics = data.ai_diagnostics || {};
+  const provider = aiProviders[providerPayload().providerType] || aiProviders.cloud;
   const aiStatus = diagnostics.ai_used
-    ? `Cliper AI Cloud aktif · ${diagnostics.requests || 0} request · ${diagnostics.retry_count || 0} retry`
+    ? `${provider.label} aktif · ${diagnostics.requests || 0} request · ${diagnostics.retry_count || 0} retry`
     : `Fallback internal${diagnostics.last_fallback_reason ? ` · ${diagnostics.last_fallback_reason}` : ""}`;
   setText("#aiPipelineStatus", aiStatus);
   pushLog(`[ai diagnostics] used=${Boolean(diagnostics.ai_used)} provider=${diagnostics.provider || "-"} model=${diagnostics.model || "-"} requests=${diagnostics.requests || 0} retries=${diagnostics.retry_count || 0} fallback=${diagnostics.fallback_events || 0}`);
@@ -1811,6 +2847,13 @@ async function findMoments() {
     pushLog(`[ai debug] ${data.ai_debug_path}`);
   }
   state.lastAnalysis = data;
+  const heatmap = data.video?.heatmap;
+  if (heatmap) {
+    pushLog(
+      `[heatmap] status=${heatmap.status || "unavailable"} markers=${Number(heatmap.markerCount || 0)} peaks=${Number(heatmap.peakCount || 0)}`
+    );
+  }
+  renderRuntimeList(state.dependencies);
   state.lastTranscript = Array.isArray(data.transcript) ? normalizeTranscriptSegments(data.transcript) : [];
   state.videoDuration = Number(data.video?.duration || state.videoDuration || 0);
   if (data.video?.used_cookies) {
@@ -1820,11 +2863,26 @@ async function findMoments() {
   if (data.video?.source_path) {
     pushLog(`[cache] ${data.video.cache_status === "cached" ? "Using cached source" : "Source cached"}: ${data.video.source_path}`);
   }
-  momentBank = (data.moments || []).map((item, index) => normalizeMomentForUi(item, index, data.video || {}));
+  const workerRanges = Array.isArray(data.video?.analysis_ranges) ? data.video.analysis_ranges : [];
+  const returnedRanges = selection.mode === "full"
+    ? []
+    : (workerRanges.length ? workerRanges : selection.ranges);
+  if (selection.mode !== "full" && !workerRanges.length) {
+    pushLog("[timeline] worker tidak mengembalikan analysis_ranges; UI memakai selected range lokal sebagai batas aman");
+  }
+  const rawMoments = Array.isArray(data.moments) ? data.moments : [];
+  const safeMoments = rawMoments.filter((item) => momentInsideAnalysisRanges(item, returnedRanges));
+  if (safeMoments.length !== rawMoments.length) {
+    pushLog(`[timeline] ${rawMoments.length - safeMoments.length} kandidat di luar selected range dibuang oleh UI safety check`);
+  }
+  momentBank = safeMoments.map((item, index) => normalizeMomentForUi(item, index, data.video || {}));
+  applyMomentDisplayPolicy();
   if (!momentBank.length) {
     pushLog("[highlight] worker selesai tanpa moment; empty-state ditampilkan dan UI tetap responsif");
   }
-  state.selectedMoments = new Set(momentBank.filter((item) => item.autoRender && item.renderEligible !== false).map((item) => item.id));
+  // Automatically select only high-confidence recommendations. Optional and
+  // review candidates remain visible and can be selected manually.
+  state.selectedMoments = new Set(momentBank.filter((item) => item.autoRender).map((item) => item.id));
   state.activeMomentId = momentBank[0]?.id || null;
   $("#previewTitle").textContent = data.video?.title || "YouTube video";
   $("#previewUrl").textContent = data.video?.webpage_url || $("#youtubeUrl").value;
@@ -1851,7 +2909,10 @@ async function startProcessing() {
   if (aiProviderRequiresConnectedStatus()) {
     setView("settings");
     setSettingsTab("api");
-    const message = payload.apiKey ? "Test API Cliper AI Cloud dulu sampai Connected." : "Masukkan API key Cliper AI Cloud terlebih dahulu.";
+    const provider = aiProviders[payload.providerType] || aiProviders.cloud;
+    const message = payload.apiKey
+      ? `Test API ${provider.label} dulu sampai Connected.`
+      : `Masukkan API key ${provider.label} terlebih dahulu.`;
     pushLog(`[ai] render diblokir: ${message}`);
     toast(message);
     return;
@@ -1859,25 +2920,30 @@ async function startProcessing() {
 
   if (window.cliper) {
     clearInterval(state.processingTimer);
+    const runId = ++state.processingRunId;
+    state.cancelRequested = false;
+    clearProcessingError();
     state.progress = 0;
     state.renderErrors = [];
     resetStepStatus("render");
     state.renderStartedAt = Date.now();
-    setText("#renderScreenTitle", "Processing clips...");
-    setText("#renderScreenSubtitle", `Processing ${clips.length} clips with automatic AI production pipeline.`);
+    setText("#renderScreenTitle", "Memproses clip...");
+    setText("#renderScreenSubtitle", `Menyiapkan ${clips.length} clip dengan pipeline produksi otomatis.`);
     updateRenderStats({ progress: 0, stage: "Download video sections", clipIndex: 1, totalClips: clips.length });
     renderPipelinePreview();
     renderSteps();
     $("#jobBadge").textContent = "Rendering";
+    $("#cancelJob").disabled = false;
     pushLog(`[render] mulai render nyata ${clips.length} clip`);
     setView("render");
     const result = await window.cliper.render({ ...collectPayload(), moments: selectedMomentPayload() });
+    if (runId !== state.processingRunId) return;
     if (result.type === "error") {
-      $("#jobBadge").textContent = "Error";
-      pushLog(`[error] ${result.message}`);
-      toast(result.message);
+      await showProcessingError(result, "render", runId);
       return;
     }
+    clearProcessingError();
+    state.cancelRequested = false;
     if (result.result?.manifest?.used_cookies) {
       await markCookiesUsed();
       pushLog("[cookies] render berhasil memakai cookies setelah retry otomatis");
@@ -1914,11 +2980,19 @@ async function startProcessing() {
 }
 
 function buildConfig() {
+  const providerType = selectedProviderType();
+  const modelValue = fieldValue("highlightModel", providerType === "cloud" ? aiProviders.cloud.model : "");
+  const rendererSettings = getProductionRenderPreset();
   const config = {
-    providerType: "cloud",
-    baseUrl: aiProviderDefaults.cloud.baseUrl,
+    settingsContractVersion: Number(state.settingsContract?.version || 1),
+    featureFlags: { ...(state.settingsContract?.featureFlags || {}) },
+    rendererSettings: { ...rendererSettings },
+    ...rendererSettings,
+    providerType,
+    baseUrl: providerType === "cloud" ? aiProviders.cloud.baseUrl : fieldValue("baseUrl", ""),
     apiKey: fieldValue("apiKey"),
-    highlightModel: "auto",
+    model: modelValue,
+    highlightModel: modelValue,
     aiHighlightToggle: fieldValue("aiHighlightToggle", true),
     aiHookToggle: fieldValue("aiHookToggle", true),
     aiCaptionToggle: fieldValue("aiCaptionToggle", true),
@@ -1926,12 +3000,15 @@ function buildConfig() {
     aiTtsToggle: fieldValue("aiTtsToggle", false),
     providerStatus: $("#providerStatusText")?.textContent || "Cliper AI Cloud belum terhubung",
     apiStatus: $("#apiStatus")?.textContent || "Cliper AI Cloud belum terhubung",
+    cloudConnectionOk: state.cloudConnectionOk,
+    cloudRouterReady: state.cloudRouterReady,
+    cloudConnectionKeyFingerprint: state.cloudConnectionKeyFingerprint,
     apiLastTestedAt: state.apiLastTestedAt || "",
     apiLastLatencyMs: state.apiLastLatencyMs || 0,
     apiLastResponse: state.apiLastResponse || "",
     aiUsageToday: normalizeAiUsage(state.aiUsageToday),
-    clipCount: fieldValue("clipCount", "6"),
-    scoreMode: fieldValue("scoreMode", "Random Viral Mix"),
+    clipCount: fieldValue("clipCount", "0"),
+    scoreMode: "Content-aware editor score",
     minDuration: fieldValue("minDuration", "30"),
     targetDuration: fieldValue("targetDuration", "75"),
     maxDuration: fieldValue("maxDuration", "180"),
@@ -1953,41 +3030,47 @@ function buildConfig() {
     crfProfile: fieldValue("crfProfile", "23"),
     fpsProfile: fieldValue("fpsProfile", "Same as source"),
     captionStyle: fieldValue("captionStyle", "TikTok style"),
-    subtitleBurnToggle: fieldValue("subtitleBurnToggle", false),
-    hookOpeningToggle: fieldValue("hookOpeningToggle", false),
+    subtitleBurnToggle: rendererSettings.addCaptions && rendererSettings.burnSubtitle,
+    hookOpeningToggle: rendererSettings.addHook,
     hookDuration: fieldValue("hookDuration", "3 seconds"),
     subtitlePreviewInput: fieldValue("subtitlePreviewInput", "TAPI GUE HERAN"),
     subtitleFontFamily: fieldValue("subtitleFontFamily", "Arial Black"),
     subtitleFontPath: fieldValue("subtitleFontPath", ""),
-    subtitleFontSize: fieldValue("subtitleFontSize", "60"),
+    subtitleFontSize: fieldValue("subtitleFontSize", "84"),
+    subtitleX: fieldValue("subtitleX", "50"),
+    subtitleY: fieldValue("subtitleY", "82"),
     subtitlePrimaryColor: fieldValue("subtitlePrimaryColor", "#ffffff"),
-    subtitleActiveColor: fieldValue("subtitleActiveColor", "#19ff47"),
+    subtitleActiveColor: fieldValue("subtitleActiveColor", "#ffe600"),
     subtitleStrokeColor: fieldValue("subtitleStrokeColor", "#000000"),
-    subtitleShadow: fieldValue("subtitleShadow", "4"),
+    subtitleShadow: fieldValue("subtitleShadow", "3"),
     subtitleAnimation: fieldValue("subtitleAnimation", "Scale"),
-    ttsHookToggle: fieldValue("ttsHookToggle", false),
-    audioEnhanceToggle: fieldValue("audioEnhanceToggle", true),
+    subtitleLetterSpacing: fieldValue("subtitleLetterSpacing", "1.1"),
+    subtitlePreset: fieldValue("subtitlePreset", "capcut"),
+    subtitleWordHighlight: fieldValue("subtitleWordHighlightToggle", true),
+    overlayGeometryVersion: 2,
+    ttsHookToggle: rendererSettings.addTtsHook,
+    audioEnhanceToggle: rendererSettings.audioEnhance,
     thumbnailPreviewToggle: fieldValue("thumbnailPreviewToggle", false),
     watermarkEnabled: fieldValue("watermarkEnabled", false),
     watermarkInOutput: fieldValue("watermarkInOutput", false),
     logoAssetPath: fieldValue("logoAssetPath", ""),
-    logoX: fieldValue("logoX", "82"),
-    logoY: fieldValue("logoY", "8"),
+    logoX: fieldValue("logoX", "84"),
+    logoY: fieldValue("logoY", "12"),
     logoScale: fieldValue("logoScale", "18"),
     logoOpacity: fieldValue("logoOpacity", "90"),
     logoRotation: fieldValue("logoRotation", "0"),
     watermarkText: fieldValue("watermarkText"),
     watermarkOpacity: fieldValue("watermarkOpacity", "68"),
     watermarkPosition: fieldValue("watermarkPosition", "Top right"),
-    watermarkTextX: fieldValue("watermarkTextX", "78"),
-    watermarkTextY: fieldValue("watermarkTextY", "16"),
-    watermarkTextSize: fieldValue("watermarkTextSize", "28"),
+    watermarkTextX: fieldValue("watermarkTextX", "82"),
+    watermarkTextY: fieldValue("watermarkTextY", "20"),
+    watermarkTextSize: fieldValue("watermarkTextSize", "42"),
     watermarkTextColor: fieldValue("watermarkTextColor", "#ffffff"),
     watermarkTextStroke: fieldValue("watermarkTextStroke", "#000000"),
     watermarkTextShadow: fieldValue("watermarkTextShadow", "2"),
     watermarkFontFamily: fieldValue("watermarkFontFamily", "Arial Black"),
     watermarkFontPath: fieldValue("watermarkFontPath", ""),
-    gpuToggle: fieldValue("gpuToggle", false),
+    gpuToggle: rendererSettings.gpuAcceleration,
     cookies_path: state.cookiesPath || "",
     cookies_last_import: state.cookiesInfo?.importedAt || "",
     cookies_last_test: state.cookiesInfo?.lastTest || "",
@@ -2001,30 +3084,51 @@ function buildConfig() {
 }
 
 function applyConfig(config = {}) {
-  const legacyProvider = Boolean(config.providerType && config.providerType !== "cloud");
-  if (legacyProvider) {
-    config = {
-      ...config,
-      providerType: "cloud",
-      baseUrl: aiProviderDefaults.cloud.baseUrl,
-      highlightModel: "auto",
-      apiKey: "",
-      providerStatus: "Legacy provider removed. Enter a Cliper AI Cloud key."
-    };
-  }
-  state.config = config;
-  setValue("#providerType", "cloud");
-  setValue("#baseUrl", aiProviderDefaults.cloud.baseUrl);
+  const rendererSettings = normalizeRendererSettings(config);
+  config = {
+    ...config,
+    ...rendererSettings,
+    rendererSettings,
+    subtitleBurnToggle: rendererSettings.addCaptions && rendererSettings.burnSubtitle,
+    hookOpeningToggle: rendererSettings.addHook,
+    ttsHookToggle: rendererSettings.addTtsHook,
+    audioEnhanceToggle: rendererSettings.audioEnhance,
+    gpuToggle: rendererSettings.gpuAcceleration
+  };
+  const providerType = "cloud";
+  const legacyGeometry = Number(config.overlayGeometryVersion || 1) < 2;
+  const savedSubtitleSize = Number(config.subtitleFontSize || 56);
+  const savedWatermarkSize = Number(config.watermarkTextSize || 28);
+  const subtitleFontSize = legacyGeometry && savedSubtitleSize <= 64
+    ? Math.min(128, Math.round(savedSubtitleSize * 1.5))
+    : Math.max(40, Math.min(128, savedSubtitleSize || 84));
+  const watermarkTextSize = legacyGeometry && savedWatermarkSize <= 36
+    ? Math.min(96, Math.round(savedWatermarkSize * 1.5))
+    : Math.max(20, Math.min(96, savedWatermarkSize || 42));
+  const configuredCloudUrl = normalizeCloudEndpoint(config.cloudBaseUrl || config.baseUrl);
+  aiProviders.cloud.baseUrl = configuredCloudUrl;
+  state.config = { ...config, providerType, overlayGeometryVersion: 2 };
+  state.cloudConnectionOk = Boolean(config.cloudConnectionOk && config.apiKey && isConnectedProviderStatus(config.providerStatus));
+  state.cloudRouterReady = Boolean(config.cloudRouterReady && state.cloudConnectionOk);
+  state.cloudConnectionKeyFingerprint = state.cloudConnectionOk
+    ? (config.cloudConnectionKeyFingerprint || apiKeyFingerprint(config.apiKey))
+    : "";
+  setValue("#providerType", providerType);
+  setValue("#baseUrl", providerType === "cloud" ? aiProviders.cloud.baseUrl : config.baseUrl || "");
   setValue("#apiKey", config.apiKey || "");
-  setValue("#highlightModel", "auto");
+  setValue("#highlightModel", providerType === "cloud" ? aiProviders.cloud.model : config.model || config.highlightModel || "");
+  setText(
+    "#providerStatusText",
+    isConnectedProviderStatus(config.providerStatus) ? config.providerStatus : "Belum dites"
+  );
   applyProviderDefaults(false);
   setValue("#aiHighlightToggle", config.aiHighlightToggle ?? true);
   setValue("#aiHookToggle", config.aiHookToggle ?? true);
   setValue("#aiCaptionToggle", config.aiCaptionToggle ?? true);
   setValue("#aiTitleToggle", config.aiTitleToggle ?? true);
   setValue("#aiTtsToggle", config.aiTtsToggle ?? false);
-  setValue("#clipCount", config.clipCount || "6");
-  setValue("#scoreMode", config.scoreMode || "Random Viral Mix");
+  setValue("#clipCount", config.clipCount ?? "0");
+  setValue("#scoreMode", config.scoreMode || "Content-aware editor score");
   setValue("#minDuration", config.minDuration || "30");
   setValue("#targetDuration", config.targetDuration || "75");
   setValue("#maxDuration", config.maxDuration || "180");
@@ -2046,49 +3150,66 @@ function applyConfig(config = {}) {
   setValue("#crfProfile", config.crfProfile || "23");
   setValue("#fpsProfile", config.fpsProfile || "Same as source");
   setValue("#captionStyle", config.captionStyle || "TikTok style");
-  setValue("#subtitleBurnToggle", config.subtitleBurnToggle ?? false);
-  setValue("#hookOpeningToggle", config.hookOpeningToggle ?? false);
+  setValue("#subtitleBurnToggle", rendererSettings.addCaptions && rendererSettings.burnSubtitle);
+  setValue("#hookOpeningToggle", rendererSettings.addHook);
   setValue("#hookDuration", config.hookDuration || "3 seconds");
   setValue("#subtitlePreviewInput", config.subtitlePreviewInput || "TAPI GUE HERAN");
   setValue("#subtitleWordHighlightToggle", config.subtitleWordHighlight ?? true);
   setValue("#subtitleFontFamily", config.subtitleFontFamily || "Arial Black");
   setValue("#subtitleFontPath", config.subtitleFontPath || "");
-  setValue("#subtitleFontSize", config.subtitleFontSize || "60");
+  setValue("#subtitleFontSize", subtitleFontSize);
+  setValue("#subtitleX", config.subtitleX ?? "50");
+  setValue("#subtitleY", config.subtitleY ?? "82");
   setValue("#subtitlePrimaryColor", config.subtitlePrimaryColor || "#ffffff");
-  setValue("#subtitleActiveColor", !config.subtitleActiveColor || config.subtitleActiveColor === "#ffe600" ? "#19ff47" : config.subtitleActiveColor);
+  setValue("#subtitleActiveColor", config.subtitleActiveColor || "#ffe600");
   setValue("#subtitleStrokeColor", config.subtitleStrokeColor || "#000000");
-  setValue("#subtitleShadow", config.subtitleShadow || "4");
+  setValue("#subtitleShadow", config.subtitleShadow || "3");
   setValue("#subtitleAnimation", config.subtitleAnimation || "Scale");
-  setValue("#ttsHookToggle", config.ttsHookToggle ?? false);
-  setValue("#audioEnhanceToggle", config.audioEnhanceToggle ?? true);
+  setValue("#subtitleLetterSpacing", config.subtitleLetterSpacing ?? "1.1");
+  const hasSavedSubtitleStyle = [
+    "captionStyle",
+    "subtitleFontFamily",
+    "subtitleFontSize",
+    "subtitleActiveColor",
+    "subtitleAnimation",
+  ].some((key) => Object.prototype.hasOwnProperty.call(config, key));
+  markSubtitlePreset(config.subtitlePreset || (hasSavedSubtitleStyle ? "" : "capcut"));
+  setValue("#ttsHookToggle", rendererSettings.addTtsHook);
+  setValue("#audioEnhanceToggle", rendererSettings.audioEnhance);
+  setValue("#smartCropToggle", rendererSettings.smartCrop);
+  setValue("#dynamicZoomToggle", rendererSettings.dynamicZoom);
+  setValue("#faceTrackToggle", rendererSettings.faceTrack);
+  setValue("#autoCutToggle", rendererSettings.autoCut);
+  setValue("#autoVideoEnhancementToggle", rendererSettings.autoVideoEnhancement);
   setValue("#thumbnailPreviewToggle", config.thumbnailPreviewToggle ?? false);
   setValue("#watermarkEnabled", config.watermarkEnabled ?? false);
   setValue("#watermarkInOutput", config.watermarkInOutput ?? false);
   setValue("#logoAssetPath", config.logoAssetPath || "");
-  setValue("#logoX", config.logoX || "82");
-  setValue("#logoY", config.logoY || "8");
+  setValue("#logoX", config.logoX ?? "84");
+  setValue("#logoY", Math.max(Number(config.logoScale || 18) / 2, Number(config.logoY ?? 12)));
   setValue("#logoScale", config.logoScale || "18");
   setValue("#logoOpacity", config.logoOpacity || "90");
   setValue("#logoRotation", config.logoRotation || "0");
   setValue("#watermarkText", config.watermarkText || "");
   setValue("#watermarkOpacity", config.watermarkOpacity || "68");
   setValue("#watermarkPosition", config.watermarkPosition || "Top right");
-  setValue("#watermarkTextX", config.watermarkTextX || "78");
-  setValue("#watermarkTextY", config.watermarkTextY || "16");
-  setValue("#watermarkTextSize", config.watermarkTextSize || "28");
+  setValue("#watermarkTextX", config.watermarkTextX ?? "82");
+  setValue("#watermarkTextY", config.watermarkTextY ?? "20");
+  setValue("#watermarkTextSize", watermarkTextSize);
   setValue("#watermarkTextColor", config.watermarkTextColor || "#ffffff");
   setValue("#watermarkTextStroke", config.watermarkTextStroke || "#000000");
   setValue("#watermarkTextShadow", config.watermarkTextShadow || "2");
   setValue("#watermarkFontFamily", config.watermarkFontFamily || "Arial Black");
   setValue("#watermarkFontPath", config.watermarkFontPath || "");
-  setValue("#gpuToggle", config.gpuToggle ?? false);
+  setValue("#gpuToggle", rendererSettings.gpuAcceleration);
   setValue("#overwriteExisting", config.overwriteExisting ?? false);
   setValue("#autoRename", config.autoRename ?? true);
   setValue("#createProjectFolder", config.createProjectFolder ?? true);
   setValue("#deleteTempAfterExport", config.deleteTempAfterExport ?? true);
+  syncRendererSettingDependencies();
   state.cookiesInfo = normalizeCookiesInfo(config);
   state.cookiesPath = state.cookiesInfo?.path || "";
-  setText("#apiStatus", !config.apiKey ? "Cliper AI Cloud belum terhubung" : "Cliper Cloud API key tersimpan");
+  renderCloudConnectionStatus(Boolean(config.apiKey));
   applyProviderDefaults(false);
   renderProviders();
   renderCookiesManager();
@@ -2111,7 +3232,7 @@ async function saveConfig(options = {}) {
       pushLog(`[config] gagal menyimpan config.json: ${error.message}`);
     }
   }
-  setText("#apiStatus", config.apiKey ? "Cliper Cloud API key tersimpan" : "Cliper AI Cloud belum terhubung");
+  renderCloudConnectionStatus(Boolean(config.apiKey));
   renderProviders();
   renderCookiesManager();
   if (!options.silent) toast("Setting disimpan");
@@ -2141,19 +3262,48 @@ async function loadConfig() {
       pushLog(`[config] gagal membaca config.json: ${error.message}`);
     }
   }
+  // The main process owns the endpoint decision. This keeps a packaged app from
+  // ever falling back to a stale browser cache or localhost when config recovery fails.
+  if (window.cliper?.getRuntimeDefaults) {
+    try {
+      const runtimeDefaults = await window.cliper.getRuntimeDefaults();
+      if (typeof runtimeDefaults?.appVersion === "string" && runtimeDefaults.appVersion.trim()) {
+        appVersion = runtimeDefaults.appVersion.trim();
+      }
+      if (runtimeDefaults?.cloudBaseUrl) {
+        config = {
+          ...config,
+          providerType: "cloud",
+          baseUrl: runtimeDefaults.cloudBaseUrl,
+          cloudBaseUrl: runtimeDefaults.cloudBaseUrl
+        };
+      }
+    } catch (error) {
+      pushLog(`[config] gagal membaca endpoint runtime: ${error.message}`);
+    }
+  }
+  if (window.cliper?.getYouTubeSession) {
+    try {
+      const youtubeSession = await window.cliper.getYouTubeSession();
+      if (youtubeSession?.present) {
+        config = {
+          ...config,
+          cookies_path: youtubeSession.path,
+          cookiesPath: youtubeSession.path,
+          cookies_meta: youtubeSession
+        };
+      } else {
+        delete config.cookies_path;
+        delete config.cookiesPath;
+        delete config.cookies_meta;
+      }
+    } catch (error) {
+      pushLog(`[auth] status YouTube Session tidak tersedia: ${error.message}`);
+    }
+  }
   const browserSafeConfig = { ...config };
   delete browserSafeConfig.apiKey;
   localStorage.setItem("cliper-config", JSON.stringify(browserSafeConfig));
-  if (config.providerType && config.providerType !== "cloud") {
-    pushLog("[config] provider lama dihapus; Settings sekarang hanya memakai Cliper AI Cloud");
-    config = {
-      ...config,
-      providerType: "cloud",
-      baseUrl: aiProviderDefaults.cloud.baseUrl,
-      highlightModel: "auto",
-      apiKey: ""
-    };
-  }
   applyConfig(config);
 }
 
@@ -2174,9 +3324,9 @@ async function validateAndStoreCookies(filePath) {
     return;
   }
 
-  toast("Importing cookies...");
-  setText("#cookiesTestStatus", "Importing cookies...");
-  pushLog(`[cookies] validasi ${filePath}`);
+  toast("Mengimpor YouTube Session...");
+  setText("#cookiesTestStatus", "Memvalidasi session...");
+  pushLog("[auth] validasi file YouTube Session lokal");
   const result = await window.cliper.validateCookies({ cookiesPath: filePath });
   const validation = result.result || {};
   if (result.type === "error" || !validation.ok) {
@@ -2187,23 +3337,21 @@ async function validateAndStoreCookies(filePath) {
     return;
   }
 
-  const now = new Date().toISOString();
-  state.cookiesPath = validation.path || filePath;
-  state.cookiesInfo = {
-    path: state.cookiesPath,
-    fileName: validation.fileName || filePath.split(/[\\/]/).pop() || "cookies.txt",
-    sizeBytes: validation.sizeBytes,
-    importedAt: now,
-    lastUsed: "",
-    lastTest: "",
-    status: "Cookies Loaded",
-    testStatus: validation.warning || "Cookies berhasil dimuat.",
-    validation
-  };
+  const session = validation.session || {};
+  state.cookiesPath = session.path || validation.path || filePath;
+  state.cookiesInfo = normalizeCookiesInfo({
+    cookies_path: state.cookiesPath,
+    cookies_meta: {
+      ...session,
+      state: session.state || "SESSION_PRESENT",
+      reason: validation.warning || null
+    }
+  });
   await saveConfig({ silent: true });
   renderCookiesManager();
-  pushLog("[cookies] Cookies berhasil dimuat.");
-  toast("Cookies berhasil dimuat.");
+  pushLog("[auth] YouTube Session tersimpan secara lokal.");
+  toast("YouTube Session berhasil disimpan.");
+  await resumePendingSessionJob();
 }
 
 async function importCookies() {
@@ -2217,22 +3365,17 @@ async function importCookies() {
 
 async function testCookies() {
   if (!state.cookiesPath) {
-    toast("Import cookies dulu");
+    toast("Import YouTube Session dulu");
     setSettingsTab("cookies");
     return;
   }
-  const youtubeUrl = $("#youtubeUrl")?.value.trim();
-  if (!youtubeUrl) {
-    toast("Masukkan URL YouTube untuk test cookies.");
-    setView("studio");
-    return;
-  }
+  const youtubeUrl = $("#youtubeUrl")?.value.trim() || "";
   if (!window.cliper?.testCookies) {
     toast("Test cookies tersedia di .exe");
     return;
   }
-  toast("Testing cookies...");
-  setText("#cookiesTestStatus", "Testing cookies...");
+  toast("Memeriksa YouTube Session...");
+  setText("#cookiesTestStatus", "Memeriksa session...");
   const result = await window.cliper.testCookies({ cookiesPath: state.cookiesPath, url: youtubeUrl });
   const data = result.result || {};
   const now = data.testedAt || new Date().toISOString();
@@ -2243,40 +3386,49 @@ async function testCookies() {
       lastTest: now,
       testStatus: status,
       status,
-      testUrl: youtubeUrl
+      testUrl: youtubeUrl,
+      state: data.session?.state || "SESSION_ERROR",
+      errorClass: data.errorClass || "UNKNOWN",
+      reason: status
     };
     await saveConfig({ silent: true });
     pushLog(`[cookies] test gagal: ${status}`);
     toast(status);
     return;
   }
-  state.cookiesInfo = {
-    ...(state.cookiesInfo || {}),
-    lastTest: now,
-    testStatus: "✓ Cookies valid",
-    status: "Cookies Loaded",
-    testUrl: youtubeUrl
-  };
+  state.cookiesInfo = normalizeCookiesInfo({
+    cookies_path: state.cookiesPath,
+    cookies_meta: {
+      ...(state.cookiesInfo || {}),
+      ...(data.session || {}),
+      state: data.session?.state || "SESSION_VALID",
+      lastChecked: now,
+      reason: null
+    }
+  });
   await saveConfig({ silent: true });
-  pushLog(`[cookies] valid untuk test video: ${data.lastTestVideo || "-"}`);
-  toast("✓ Cookies valid");
+  pushLog(`[auth] YouTube Session valid; pemeriksaan metadata=${data.lastTestVideo ? "ok" : "unknown"}`);
+  toast("YouTube Session valid");
+  await resumePendingSessionJob();
 }
 
 async function removeCookies() {
+  if (window.cliper?.removeYouTubeSession) {
+    await window.cliper.removeYouTubeSession();
+  }
   state.cookiesPath = "";
   state.cookiesInfo = null;
+  state.pendingSessionResume = null;
   await saveConfig({ silent: true });
   renderCookiesManager();
-  toast("Cookies dihapus dari config");
+  toast("YouTube Session lokal dihapus");
 }
 
 async function detectGpu() {
   setText("#detectedGpu", "Detecting GPU...");
   await scanSubtitles();
-  const hasFfmpeg = state.dependencies?.ffmpeg?.ok;
-  setText("#detectedGpu", hasFfmpeg ? "FFmpeg ready - GPU encoder akan dicoba otomatis saat render" : "GPU belum terdeteksi. CPU fallback aktif.");
-  setText("#activeEncoder", hasFfmpeg && $("#gpuToggle")?.checked ? "h264_amf jika tersedia, fallback libx264" : "CPU fallback - libx264");
-  toast("GPU/runtime selesai dicek");
+  const hardware = refreshHardwareStatus(state.dependencies);
+  toast(hardware.active.includes("dipilih") ? "Encoder perangkat siap" : "GPU/runtime selesai dicek");
 }
 
 function bindEvents() {
@@ -2285,6 +3437,7 @@ function bindEvents() {
 
   $("#youtubeUrl").addEventListener("input", (event) => {
     setSourceMode("youtube");
+    resetSourceMetadata(event.target.value.trim());
     const clean = event.target.value.replace(/^https?:\/\//, "");
     $("#previewUrl").textContent = clean || "Masukkan link YouTube";
     scheduleMetadataFetch();
@@ -2303,6 +3456,7 @@ function bindEvents() {
     }
     $("#youtubeUrl").value = text.trim();
     setSourceMode("youtube");
+    resetSourceMetadata(text.trim());
     $("#previewUrl").textContent = text.trim();
     scheduleMetadataFetch();
     toast("URL ditempel");
@@ -2321,6 +3475,7 @@ function bindEvents() {
     }
   });
   $("#captionStyle").addEventListener("change", () => {
+    markSubtitlePreset("");
     updateCounters();
     updateSubtitlePreview();
   });
@@ -2332,17 +3487,46 @@ function bindEvents() {
     applyOutputQualityPreset("capcut_opus_2k");
     saveConfig({ silent: true });
   });
-  ["watermarkEnabled", "watermarkInOutput", "gpuToggle", "formatProfile", "resolutionProfile", "fpsProfile", "crfProfile"].forEach((id) => {
+  [
+    "smartCropToggle",
+    "faceTrackToggle",
+    "dynamicZoomToggle",
+    "autoCutToggle",
+    "audioEnhanceToggle",
+    "autoVideoEnhancementToggle",
+    "subtitleBurnToggle",
+    "hookOpeningToggle",
+    "ttsHookToggle",
+    "watermarkEnabled",
+    "watermarkInOutput",
+    "gpuToggle",
+    "formatProfile",
+    "resolutionProfile",
+    "fpsProfile",
+    "crfProfile"
+  ].forEach((id) => {
     const node = $(`#${id}`);
-    if (node) node.addEventListener("change", renderPipelinePreview);
+    if (node) node.addEventListener("change", () => {
+      syncRendererSettingDependencies();
+      renderPipelinePreview();
+      if (id === "gpuToggle") refreshHardwareStatus();
+      saveConfig({ silent: true });
+      if (id === "formatProfile" || id === "resolutionProfile") {
+        updateBrandPreview();
+        updateSubtitlePreview();
+      }
+    });
   });
-  ["selectionMode", "rangeStart", "rangeEnd", "multipleRanges"].forEach((id) => {
+  $("#selectionMode")?.addEventListener("change", () => updateTimelinePreview());
+  ["rangeStart", "rangeEnd"].forEach((id) => {
     const node = $(`#${id}`);
-    if (node) {
-      node.addEventListener("input", updateTimelinePreview);
-      node.addEventListener("change", updateTimelinePreview);
-    }
+    if (!node) return;
+    node.addEventListener("input", () => updateTimelinePreview({ normalizeInputs: false }));
+    node.addEventListener("change", () => updateTimelinePreview());
+    node.addEventListener("blur", () => updateTimelinePreview());
   });
+  $("#multipleRanges")?.addEventListener("input", () => updateTimelinePreview({ normalizeInputs: false }));
+  $("#multipleRanges")?.addEventListener("change", () => updateTimelinePreview());
   $("#analysisStartRange")?.addEventListener("input", () => updateAnalysisRangeFromSeekbar("start"));
   $("#analysisEndRange")?.addEventListener("input", () => updateAnalysisRangeFromSeekbar("end"));
   ["logoScale", "logoOpacity", "logoRotation", "watermarkText", "watermarkOpacity", "watermarkTextSize", "watermarkTextColor", "watermarkTextStroke", "watermarkTextShadow", "watermarkFontFamily", "watermarkFontPath"].forEach((id) => {
@@ -2352,21 +3536,36 @@ function bindEvents() {
       node.addEventListener("change", updateBrandPreview);
     }
   });
-  ["subtitlePreviewInput", "subtitleFontFamily", "subtitleFontSize", "subtitlePrimaryColor", "subtitleActiveColor", "subtitleStrokeColor", "subtitleShadow", "subtitleAnimation"].forEach((id) => {
+  ["subtitlePreviewInput", "subtitleWordHighlightToggle", "subtitleFontFamily", "subtitleFontSize", "subtitlePrimaryColor", "subtitleActiveColor", "subtitleStrokeColor", "subtitleShadow", "subtitleAnimation", "subtitleLetterSpacing"].forEach((id) => {
     const node = $(`#${id}`);
     if (node) {
-      node.addEventListener("input", updateSubtitlePreview);
-      node.addEventListener("change", updateSubtitlePreview);
+      const update = () => {
+        if (id !== "subtitlePreviewInput") markSubtitlePreset("");
+        updateSubtitlePreview();
+      };
+      node.addEventListener("input", update);
+      node.addEventListener("change", update);
     }
   });
   $$("[data-brand-preset]").forEach((button) => {
     button.addEventListener("click", () => setBrandPreset(button.dataset.brandPreset));
   });
   $$("[data-subtitle-preset]").forEach((button) => {
-    button.addEventListener("click", () => applySubtitlePreset(button.dataset.subtitlePreset));
+    button.addEventListener("click", () => {
+      applySubtitlePreset(button.dataset.subtitlePreset);
+      saveConfig({ silent: true });
+    });
   });
   bindPreviewDrag($("#brandPreviewLogo"), "logoX", "logoY");
   bindPreviewDrag($("#brandPreviewText"), "watermarkTextX", "watermarkTextY");
+  bindPreviewDrag($("#subtitlePreviewText"), "subtitleX", "subtitleY", {
+    frameSelector: "#subtitlePreviewFrame",
+    update: updateSubtitlePreview,
+  });
+  window.addEventListener("resize", () => {
+    updateBrandPreview();
+    updateSubtitlePreview();
+  });
   $("#chooseLogoAsset")?.addEventListener("click", async () => {
     if (!window.cliper?.selectLogoFile) {
       toast("Upload logo tersedia saat dibuka lewat .exe");
@@ -2448,16 +3647,10 @@ function bindEvents() {
   $("#momentGrid").addEventListener("change", (event) => {
     const id = Number(event.target.dataset.toggleMoment);
     if (!id) return;
-    const item = momentBank.find((moment) => moment.id === id);
-    if (item?.renderEligible === false) {
-      event.target.checked = false;
-      state.selectedMoments.delete(id);
-      toast("Score di bawah 65 belum layak render otomatis");
-      renderMoments();
-      return;
-    }
     if (event.target.checked) {
       state.selectedMoments.add(id);
+      const item = momentBank.find((moment) => moment.id === id);
+      if (item) item.approved = true;
     } else {
       state.selectedMoments.delete(id);
     }
@@ -2482,8 +3675,26 @@ function bindEvents() {
     }
   });
   $("#momentGrid").addEventListener("click", (event) => {
-    if (event.target.closest("input, button, a, select, textarea")) {
-      // Button-specific handlers below still run because they are checked first.
+    const selectControl = event.target.closest("[data-toggle-moment], .moment-select");
+    if (selectControl) {
+      event.preventDefault();
+      event.stopPropagation();
+      const input = selectControl.matches("[data-toggle-moment]")
+        ? selectControl
+        : selectControl.querySelector("[data-toggle-moment]");
+      const id = Number(input?.dataset.toggleMoment || 0);
+      if (!id) return;
+      const item = momentBank.find((moment) => moment.id === id);
+      if (state.selectedMoments.has(id)) {
+        state.selectedMoments.delete(id);
+        if (item) item.approved = false;
+      } else {
+        state.selectedMoments.add(id);
+        if (item) item.approved = true;
+      }
+      renderMoments();
+      updateProcessButtons();
+      return;
     }
     const rowButton = event.target.closest("[data-moment-row]");
     const playButton = event.target.closest("[data-play-moment]");
@@ -2544,10 +3755,6 @@ function bindEvents() {
     }
     if (acceptButton) {
       const item = momentBank.find((moment) => moment.id === id);
-      if (item?.renderEligible === false) {
-        toast("Score di bawah 65. Edit atau regenerate dulu sebelum render.");
-        return;
-      }
       state.selectedMoments.add(id);
       if (item) item.approved = true;
       renderMoments();
@@ -2696,18 +3903,25 @@ function bindEvents() {
   });
 
   $("#selectAllButton").addEventListener("click", () => {
-    const visibleMoments = momentBank.filter((item) => !item.rejected && item.renderEligible !== false);
+    const visibleMoments = filteredMoments();
     const allSelected = visibleMoments.length > 0 && visibleMoments.every((item) => state.selectedMoments.has(item.id));
-    state.selectedMoments = new Set(allSelected ? [] : visibleMoments.map((item) => item.id));
-    $("#selectAllButton").textContent = allSelected ? "Pilih semua" : "Kosongkan";
+    for (const item of visibleMoments) {
+      if (allSelected) {
+        state.selectedMoments.delete(item.id);
+      } else {
+        state.selectedMoments.add(item.id);
+        item.approved = true;
+      }
+    }
     renderMoments();
     updateProcessButtons();
   });
 
   $("#cancelJob").addEventListener("click", async () => {
+    state.cancelRequested = true;
     if (window.cliper) {
       await window.cliper.cancel();
-      $("#jobBadge").textContent = "Cancelled";
+      showProcessingCancelled(state.jobMode);
       pushLog("[cancelled] worker dibatalkan");
       toast("Worker dibatalkan");
       return;
@@ -2715,10 +3929,14 @@ function bindEvents() {
     if (!state.processingTimer) return;
     clearInterval(state.processingTimer);
     state.processingTimer = null;
-    $("#jobBadge").textContent = "Cancelled";
+    showProcessingCancelled(state.jobMode);
     state.logLines.push("[cancelled] render dibatalkan user");
     renderLogs();
     toast("Render dibatalkan");
+  });
+
+  $("#renderErrorClose").addEventListener("click", () => {
+    clearProcessingError();
   });
 
   $("#resetButton").addEventListener("click", () => {
@@ -2728,7 +3946,14 @@ function bindEvents() {
     $("#previewTitle").textContent = "Belum ada video";
     $("#previewScore").textContent = "-";
     state.previewImageUrl = "";
-    $("#clipCount").value = 6;
+    state.videoDuration = 0;
+    metadataUrl = "";
+    metadataPendingUrl = "";
+    setValue("#selectionMode", "full");
+    setValue("#rangeStart", "00:00");
+    setValue("#rangeEnd", "");
+    setValue("#multipleRanges", "");
+    $("#clipCount").value = 0;
     state.lastAnalysis = null;
     state.lastTranscript = [];
     state.activeMomentId = null;
@@ -2737,10 +3962,19 @@ function bindEvents() {
     updateCounters();
     renderMoments();
     drawPreview();
+    updateTimelinePreview();
     toast("Form direset");
   });
 
-  $("#refreshPreview").addEventListener("click", drawPreview);
+  $("#refreshPreview").addEventListener("click", () => {
+    const url = $("#youtubeUrl").value.trim();
+    if (url) {
+      scheduleMetadataFetch(true);
+      toast("Metadata diperbarui");
+    } else {
+      drawPreview();
+    }
+  });
   $("#newSessionButton").addEventListener("click", () => setView("studio"));
   $("#saveConfig").addEventListener("click", () => saveConfig());
   $("#chooseOutputFolder").addEventListener("click", async () => {
@@ -2756,12 +3990,40 @@ function bindEvents() {
     }
   });
   $("#checkDependencyButton").addEventListener("click", scanSubtitles);
+  $("#installRuntimeButton").addEventListener("click", async () => {
+    const button = $("#installRuntimeButton");
+    const status = $("#runtimeInstallStatus");
+    if (!window.cliper?.installRuntime) {
+      toast("Installer runtime hanya tersedia di aplikasi desktop.");
+      return;
+    }
+    button.disabled = true;
+    status.classList.remove("error");
+    status.classList.add("running");
+    status.textContent = "Menyiapkan komponen yang diperlukan untuk mengunduh dan merender video. Proses ini dapat memerlukan beberapa menit.";
+    pushLog("[runtime] instalasi otomatis dimulai");
+    const result = await window.cliper.installRuntime();
+    button.disabled = false;
+    status.classList.remove("running");
+    status.classList.toggle("error", !result?.ok);
+    status.textContent = result?.status || "Installer runtime selesai.";
+    pushLog(`[runtime] ${status.textContent}`);
+    if (result?.ok) {
+      await scanSubtitles();
+      toast("Sistem siap digunakan");
+    } else {
+      toast(result?.status || "Instalasi runtime gagal");
+    }
+  });
   $("#detectGpuButton").addEventListener("click", detectGpu);
   applyProviderDefaults(true);
   $("#apiKey").addEventListener("input", () => {
+    state.cloudConnectionOk = false;
+    state.cloudRouterReady = false;
+    state.cloudConnectionKeyFingerprint = "";
     renderProviders();
     setProviderStatus($("#apiKey").value.trim() ? "API key tersimpan · test connection" : "Cliper AI Cloud belum terhubung", false);
-    setText("#apiStatus", $("#apiKey").value.trim() ? "Cliper Cloud API key tersimpan" : "Cliper AI Cloud belum terhubung");
+    renderCloudConnectionStatus(Boolean($("#apiKey").value.trim()));
   });
   $("#toggleApiKeyVisibility").addEventListener("click", () => {
     const input = $("#apiKey");
@@ -2772,6 +4034,7 @@ function bindEvents() {
     button.title = show ? "Sembunyikan API key" : "Tampilkan API key";
   });
   $("#highlightModel").addEventListener("input", renderProviders);
+  initializeProviderControls();
   $("#importCookiesButton").addEventListener("click", importCookies);
   $("#replaceCookiesButton").addEventListener("click", importCookies);
   $("#testCookiesButton").addEventListener("click", testCookies);
@@ -2824,6 +4087,14 @@ function bindEvents() {
   });
 
   if (window.cliper) {
+    window.cliper.onRuntimeInstallEvent?.((event) => {
+      const status = $("#runtimeInstallStatus");
+      if (!status || !event?.message) return;
+      status.textContent = event.message;
+      status.classList.toggle("error", event.type === "error");
+      status.classList.toggle("running", event.type === "output");
+      pushLog(`[runtime] ${event.message}`);
+    });
     window.cliper.onWorkerEvent((event) => {
       if (event.type === "progress") {
         state.progress = Number(event.progress || state.progress || 0);
@@ -2861,8 +4132,10 @@ function bindEvents() {
 }
 
 async function init() {
+  await loadSettingsContract();
   await loadConfig();
   bindEvents();
+  clearProcessingError();
   renderMoments();
   renderSteps();
   renderLogs();
@@ -2871,7 +4144,7 @@ async function init() {
   renderCookiesManager();
   renderRuntimeList();
   renderPipelinePreview();
-  setText("#appVersion", `v${APP_VERSION}`);
+  setText("#appVersion", appVersion ? `v${appVersion}` : "v-");
   updateCounters();
   drawPreview();
 }

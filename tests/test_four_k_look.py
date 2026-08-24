@@ -76,6 +76,22 @@ def test_extreme_color_cast_reduces_saturation_instead_of_shifting_channels():
     assert "colorbalance=" not in graph
 
 
+def test_news_profile_uses_restrained_broadcast_enhancement():
+    payload = {
+        "_availableVideoFilters": ["eq", "curves"],
+        "_contentProfile": {"videoType": "news"},
+    }
+
+    graph = ",".join(cliper_worker.automatic_video_enhancement_filters(
+        payload,
+        {"title": "Sidang menjadi sorotan"},
+    ))
+
+    assert payload["_videoEnhancementProfile"] == "broadcast_natural"
+    assert "contrast=1.015" in graph
+    assert "saturation=1.010" in graph
+
+
 def test_color_cast_classifier_uses_neutral_chroma_distance():
     assert cliper_worker.classify_video_color_cast(129, 130)[0] == "normal"
     severity, dominant, distance = cliper_worker.classify_video_color_cast(150, 127)

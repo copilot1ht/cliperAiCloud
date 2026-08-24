@@ -1,13 +1,27 @@
 # Struktur Cliper AI Studio
 
 ```text
-Cliper Ai Studio/
-|-- app.js, index.html, electron/, worker/   Desktop Electron stabil
-|-- WEB PRODUCTION SAAS/                    Cliper AI Cloud workspace
-|-- docs/                                   Dokumentasi desktop dan audit
-|   `-- archive/legacy-blueprints/          Blueprint JSX lama (arsip)
-`-- dist*/                                  Artefak build lokal
+C:\Users\USER\Desktop\
+|-- Cliper Ai Studio/                    Electron desktop + Python worker + render lokal
+|   |-- app.js, index.html, styles.css   UI Electron desktop
+|   |-- electron/                        Main process dan preload IPC
+|   |-- worker/                          AI, subtitle, camera, highlight, dan render
+|   |-- assets/, scripts/, tests/, docs/ Aset, runtime, regression, dan panduan
+|   `-- dist/, PC-LAIN-TEST/             Build desktop terbaru dan paket portable
+`-- Cliper Ai Cloud/                     Cloud kanonis: Web + API + Prisma
 ```
+
+## Artefak lokal
+
+Folder berikut merupakan artefak lokal dan tidak menjadi source code:
+
+```text
+Local Test Builds/                       Bukti QA terbaru yang dipertahankan
+qa-render-output-camera/                 Bukti camera QA yang dirujuk audit V4
+```
+
+Output QA/render lama, payload eksperimen, cache Python, log smoke, dan build beta
+lama dibersihkan secara berkala. Artefak tersebut sudah tercakup dalam `.gitignore`.
 
 ## Aturan batas project
 
@@ -15,6 +29,7 @@ Cliper Ai Studio/
 2. Cloud tidak boleh diikutkan ke `build.files` Electron.
 3. Provider API key hanya berada di Cloud API.
 4. Desktop berbicara ke Cloud memakai satu Cliper key dan protokol OpenAI-compatible.
-5. Pemindahan desktop ke monorepo dilakukan belakangan, bukan bersamaan dengan pembangunan gateway.
+5. Folder `tests/`, `docs/`, `dist/`, dan `PC-LAIN-TEST/` bukan artefak QA lama dan tidak boleh dihapus sebagai bagian cleanup rutin.
+6. `WEB PRODUCTION SAAS` adalah worktree legacy sementara; jangan dijalankan atau dihapus sampai rekonsiliasi Git dan QA Cloud kanonis lulus.
 
-Pendekatan ini menjaga release desktop yang sudah berjalan, tetapi tetap menghasilkan satu repository yang rapi dan memiliki batas ownership jelas.
+Pendekatan ini menjaga release desktop yang sudah berjalan, audit tetap terlacak, dan batas ownership antar aplikasi tetap jelas.

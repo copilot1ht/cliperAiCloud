@@ -36,6 +36,25 @@ def test_cloud_request_signature_matches_canonical_body():
     assert hmac.compare_digest(headers["X-Cliper-Signature"], expected)
 
 
+def test_cloud_json_normalizes_integral_floats_before_signing():
+    value = {
+        "sourceDurationSeconds": 352.0,
+        "windows": [57.0, 63.5, 90.0],
+        "truth": True,
+        "zero": -0.0,
+    }
+
+    normalized = worker.cloud_json_compatible(value)
+
+    assert normalized == {
+        "sourceDurationSeconds": 352,
+        "windows": [57, 63.5, 90],
+        "truth": True,
+        "zero": 0,
+    }
+    assert isinstance(normalized["truth"], bool)
+
+
 def test_cloud_response_rejects_tampering():
     secret = "r" * 48
     payload = {"cloudSigningSecret": secret}

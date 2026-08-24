@@ -14,6 +14,30 @@ def timestamp(item, key, fallback=0.0):
         return float(fallback)
 
 
+def clip_segment_text(text, segment_start, segment_end, window_start, window_end):
+    """Return only the words estimated to fall inside the requested window."""
+    text = clean_text(text)
+    words = text.split()
+    segment_start = float(segment_start)
+    segment_end = float(segment_end)
+    window_start = float(window_start)
+    window_end = float(window_end)
+    if not words or segment_end <= segment_start:
+        return text
+    overlap_start = max(segment_start, window_start)
+    overlap_end = min(segment_end, window_end)
+    if overlap_end <= overlap_start:
+        return ""
+    if overlap_start <= segment_start and overlap_end >= segment_end:
+        return text
+    span = segment_end - segment_start
+    start_ratio = max(0.0, min(1.0, (overlap_start - segment_start) / span))
+    end_ratio = max(0.0, min(1.0, (overlap_end - segment_start) / span))
+    first = max(0, min(len(words) - 1, int(math.floor(start_ratio * len(words)))))
+    last = max(first + 1, min(len(words), int(math.ceil(end_ratio * len(words)))))
+    return clean_text(" ".join(words[first:last]))
+
+
 def transcript_text_between(transcript, start, end):
     parts = []
     for item in transcript or []:
@@ -21,7 +45,7 @@ def transcript_text_between(transcript, start, end):
         seg_end = timestamp(item, "end", seg_start)
         if seg_end < start or seg_start > end:
             continue
-        text = clean_text(item.get("text") or "")
+        text = clip_segment_text(item.get("text") or "", seg_start, seg_end, start, end)
         if text:
             parts.append(text)
     return clean_text(" ".join(parts))
@@ -181,6 +205,21 @@ def snap_to_sentence_end(transcript, end):
             return max(boundary, seg_end)
     return boundary
 
+def natural_end_in_range(transcript, preferred_end, minimum_end, maximum_end):
+    """Return a transcript end boundary without moving a clip's natural start."""
+    preferred = float(preferred_end)
+    minimum = float(minimum_end)
+    maximum = max(minimum, float(maximum_end))
+    boundaries = []
+    for item in transcript or []:
+        segment_end = timestamp(item, "end")
+        if minimum - 0.001 <= segment_end <= maximum + 0.001:
+            boundaries.append(segment_end)
+    if not boundaries:
+        return min(max(preferred, minimum), maximum)
+    return min(boundaries, key=lambda value: (abs(value - preferred), -value))
+
+
 
 def extend_story_boundary(transcript, start, end, min_duration=30, target_duration=75, max_duration=180, ending_buffer=2.5):
     if not transcript:
@@ -188,6 +227,9 @@ def extend_story_boundary(transcript, start, end, min_duration=30, target_durati
     start = snap_to_sentence_start(transcript, float(start))
     end = snap_to_sentence_end(transcript, float(end))
     max_end = start + float(max_duration)
+    minimum_end = start + float(min_duration)
+    if end - start > float(max_duration):
+        end = natural_end_in_range(transcript, max_end, minimum_end, max_end)
     target_end = start + float(target_duration)
     text = transcript_text_between(transcript, start, end)
 
@@ -198,7 +240,9 @@ def extend_story_boundary(transcript, start, end, min_duration=30, target_durati
             continue
         if seg_start - end > 4.5:
             break
-        candidate_end = min(max_end, seg_end)
+        if seg_end > max_end + 0.001:
+            break
+        candidate_end = seg_end
         candidate_text = clean_text(f"{text} {item.get('text') or ''}")
         end = candidate_end
         text = candidate_text
@@ -208,13 +252,25 @@ def extend_story_boundary(transcript, start, end, min_duration=30, target_durati
             break
 
     if end - start < float(min_duration):
-        end = min(max_end, start + float(min_duration))
+        end = natural_end_in_range(
+            transcript,
+            min(max_end, start + float(min_duration)),
+            minimum_end,
+            max_end,
+        )
         text = transcript_text_between(transcript, start, end) or text
     if is_story_finished(text):
-        end = min(max_end, end + max(0.0, float(ending_buffer or 0)))
-        text = transcript_text_between(transcript, start, end) or text
+        extension_limit = min(max_end, end + max(0.0, float(ending_buffer or 0)))
+        later_boundaries = [
+            timestamp(item, "end")
+            for item in transcript or []
+            if end + 0.001 < timestamp(item, "end") <= extension_limit + 0.001
+        ]
+        if later_boundaries:
+            end = min(later_boundaries, key=lambda value: abs(value - extension_limit))
+            text = transcript_text_between(transcript, start, end) or text
     if end - start > float(max_duration):
-        end = start + float(max_duration)
+        end = natural_end_in_range(transcript, max_end, minimum_end, max_end)
         text = transcript_text_between(transcript, start, end) or text
     return round(start, 2), round(end, 2), clean_text(text)
 

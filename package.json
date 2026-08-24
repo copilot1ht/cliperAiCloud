@@ -1,13 +1,19 @@
 {
   "name": "cliper-studio-plus",
-  "version": "1.10.0-beta.3",
+  "version": "1.11.5",
   "description": "Local-first AI video clipping studio for YouTube Shorts, TikTok, Reels, Facebook and Podcasts.",
   "author": "Cliper Studio Plus",
   "main": "electron/main.js",
   "private": true,
   "scripts": {
     "start": "set ELECTRON_RUN_AS_NODE=& electron .",
-    "build": "electron-builder --win",
+    "start:local-cloud": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-local-cloud.ps1",
+    "stop:local-cloud": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-local-cloud.ps1",
+    "setup:whispervideo": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-whispervideo.ps1",
+    "qa:local-e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/local-e2e-render.ps1",
+    "qa": "npm run qa:syntax && npm test",
+    "qa:full-local": "npm run qa && npm run qa:local-e2e",
+    "build": "electron-builder --win --publish never && node scripts/generate-checksums.js && node scripts/assemble-release.js",
     "test": "python -m pytest tests -q",
     "qa:syntax": "node --check app.js && node --check electron/main.js && node --check electron/preload.js",
     "qa:production": "node scripts/qa-production-check.js"
@@ -57,10 +63,10 @@
       "forceCodeSigning": false
     },
     "portable": {
-      "artifactName": "Cliper-Studio-Plus-Portable.${ext}"
+      "artifactName": "Cliper-Studio-Plus-Portable-${version}.${ext}"
     },
     "nsis": {
-      "artifactName": "Cliper-Studio-Plus-Setup.${ext}",
+      "artifactName": "Cliper-Studio-Plus-Setup-${version}.${ext}",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true

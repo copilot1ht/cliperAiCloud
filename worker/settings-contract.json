@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "booleanSettings": [
+    "smartCrop",
+    "dynamicZoom",
+    "faceTrack",
+    "addCaptions",
+    "burnSubtitle",
+    "autoCut",
+    "addHook",
+    "addTtsHook",
+    "audioEnhance",
+    "autoVideoEnhancement",
+    "gpuAcceleration"
+  ],
+  "defaults": {
+    "smartCrop": true,
+    "dynamicZoom": true,
+    "faceTrack": true,
+    "addCaptions": true,
+    "burnSubtitle": true,
+    "autoCut": true,
+    "addHook": true,
+    "addTtsHook": false,
+    "audioEnhance": true,
+    "autoVideoEnhancement": true,
+    "gpuAcceleration": true
+  },
+  "uiBindings": {
+    "smartCrop": "smartCropToggle",
+    "dynamicZoom": "dynamicZoomToggle",
+    "faceTrack": "faceTrackToggle",
+    "addCaptions": "subtitleBurnToggle",
+    "burnSubtitle": "subtitleBurnToggle",
+    "autoCut": "autoCutToggle",
+    "addHook": "hookOpeningToggle",
+    "addTtsHook": "ttsHookToggle",
+    "audioEnhance": "audioEnhanceToggle",
+    "autoVideoEnhancement": "autoVideoEnhancementToggle",
+    "gpuAcceleration": "gpuToggle"
+  },
+  "legacyAliases": {
+    "addCaptions": ["subtitleBurnToggle"],
+    "burnSubtitle": ["subtitleBurnToggle"],
+    "addHook": ["hookOpeningToggle"],
+    "addTtsHook": ["ttsHookToggle"],
+    "audioEnhance": ["audioEnhanceToggle"],
+    "gpuAcceleration": ["gpuToggle"]
+  },
+  "dependencies": {
+    "dynamicZoom": "smartCrop",
+    "faceTrack": "smartCrop",
+    "burnSubtitle": "addCaptions",
+    "addTtsHook": "addHook"
+  },
+  "featureFlags": {
+    "hookV2": true,
+    "ttsTimelineV2": false,
+    "momentScoringV2": true,
+    "naturalEditDirector": true,
+    "twoPersonEditing": true,
+    "publishingIntelligence": false,
+    "publishingGuard": false
+  }
+}

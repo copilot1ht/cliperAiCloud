@@ -195,17 +195,17 @@ def score_highlight_v2(metrics):
     if alignment_score > 70:
         score += 3
 
-    # Apply multi-face confidence boost
+    # Face tracking is editing evidence, not proof that a story is valuable.
     face_confidence = float(metrics.get("face_confidence", 0))
     if face_confidence > 80:
-        score += 4
+        score += 1
     elif face_confidence > 60:
-        score += 2
+        score += 0.5
 
     # Apply engagement predictor boost
     engagement = float(metrics.get("real_engagement", 0))
     if engagement > 70:
-        score += 5
+        score += 3
 
     # Apply story penalties
     if story < 48:
@@ -218,7 +218,7 @@ def score_highlight_v2(metrics):
     for penalty in penalties:
         score += float(penalty)
 
-    return bounded_score(score, 35, 99)
+    return bounded_score(score, 25, 97)
 
 
 def multi_face_confidence(face_tracks):
@@ -370,6 +370,23 @@ def transcript_hash(transcript) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _clip_segment_text(text, segment_start, segment_end, window_start, window_end):
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    words = text.split()
+    if not words or segment_end <= segment_start:
+        return text
+    overlap_start = max(segment_start, window_start)
+    overlap_end = min(segment_end, window_end)
+    if overlap_end <= overlap_start:
+        return ""
+    if overlap_start <= segment_start and overlap_end >= segment_end:
+        return text
+    span = segment_end - segment_start
+    first = max(0, min(len(words) - 1, int(math.floor(((overlap_start - segment_start) / span) * len(words)))))
+    last = max(first + 1, min(len(words), int(math.ceil(((overlap_end - segment_start) / span) * len(words)))))
+    return re.sub(r"\s+", " ", " ".join(words[first:last])).strip()
+
+
 def transcript_text_between(transcript, start, end):
     parts = []
     for item in transcript or []:
@@ -380,7 +397,13 @@ def transcript_text_between(transcript, start, end):
             continue
         if seg_end <= float(start) or seg_start >= float(end):
             continue
-        text = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
+        text = _clip_segment_text(
+            item.get("text") or "",
+            seg_start,
+            seg_end,
+            float(start),
+            float(end),
+        )
         if text:
             parts.append(text)
     return re.sub(r"\s+", " ", " ".join(parts)).strip()
@@ -416,7 +439,25 @@ def evidence_metrics(text, duration, segments=None, metadata=None):
     connectors = keyword_hits(lower, ["karena", "kemudian", "lalu", "setelah", "sebelum", "akhirnya", "makanya", "ternyata"])
     conflict_hits = keyword_hits(lower, ["konflik", "ribut", "debat", "ditolak", "masalah", "marah", "bohong", "bullying", "kontroversi"])
     emotion_hits = keyword_hits(lower, ["ketawa", "ngakak", "lucu", "sedih", "nangis", "marah", "takut", "kaget", "hening", "merinding", "kecewa"])
-    payoff_hits = keyword_hits(last, ["akhirnya", "ternyata", "makanya", "intinya", "hasilnya", "jawabannya", "selesai", "jadi"])
+    payoff_hits = keyword_hits(
+        last,
+        [
+            "akhirnya",
+            "ternyata",
+            "makanya",
+            "intinya",
+            "hasilnya",
+            "jawabannya",
+            "solusinya",
+            "berhasil",
+            "terbukti",
+            "terjawab",
+        ],
+    )
+    setup_hits = curiosity + keyword_hits(
+        first,
+        ["awalnya", "dulu", "waktu", "ketika", "masalahnya", "ceritanya"],
+    )
     value_hits = keyword_hits(lower, ["cara", "tips", "strategi", "alasan", "solusi", "fakta", "pelajaran", "penting", "contoh"])
     question_hits = text.count("?") + keyword_hits(first, ["apa", "kenapa", "bagaimana", "siapa"])
     speakers = {str(item.get("speaker_id") or item.get("speaker") or "") for item in segments if item.get("speaker_id") or item.get("speaker")}
@@ -429,11 +470,21 @@ def evidence_metrics(text, duration, segments=None, metadata=None):
         if speaker:
             previous_speaker = speaker
 
-    hook = 38 + curiosity * 8 + min(14, question_hits * 5) + min(8, text.count("!") * 3)
-    story = 38 + min(30, connectors * 5) + (10 if re.search(r"[.!?]$", text) else 0) + (8 if len(words) >= 45 else 0)
+    hook = 30 + curiosity * 8 + min(14, question_hits * 5) + min(6, text.count("!") * 2)
+    story = (
+        28
+        + min(18, setup_hits * 8)
+        + min(26, connectors * 5)
+        + (18 if payoff_hits else 0)
+        + (4 if re.search(r"[.!?]$", text) else 0)
+    )
+    if not payoff_hits:
+        story = min(story, 64)
     conflict = 30 + min(60, conflict_hits * 12)
     emotion = 30 + min(60, emotion_hits * 10 + text.count("!") * 3)
-    payoff = 32 + min(48, payoff_hits * 11) + (10 if re.search(r"[.!?]$", text) else 0)
+    payoff = 24 + min(56, payoff_hits * 14) + (4 if re.search(r"[.!?]$", text) else 0)
+    if not payoff_hits:
+        payoff = min(payoff, 46)
     retention = 42 + max(0, 18 - abs(density - 2.2) * 9) + min(18, curiosity * 3 + connectors * 2)
     speaker_energy = 42 + min(34, speaker_changes * 7 + max(0, len(speakers) - 1) * 6)
     visual_activity = float(metadata.get("visual_activity") or metadata.get("face_activity") or 45)
@@ -466,6 +517,7 @@ def evidence_metrics(text, duration, segments=None, metadata=None):
             "conflict_hits": conflict_hits,
             "emotion_hits": emotion_hits,
             "payoff_hits": payoff_hits,
+            "setup_hits": setup_hits,
         },
     }
     metrics["penalties"] = detect_penalties(text, duration, metrics)
@@ -669,16 +721,20 @@ def apply_overlap_filter(candidates: List[Dict[str, Any]], overlap_threshold: fl
 
 
 def normalize_scores(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Apply small deterministic rank calibration without manufacturing 99s."""
+    """Record deterministic rank metadata without altering evidence scores."""
     if not candidates:
         return candidates
     ranked = sorted(enumerate(candidates), key=lambda pair: float(pair[1].get("score", 0)), reverse=True)
-    count = max(1, len(ranked) - 1)
     calibrated = list(candidates)
     for rank, (original_index, candidate) in enumerate(ranked):
         raw = float(candidate.get("score", 0))
-        rank_adjustment = 3.0 - (rank / count) * 6.0
         candidate["raw_score"] = round(raw, 2)
-        candidate["score"] = round(max(25, min(97, raw + rank_adjustment)), 2)
+        candidate["score"] = round(max(25, min(97, raw)), 2)
+        candidate["score_calibration"] = {
+            "mode": "evidence_only",
+            "rank": rank + 1,
+            "candidate_count": len(ranked),
+            "rank_adjustment": 0,
+        }
         calibrated[original_index] = candidate
     return calibrated
