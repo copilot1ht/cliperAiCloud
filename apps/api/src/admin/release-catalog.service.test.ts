@@ -25,6 +25,7 @@ function createService() {
   const releases = [releaseRecord()];
   const desktopRelease = {
     findMany: vi.fn().mockImplementation(async ({ where }: { where?: { state?: string } } = {}) => where?.state ? releases.filter((release) => release.state === where.state) : releases),
+    findFirst: vi.fn().mockImplementation(async ({ where }: { where: { state: string; channel: string } }) => releases.find((release) => release.state === where.state && release.channel === where.channel) || null),
     findUnique: vi.fn().mockImplementation(async ({ where }: { where: { id: string } }) => releases.find((release) => release.id === where.id) || null),
     updateMany: vi.fn().mockImplementation(async ({ where, data }: { where: { isCurrent?: boolean; id?: { not: string } }; data: { isCurrent?: boolean } }) => {
       for (const release of releases) {
@@ -63,6 +64,18 @@ describe("ReleaseCatalogService", () => {
 
     expect(result.releases).toHaveLength(1);
     expect(result.releases[0]).toMatchObject({ version: "1.11.0-beta.2", notes: ["Subtitle sync", "Natural camera cuts"] });
+  });
+
+  it("returns the latest published stable release through the canonical contract", async () => {
+    const { service } = createService();
+
+    const result = await service.latestPublished("beta");
+
+    expect(result.release).toMatchObject({
+      version: "1.11.0-beta.2",
+      channel: "beta",
+      state: "PUBLISHED",
+    });
   });
 
   it("requires a public binary URL before a release can be published", async () => {

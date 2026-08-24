@@ -54,8 +54,8 @@ function AccountActionConfirm({ user, action, onClose, onSaved }: { user: AdminU
   const detail = deleting
     ? `${user.email} akan kehilangan akses permanen. Riwayat pembayaran, wallet, dan audit akan tetap disimpan untuk rekonsiliasi.`
     : user.status === "active"
-      ? `${user.email} akan keluar dari seluruh sesi dan seluruh API key aktifnya ditangguhkan.`
-      : `${user.email} akan dapat masuk kembali. Hanya key yang ditangguhkan oleh status akun yang diaktifkan kembali.`;
+      ? `${user.email} akan keluar dari seluruh sesi. API key tetap tersimpan tetapi tidak dapat digunakan selama akun ditangguhkan.`
+      : `${user.email} akan dapat masuk kembali. Status setiap API key tetap mengikuti pengaturan key masing-masing.`;
   const submit = async () => {
     setSaving(true); setError("");
     try {

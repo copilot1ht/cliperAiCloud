@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hash } from "@node-rs/argon2";
 import { AuthService } from "./auth.service.js";
 
@@ -100,6 +100,40 @@ describe("AuthService", () => {
     expect((await auth.listUsers()).find((item) => item.id === member.id)).toMatchObject({ billingMode: "wallet", protected: false });
     expect(await auth.deleteMember(member.id)).toMatchObject({ ok: true, status: "deleted" });
     expect((await auth.listUsers()).find((item) => item.id === member.id)).toMatchObject({ status: "deleted" });
+  });
+
+  it("keeps account suspension independent from an explicitly suspended API key", async () => {
+    const auth = new AuthService();
+    const updateMany = () => vi.fn().mockResolvedValue({ count: 0 });
+    const tx = {
+      session: { updateMany: updateMany() },
+      desktopSession: { updateMany: updateMany() },
+      passwordResetCredential: { updateMany: updateMany() },
+      passwordResetSession: { updateMany: updateMany() },
+      device: { updateMany: updateMany() },
+      apiKey: { updateMany: updateMany() },
+      license: { updateMany: updateMany() },
+    };
+    const apply = (
+      auth as unknown as {
+        applyPersistentAccessState: (
+          transaction: typeof tx,
+          userId: string,
+          status: "active" | "suspended",
+          now: Date,
+        ) => Promise<void>;
+      }
+    ).applyPersistentAccessState.bind(auth);
+
+    await apply(tx, "member-1", "suspended", new Date());
+    expect(tx.session.updateMany).toHaveBeenCalledOnce();
+    expect(tx.desktopSession.updateMany).toHaveBeenCalledOnce();
+    expect(tx.apiKey.updateMany).not.toHaveBeenCalled();
+    expect(tx.license.updateMany).not.toHaveBeenCalled();
+
+    await apply(tx, "member-1", "active", new Date());
+    expect(tx.apiKey.updateMany).not.toHaveBeenCalled();
+    expect(tx.license.updateMany).not.toHaveBeenCalled();
   });
 
   it("does not issue an admin password reset for suspended or deleted members", async () => {

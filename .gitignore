@@ -10,6 +10,7 @@ coverage/
 .run/
 .runtime/
 /backups/
+/Local Test Builds/
 .env*
 !.env.example
 *.log

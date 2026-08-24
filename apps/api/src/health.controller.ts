@@ -33,6 +33,24 @@ export class HealthController {
       (provider) => provider.enabled && provider.status === "healthy" && provider.pricingConfigured,
     );
     const providerReady = healthyStoredProviders.length > 0 || report.providers.some((provider) => provider.enabled);
+    const effectiveProviders = storedProviders.length
+      ? storedProviders.map((provider) => ({
+          code: provider.code,
+          model: provider.model,
+          keyCount: provider.keyCount,
+          enabled: Boolean(
+            provider.enabled
+            && provider.keyCount > 0
+            && provider.pricingConfigured,
+          ),
+          status: provider.status,
+          pricingConfigured: provider.pricingConfigured,
+          source: "database" as const,
+        }))
+      : report.providers.map((provider) => ({
+          ...provider,
+          source: "environment" as const,
+        }));
     const warnings = providerReady
       ? report.warnings.filter((warning) => !warning.startsWith("Tidak ada provider AI aktif."))
       : report.warnings;
@@ -46,7 +64,7 @@ export class HealthController {
         && providerReady
         && (!redisRequired || dependencies.redis),
       mode: report.mode,
-      providers: report.providers,
+      providers: effectiveProviders,
       providerReadiness: {
         ready: providerReady,
         stored: storedProviders.length,

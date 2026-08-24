@@ -130,6 +130,22 @@ export class ReleaseCatalogService {
     return { releases: releases.map((release) => this.present(release)) };
   }
 
+  async latestPublished(channel: unknown = "stable") {
+    const release = await this.requireClient().desktopRelease.findFirst({
+      where: {
+        state: "PUBLISHED",
+        channel: normalizeChannel(channel),
+      },
+      orderBy: [
+        { isCurrent: "desc" },
+        { publishedAt: "desc" },
+        { createdAt: "desc" },
+      ],
+    });
+    if (!release) throw new NotFoundException("Release publik tidak ditemukan.");
+    return { release: this.present(release) };
+  }
+
   async listAdmin() {
     const client = this.requireClient();
     const releases = await client.desktopRelease.findMany({

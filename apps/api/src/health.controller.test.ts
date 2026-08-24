@@ -25,7 +25,14 @@ describe("HealthController readiness", () => {
     };
     const adminStore = {
       listProviders: vi.fn().mockReturnValue([
-        { enabled: true, status: "healthy", pricingConfigured: true },
+        {
+          code: "openai",
+          model: "gpt-5-mini",
+          keyCount: 1,
+          enabled: true,
+          status: "healthy",
+          pricingConfigured: true,
+        },
       ]),
     };
 
@@ -33,6 +40,14 @@ describe("HealthController readiness", () => {
 
     expect(result.ok).toBe(true);
     expect(result.providerReadiness).toEqual({ ready: true, stored: 1, healthy: 1 });
+    expect(result.providers).toEqual([
+      expect.objectContaining({
+        code: "openai",
+        keyCount: 1,
+        enabled: true,
+        source: "database",
+      }),
+    ]);
     expect(result.warnings).toEqual([]);
   });
 

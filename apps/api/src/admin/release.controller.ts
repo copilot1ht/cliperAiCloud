@@ -1,4 +1,4 @@
-import { Controller, Get, Inject } from "@nestjs/common";
+import { Controller, Get, Inject, Query } from "@nestjs/common";
 import { ReleaseCatalogService } from "./release-catalog.service.js";
 
 // Release metadata and public binary URLs are intentionally public. The
@@ -10,5 +10,10 @@ export class ReleaseController {
   @Get()
   listPublished() {
     return this.releases.listPublished();
+  }
+
+  @Get("latest")
+  latestPublished(@Query("channel") channel?: string) {
+    return this.releases.latestPublished(channel || "stable");
   }
 }

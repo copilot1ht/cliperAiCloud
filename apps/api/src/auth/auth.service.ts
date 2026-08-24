@@ -832,6 +832,16 @@ export class AuthService {
       const anonymizedEmail = `deleted-${id}@deleted.cliper.invalid`;
       await this.serializableTransaction(async (tx) => {
         await this.applyPersistentAccessState(tx, id, "suspended", now);
+        await Promise.all([
+          tx.apiKey.updateMany({
+            where: { userId: id, status: { not: KeyStatus.REVOKED } },
+            data: { status: KeyStatus.REVOKED },
+          }),
+          tx.license.updateMany({
+            where: { userId: id, status: { not: KeyStatus.REVOKED } },
+            data: { status: KeyStatus.REVOKED, revokedAt: now },
+          }),
+        ]);
         await tx.passwordResetToken.updateMany({ where: { userId: id, consumedAt: null }, data: { consumedAt: now } });
         await tx.user.update({
           where: { id },
@@ -1213,21 +1223,16 @@ export class AuthService {
     status: "active" | "suspended",
     now: Date,
   ): Promise<void> {
-    if (status === "suspended") {
-      await Promise.all([
-        tx.session.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } }),
-        tx.desktopSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } }),
-        tx.passwordResetCredential.updateMany({ where: { userId, usedAt: null, revokedAt: null }, data: { revokedAt: now } }),
-        tx.passwordResetSession.updateMany({ where: { userId, consumedAt: null, revokedAt: null }, data: { revokedAt: now } }),
-        tx.apiKey.updateMany({ where: { userId, status: KeyStatus.ACTIVE }, data: { status: KeyStatus.SUSPENDED } }),
-        tx.license.updateMany({ where: { userId, status: KeyStatus.ACTIVE }, data: { status: KeyStatus.SUSPENDED, revokedAt: now } }),
-        tx.device.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } }),
-      ]);
-      return;
-    }
+    if (status === "active") return;
+    // Account access is gated by user.isActive in every web, desktop, and API
+    // key verifier. Keep key state independent so reactivating an account can
+    // never revive a key that an administrator suspended explicitly.
     await Promise.all([
-      tx.apiKey.updateMany({ where: { userId, status: KeyStatus.SUSPENDED }, data: { status: KeyStatus.ACTIVE } }),
-      tx.license.updateMany({ where: { userId, status: KeyStatus.SUSPENDED }, data: { status: KeyStatus.ACTIVE, revokedAt: null } }),
+      tx.session.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } }),
+      tx.desktopSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } }),
+      tx.passwordResetCredential.updateMany({ where: { userId, usedAt: null, revokedAt: null }, data: { revokedAt: now } }),
+      tx.passwordResetSession.updateMany({ where: { userId, consumedAt: null, revokedAt: null }, data: { revokedAt: now } }),
+      tx.device.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } }),
     ]);
   }
 
