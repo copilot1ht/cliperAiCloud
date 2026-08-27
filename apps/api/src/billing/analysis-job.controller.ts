@@ -18,6 +18,30 @@ export class AnalysisJobController {
     return this.signed("/v1/wallet/summary", payload, request, response);
   }
 
+  @Post("pricing/estimate")
+  async estimatePricingPost(
+    @Body() input: { sourceDurationSeconds?: number; requestedClipCount?: number },
+    @Req() request: CliperAuthenticatedRequest,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const payload = await this.jobs.estimatePricing(this.accountId(request), input || {});
+    return this.signed("/v1/pricing/estimate", payload, request, response);
+  }
+
+  @Get("pricing/estimate")
+  async estimatePricingGet(
+    @Req() request: CliperAuthenticatedRequest,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const duration = Number((request.query as Record<string, unknown>)?.sourceDurationSeconds || 0);
+    const clipCount = Number((request.query as Record<string, unknown>)?.requestedClipCount || 4);
+    const payload = await this.jobs.estimatePricing(this.accountId(request), {
+      sourceDurationSeconds: duration,
+      requestedClipCount: clipCount,
+    });
+    return this.signed("/v1/pricing/estimate", payload, request, response);
+  }
+
   @Post("jobs/start")
   async start(@Body() input: StartAnalysisJobInput, @Req() request: CliperAuthenticatedRequest, @Res({ passthrough: true }) response: Response) {
     const payload = await this.jobs.start(this.accountId(request), input, request.cliperAuth?.apiKeyId);

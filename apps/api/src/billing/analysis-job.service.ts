@@ -116,6 +116,9 @@ function snapshotMicroUsd(value: unknown, fallback: bigint): bigint {
   }
 }
 
+function microUsdToUsd(value: bigint): number {
+  return Number(value) / 1_000_000;
+}
 
 function jobQuoteSnapshot(quote: JobPricingQuote): Record<string, unknown> {
   return {
@@ -246,6 +249,43 @@ export class AnalysisJobService {
     return this.usesPostgres()
       ? this.failPersistent(accountId, jobId, reason)
       : this.failMemory(accountId, jobId, reason);
+  }
+
+  async estimatePricing(
+    _accountId: string,
+    input: { sourceDurationSeconds?: number; requestedClipCount?: number },
+  ) {
+    const requestedClipCount = this.validatedClipCount(input.requestedClipCount);
+    const duration = safePositiveNumber(input.sourceDurationSeconds);
+    const estimate = this.pricing.estimateAnalysisJob({
+      sourceDurationSeconds: duration,
+      requestedClipCount,
+    });
+    const totalChargeUsd = microUsdToUsd(estimate.userChargeMicroUsd);
+    const reservationUsd = microUsdToUsd(estimate.reservationMicroUsd);
+    const platformFee = Math.max(
+      0,
+      microUsdToUsd(estimate.internalCostMicroUsd - estimate.providerCostMicroUsd),
+    );
+    const aiCostMin = Math.max(0.005, Math.round(totalChargeUsd * 0.75 * 1000) / 1000);
+    const aiCostMax = Math.max(aiCostMin + 0.005, Math.round(Math.max(totalChargeUsd, reservationUsd) * 1000) / 1000);
+    const estimatedMin = Math.round(aiCostMin * 1000) / 1000;
+    const estimatedMax = Math.round(aiCostMax * 1000) / 1000;
+
+    return {
+      ok: true,
+      estimate: {
+        currency: "USD",
+        requestedClipCount: requestedClipCount || 4,
+        sourceDurationSeconds: duration,
+        aiCostMin,
+        aiCostMax,
+        platformFee: Math.round(platformFee * 1000) / 1000,
+        estimatedMin,
+        estimatedMax,
+        note: "Biaya aktual dapat berbeda berdasarkan durasi video, jumlah clip, model AI, cache, fallback, dan jumlah analisis yang diperlukan.",
+      },
+    };
   }
 
   async walletSummary(accountId: string) {

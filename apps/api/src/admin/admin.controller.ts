@@ -313,8 +313,14 @@ export class AdminController {
   }
 
   @Get("router")
-  router() {
-    return { mode: authStorageMode(), providers: this.store.listProviders(), rules: this.store.listRoutes() };
+  async router() {
+    const usage = await this.usage.summary();
+    return {
+      mode: authStorageMode(),
+      providers: this.store.listProviders(),
+      rules: this.store.listWalletRoutes(),
+      moduleStats: usage.moduleStats,
+    };
   }
 
   @Post("router/test")

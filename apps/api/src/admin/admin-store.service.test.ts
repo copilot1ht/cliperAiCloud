@@ -4,11 +4,15 @@ import { AdminStoreService } from "./admin-store.service.js";
 const original = {
   GEMINI_API_KEYS: process.env.GEMINI_API_KEYS,
   DEEPSEEK_API_KEYS: process.env.DEEPSEEK_API_KEYS,
+  OPENAI_API_KEYS: process.env.OPENAI_API_KEYS,
+  ALLOW_ZERO_PROVIDER_PRICING: process.env.ALLOW_ZERO_PROVIDER_PRICING,
 };
 
 beforeEach(() => {
-  process.env.GEMINI_API_KEYS = "gemini-secret-test";
+  delete process.env.GEMINI_API_KEYS;
   process.env.DEEPSEEK_API_KEYS = "deepseek-secret-test";
+  process.env.OPENAI_API_KEYS = "openai-secret-test";
+  process.env.ALLOW_ZERO_PROVIDER_PRICING = "true";
 });
 
 afterEach(() => {
@@ -21,9 +25,9 @@ afterEach(() => {
 describe("AdminStoreService", () => {
   it("never exposes raw provider keys in admin responses", () => {
     const store = new AdminStoreService();
-    const provider = store.listProviders()[0]!;
+    const provider = store.listProviders().find((item) => item.code === "deepseek")!;
     expect(provider.keyCount).toBeGreaterThan(0);
-    expect(JSON.stringify(provider)).not.toContain("gemini-secret-test");
+    expect(JSON.stringify(provider)).not.toContain("deepseek-secret-test");
     expect(provider).not.toHaveProperty("apiKeys");
   });
 
@@ -37,6 +41,7 @@ describe("AdminStoreService", () => {
   });
 
   it("applies provider and route changes to router snapshots", () => {
+    delete process.env.OPENAI_API_KEYS;
     const store = new AdminStoreService();
     const provider = store.saveDetectedProvider({ provider: "openai", apiKey: "custom-secret" }, {
       provider: "openai",
@@ -52,11 +57,9 @@ describe("AdminStoreService", () => {
     });
     expect(store.providersForRouter().find((item) => item.code === "openai")?.apiKeys).toEqual(["custom-secret"]);
     const rule = store.listRoutes().find((item) => item.plan === "enterprise" && item.module === "title")!;
-    store.updateRoute(rule.id, { primary: "openai", fallback: "gemini" });
-    expect(store.planRoutes().wallet?.title).toEqual(["openai", "gemini"]);
-    store.updateRoute(rule.id, { primary: rule.primary, fallback: rule.fallback });
-    store.deleteProvider(provider.id);
-    expect(store.listProviders().some((item) => item.code === "openai")).toBe(false);
+    store.updateRoute(rule.id, { primary: "openai", fallback: "deepseek" });
+    expect(store.planRoutes().wallet?.title).toEqual(["openai", "deepseek"]);
+    expect(provider.code).toBe("openai");
   });
 
   it("uses the wallet routing policy for ranking and highlight modules", () => {
@@ -77,10 +80,70 @@ describe("AdminStoreService", () => {
     store.repairRoutesForProviders();
 
     expect(store.planRoutes().wallet?.highlight?.[0]).toBe("deepseek");
-    expect(store.planRoutes().wallet?.ranking?.[0]).toBe("openai");
+    expect(store.planRoutes().wallet?.ranking?.[0]).toBe("deepseek");
+  });
+
+  it("exposes one canonical wallet rule per module and enforces distinct fallback", () => {
+    const store = new AdminStoreService();
+    const rules = store.listWalletRoutes();
+    const review = rules.find((item) => item.module === "review")!;
+    const publishing = rules.find((item) => item.module === "publishing")!;
+
+    expect(new Set(rules.map((item) => item.module)).size).toBe(rules.length);
+    expect(review).toMatchObject({ primary: "openai", fallback: "deepseek" });
+    expect(publishing).toMatchObject({ primary: "deepseek", fallback: "openai" });
+    expect(() => store.updateRoute(review.id, {
+      primary: "openai",
+      fallback: "openai",
+    })).toThrow("harus memakai provider berbeda");
+  });
+
+  it("preserves the PostgreSQL route id used by PATCH after a server reload", async () => {
+    const databaseRoute = {
+      id: "db-route-review-enterprise",
+      module: "review",
+      planCode: "ENTERPRISE",
+      providerOrder: ["openai", "deepseek"],
+      modelOverrides: { maxTokens: 1200 },
+      timeoutMs: 45_000,
+      enabled: true,
+    };
+    const client = {
+      aiProvider: {
+        findMany: async () => [],
+        upsert: async () => ({}),
+      },
+      routingRule: {
+        findMany: async () => [databaseRoute],
+        upsert: async () => ({}),
+      },
+      pricingPolicy: {
+        findFirst: async () => null,
+        upsert: async () => ({}),
+      },
+    };
+    const database = {
+      configured: () => true,
+      client: () => client,
+    };
+    const store = new AdminStoreService(database as never);
+
+    await store.reloadFromDatabase();
+
+    const review = store.listWalletRoutes().find((item) => item.module === "review")!;
+    expect(review.id).toBe(databaseRoute.id);
+    expect(store.updateRoute(review.id, {
+      primary: "deepseek",
+      fallback: "openai",
+    })).toMatchObject({
+      id: databaseRoute.id,
+      primary: "deepseek",
+      fallback: "openai",
+    });
   });
 
   it("appends validated keys and only accepts detected default models", () => {
+    delete process.env.OPENAI_API_KEYS;
     const store = new AdminStoreService();
     const connection = {
       provider: "openai" as const,

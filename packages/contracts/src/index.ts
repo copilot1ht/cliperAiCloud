@@ -1,4 +1,16 @@
-export const AI_MODULES = ["story", "ranking", "highlight", "title", "hook", "caption", "metadata", "test", "default"] as const;
+export const AI_MODULES = [
+  "story",
+  "ranking",
+  "highlight",
+  "review",
+  "title",
+  "hook",
+  "caption",
+  "metadata",
+  "publishing",
+  "test",
+  "default",
+] as const;
 export type AiModule = (typeof AI_MODULES)[number];
 
 export const PLAN_CODES = ["free", "starter", "pro", "team", "enterprise"] as const;

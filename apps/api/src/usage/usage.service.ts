@@ -21,6 +21,8 @@ export interface UsageRecord {
   grossProfitUsd: number;
   creditChargeMicro: number;
   markupBps: number;
+  retryCount: number;
+  fallbackCount: number;
   latencyMs: number;
   createdAt: string;
 }
@@ -119,6 +121,8 @@ export class UsageService {
           : response.billing.gross_profit_usd,
       creditChargeMicro,
       markupBps: response.billing.markup_bps,
+      retryCount,
+      fallbackCount,
       latencyMs,
       createdAt: new Date().toISOString(),
     };
@@ -256,6 +260,8 @@ export class UsageService {
       grossProfitUsd: Number(item.grossProfitMicro) / 1_000_000,
       creditChargeMicro: Number(item.creditChargeMicro),
       markupBps: item.markupBps,
+      retryCount: item.retryCount,
+      fallbackCount: item.fallbackCount,
       latencyMs: item.latencyMs,
       createdAt: item.createdAt.toISOString(),
     }));
@@ -290,6 +296,28 @@ export class UsageService {
     const billedCostUsd = records.reduce((total, item) => total + item.billedCostUsd, 0);
     const serviceCostUsd = records.reduce((total, item) => total + item.serviceCostUsd, 0);
     const grossProfitUsd = records.reduce((total, item) => total + item.grossProfitUsd, 0);
+    const moduleGroups = new Map<string, UsageRecord[]>();
+    for (const record of records) {
+      const current = moduleGroups.get(record.module) || [];
+      current.push(record);
+      moduleGroups.set(record.module, current);
+    }
+    const moduleStats = Object.fromEntries(
+      Array.from(moduleGroups.entries()).map(([module, items]) => {
+        const fallbackRequests = items.filter((item) => item.fallbackCount > 0).length;
+        return [module, {
+          completedRequests: items.length,
+          averageLatencyMs: Math.round(
+            items.reduce((total, item) => total + item.latencyMs, 0) / items.length,
+          ),
+          fallbackRequests,
+          fallbackRate: Number((fallbackRequests / items.length).toFixed(4)),
+          retryCount: items.reduce((total, item) => total + item.retryCount, 0),
+          providers: Array.from(new Set(items.map((item) => item.provider))),
+          lastRequestAt: items[0]?.createdAt || null,
+        }];
+      }),
+    );
     return {
       storage,
       requests: records.length,
@@ -308,6 +336,7 @@ export class UsageService {
       p95LatencyMs: latencies.length
         ? latencies[Math.min(latencies.length - 1, Math.ceil(latencies.length * 0.95) - 1)]
         : 0,
+      moduleStats,
       recent: records.slice(0, 12),
     };
   }

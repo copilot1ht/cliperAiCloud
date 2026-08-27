@@ -60,9 +60,14 @@ function moduleFromRequest(request: CliperChatRequest): AiModule {
   if (request.module) return request.module;
   const hint = String(request.metadata?.module ?? "").toLowerCase();
   if (hint.includes("highlight") || hint.includes("moment")) return "highlight";
+  if (hint.includes("review") || hint.includes("director")) return "review";
+  if (hint.includes("publishing") || hint.includes("schedule")) return "publishing";
+  if (hint.includes("ranking") || hint.includes("rank")) return "ranking";
+  if (hint.includes("story") || hint.includes("segment")) return "story";
   if (hint.includes("title")) return "title";
   if (hint.includes("hook")) return "hook";
   if (hint.includes("caption") || hint.includes("subtitle")) return "caption";
+  if (hint.includes("metadata") || hint.includes("upload")) return "metadata";
   return "default";
 }
 
@@ -286,31 +291,36 @@ export class AiRouter {
       highlight: 1800,
       story: 1800,
       ranking: 1400,
+      review: 1200,
       title: 500,
       hook: 420,
       caption: 700,
       metadata: 500,
+      publishing: 1400,
       test: 320,
       default: 1000,
       ...(options.moduleMaxTokens ?? {}),
     };
+    const volumeRoutes: Partial<Record<AiModule, string[]>> = {
+      story: ["deepseek", "openai"],
+      ranking: ["deepseek", "openai"],
+      highlight: ["deepseek", "openai"],
+      caption: ["deepseek", "openai"],
+      metadata: ["deepseek", "openai"],
+      publishing: ["deepseek", "openai"],
+    };
+    const qualityRoutes: Partial<Record<AiModule, string[]>> = {
+      review: ["openai", "deepseek"],
+      title: ["openai", "deepseek"],
+      hook: ["openai", "deepseek"],
+    };
+    const defaultRoutes = { ...volumeRoutes, ...qualityRoutes };
     this.planRoutes = options.planRoutes ?? {
-      free: {
-        story: ["deepseek", "gemini"], ranking: ["deepseek", "gemini"], highlight: ["deepseek", "gemini"],
-        title: ["deepseek", "gemini"], hook: ["deepseek", "gemini"], caption: ["deepseek", "gemini"], metadata: ["deepseek", "gemini"],
-      },
-      starter: {
-        story: ["deepseek", "gemini"], ranking: ["deepseek", "gemini"], highlight: ["deepseek", "gemini"],
-        title: ["deepseek", "gemini"], hook: ["deepseek", "gemini"], caption: ["deepseek", "gemini"], metadata: ["deepseek", "gemini"],
-      },
-      pro: {
-        story: ["gemini", "deepseek"], ranking: ["deepseek", "gemini"], highlight: ["gemini", "deepseek"],
-        title: ["openai", "gemini", "deepseek"], hook: ["gemini", "deepseek"], caption: ["deepseek", "gemini"], metadata: ["gemini", "deepseek"],
-      },
-      enterprise: {
-        story: ["gemini", "openai", "deepseek"], ranking: ["deepseek", "gemini", "openai"], highlight: ["gemini", "openai", "deepseek"],
-        title: ["openai", "gemini", "deepseek"], hook: ["gemini", "openai", "deepseek"], caption: ["deepseek", "gemini"], metadata: ["gemini", "openai", "deepseek"],
-      },
+      free: defaultRoutes,
+      starter: defaultRoutes,
+      pro: defaultRoutes,
+      enterprise: defaultRoutes,
+      wallet: defaultRoutes,
     };
   }
 

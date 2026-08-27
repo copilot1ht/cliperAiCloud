@@ -74,15 +74,27 @@ type StoredProvider = Omit<ProviderDefinition, "apiKeys"> & {
   updatedAt: string;
 };
 
-const modules: AiModule[] = ["story", "ranking", "highlight", "title", "hook", "caption", "metadata"];
+const modules: AiModule[] = [
+  "story",
+  "ranking",
+  "highlight",
+  "review",
+  "title",
+  "hook",
+  "caption",
+  "metadata",
+  "publishing",
+];
 const moduleBudgets: Partial<Record<AiModule, number>> = {
   story: 1800,
   ranking: 1400,
   highlight: 1800,
+  review: 1200,
   title: 500,
   hook: 420,
   caption: 700,
   metadata: 500,
+  publishing: 1400,
 };
 const CONFIG_REVISION_KEY = "cliper:admin-config:revision";
 
@@ -210,16 +222,20 @@ export class AdminStoreService implements OnModuleInit {
         const order = Array.isArray(row.providerOrder) ? row.providerOrder.map(String).filter(Boolean) : [];
         const overrides = this.objectValue(row.modelOverrides);
         const plan = row.planCode.toLowerCase() as AdminPlan;
-        this.routesValue.set(`${plan}-${row.module}`, {
+        this.routesValue.set(row.id, {
           id: row.id,
           module: row.module as AiModule,
           plan,
           primary: order[0] || "",
-          fallback: order[1] || order[0] || "",
+          fallback: order[1] || "",
           timeoutMs: row.timeoutMs,
           maxTokens: finiteNumber(overrides.maxTokens, moduleBudgets[row.module as AiModule] || 1000, 32),
           enabled: row.enabled,
         });
+      }
+      const addedRoutes = this.seedRoutes();
+      if (addedRoutes.length) {
+        await Promise.all(addedRoutes.map((id) => this.persistRoute(id)));
       }
     } else {
       await Promise.all(this.listRoutes().map((route) => this.persistRoute(route.id)));
@@ -486,14 +502,30 @@ export class AdminStoreService implements OnModuleInit {
     return Array.from(this.routesValue.values()).map((item) => ({ ...item }));
   }
 
+  listWalletRoutes(): RoutingRule[] {
+    const preference: AdminPlan[] = ["enterprise", "pro", "starter", "free"];
+    const routes = Array.from(this.routesValue.values());
+    return modules.flatMap((module) => {
+      const route = preference
+        .map((plan) => routes.find((item) => item.plan === plan && item.module === module))
+        .find(Boolean);
+      return route ? [{ ...route }] : [];
+    });
+  }
+
   updateRoute(id: string, input: Partial<RoutingRule>) {
     const current = this.routesValue.get(id);
     if (!current) throw new NotFoundException("Aturan routing tidak ditemukan.");
-    const providerCodes = new Set(this.providersForRouter().map((item) => item.code));
+    const providerCodes = new Set(
+      this.providersForRouter()
+        .filter((item) => item.enabled !== false)
+        .map((item) => item.code),
+    );
     const primary = input.primary === undefined ? current.primary : String(input.primary);
     const fallback = input.fallback === undefined ? current.fallback : String(input.fallback);
-    if (primary && !providerCodes.has(primary)) throw new BadRequestException("Primary provider tidak tersedia.");
-    if (fallback && !providerCodes.has(fallback)) throw new BadRequestException("Fallback provider tidak tersedia.");
+    if (primary === fallback) throw new BadRequestException("Primary dan fallback harus memakai provider berbeda.");
+    if (!primary || !providerCodes.has(primary)) throw new BadRequestException("Primary provider aktif wajib tersedia.");
+    if (!fallback || !providerCodes.has(fallback)) throw new BadRequestException("Fallback provider aktif wajib tersedia.");
     const next: RoutingRule = {
       ...current,
       primary,
@@ -513,35 +545,15 @@ export class AdminStoreService implements OnModuleInit {
       .sort((left, right) => (left.priority || 100) - (right.priority || 100));
     const codes = providers.map((provider) => provider.code);
     if (!codes.length) return [];
-    const preferredPrimary = (module: AiModule, plan: AdminPlan) => {
-      const languageTask = module === "title" || module === "hook" || module === "metadata";
-      const qualityReviewTask = module === "ranking" && (plan === "pro" || plan === "enterprise");
-      if (qualityReviewTask && codes.includes("openai")) return "openai";
-      if (languageTask && codes.includes("openai")) return "openai";
-      if (!languageTask && codes.includes("deepseek")) return "deepseek";
-      return codes[0]!;
-    };
     const changed: string[] = [];
     for (const route of this.routesValue.values()) {
-      const preferred = preferredPrimary(route.module, route.plan);
-      const currentPrimaryValid = codes.includes(route.primary);
-      const deepSeekPrimaryTask = (
-        route.module === "story"
-        || route.module === "highlight"
-        || route.module === "caption"
-        || (route.module === "ranking" && (route.plan === "free" || route.plan === "starter"))
-      );
-      const shouldUsePreferred = codes.includes(preferred)
-        && ((route.module === "title" || route.module === "hook" || route.module === "metadata"
-          || (route.module === "ranking" && (route.plan === "pro" || route.plan === "enterprise"))
-          || deepSeekPrimaryTask)
-          ? route.primary !== preferred
-          : !currentPrimaryValid);
-      const primary = shouldUsePreferred ? preferred : currentPrimaryValid ? route.primary : preferred;
-      const fallbackCandidates = codes.filter((code) => code !== primary);
+      const [recommendedPrimary, recommendedFallback] = this.recommendedProviderOrder(route.module, codes);
+      const primary = codes.includes(route.primary) ? route.primary : recommendedPrimary;
+      const fallbackCandidates = [recommendedFallback, ...codes]
+        .filter((code, index, values) => code && code !== primary && values.indexOf(code) === index);
       const fallback = codes.includes(route.fallback) && route.fallback !== primary
         ? route.fallback
-        : fallbackCandidates[0] || primary;
+        : fallbackCandidates[0] || "";
       if (primary === route.primary && fallback === route.fallback) continue;
       this.routesValue.set(route.id, { ...route, primary, fallback });
       changed.push(route.id);
@@ -558,7 +570,11 @@ export class AdminStoreService implements OnModuleInit {
       const selected = preference
         .map((plan) => enabled.find((rule) => rule.module === module && rule.plan === plan))
         .find(Boolean);
-      if (selected) walletRoutes[module] = [selected.primary, selected.fallback].filter(Boolean);
+      if (selected) {
+        walletRoutes[module] = Array.from(
+          new Set([selected.primary, selected.fallback].filter(Boolean)),
+        );
+      }
     }
     // The router consumes this legacy option name, but its only active tier is
     // now wallet. Admin route records remain editable for compatibility.
@@ -636,20 +652,18 @@ export class AdminStoreService implements OnModuleInit {
     };
   }
 
-  private seedRoutes(): void {
-    const defaultProviders = this.providersForRouter().map((item) => item.code);
-    const first = defaultProviders[0] || "gemini";
-    const second = defaultProviders[1] || first;
-    const planOrders: Record<AdminPlan, [string, string]> = {
-      free: [second, first],
-      starter: [second, first],
-      pro: [first, second],
-      enterprise: [first, second],
-    };
-    for (const plan of Object.keys(planOrders) as AdminPlan[]) {
+  private seedRoutes(): string[] {
+    const defaultProviders = this.providersForRouter()
+      .filter((item) => item.enabled !== false)
+      .map((item) => item.code);
+    const added: string[] = [];
+    for (const plan of ["free", "starter", "pro", "enterprise"] as AdminPlan[]) {
       for (const module of modules) {
-        const [primary, fallback] = planOrders[plan];
         const id = `${plan}-${module}`;
+        if (Array.from(this.routesValue.values()).some(
+          (route) => route.plan === plan && route.module === module,
+        )) continue;
+        const [primary, fallback] = this.recommendedProviderOrder(module, defaultProviders);
         this.routesValue.set(id, {
           id,
           module,
@@ -660,8 +674,18 @@ export class AdminStoreService implements OnModuleInit {
           maxTokens: moduleBudgets[module] || 1000,
           enabled: true,
         });
+        added.push(id);
       }
     }
+    return added;
+  }
+
+  private recommendedProviderOrder(module: AiModule, availableCodes: string[]): [string, string] {
+    const qualityTask = module === "review" || module === "hook" || module === "title";
+    const preferred = qualityTask ? ["openai", "deepseek"] : ["deepseek", "openai"];
+    const ordered = [...preferred, ...availableCodes]
+      .filter((code, index, values) => availableCodes.includes(code) && values.indexOf(code) === index);
+    return [ordered[0] || availableCodes[0] || "", ordered[1] || ""];
   }
 
   async persistProvider(id: string): Promise<void> {
@@ -733,13 +757,13 @@ export class AdminStoreService implements OnModuleInit {
       create: {
         module: route.module,
         planCode: route.plan.toUpperCase() as "FREE" | "STARTER" | "PRO" | "ENTERPRISE",
-        providerOrder: [route.primary, route.fallback].filter(Boolean),
+        providerOrder: Array.from(new Set([route.primary, route.fallback].filter(Boolean))),
         modelOverrides: { maxTokens: route.maxTokens },
         timeoutMs: route.timeoutMs,
         enabled: route.enabled,
       },
       update: {
-        providerOrder: [route.primary, route.fallback].filter(Boolean),
+        providerOrder: Array.from(new Set([route.primary, route.fallback].filter(Boolean))),
         modelOverrides: { maxTokens: route.maxTokens },
         timeoutMs: route.timeoutMs,
         enabled: route.enabled,

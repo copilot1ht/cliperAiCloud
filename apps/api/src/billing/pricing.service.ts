@@ -188,18 +188,20 @@ export class PricingService {
 
   moduleForRequest(request: CliperChatRequest): AiModule {
     const value = String(request.module || request.metadata?.module || "default").toLowerCase();
-    if (["story", "ranking", "highlight", "title", "hook", "caption", "metadata", "test", "default"].includes(value)) return value as AiModule;
+    if (["story", "ranking", "highlight", "review", "title", "hook", "caption", "metadata", "publishing", "test", "default"].includes(value)) return value as AiModule;
     if (value.includes("highlight") || value.includes("moment")) return "highlight";
+    if (value.includes("review") || value.includes("director")) return "review";
     if (value.includes("rank")) return "ranking";
     if (value.includes("story")) return "story";
     if (value.includes("title")) return "title";
     if (value.includes("hook")) return "hook";
     if (value.includes("caption") || value.includes("subtitle")) return "caption";
     if (value.includes("metadata") || value.includes("upload")) return "metadata";
+    if (value.includes("publishing") || value.includes("schedule")) return "publishing";
     return "default";
   }
 
   private isClipModule(module?: AiModule): boolean {
-    return module === "story" || module === "ranking" || module === "highlight";
+    return module === "story" || module === "ranking" || module === "highlight" || module === "review";
   }
 }

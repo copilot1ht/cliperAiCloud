@@ -137,20 +137,22 @@ describe("AiRouter", () => {
     expect(deepseekBody.thinking).toEqual({ type: "disabled" });
   });
 
-  it("routes Starter and Pro through different provider priorities", async () => {
+  it("uses DeepSeek for volume tasks and OpenAI for final quality tasks", async () => {
     const fetchImpl = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }));
     const router = new AiRouter({
       retriesPerProvider: 1,
       fetchImpl,
       providers: [
-        { code: "gemini", displayName: "Gemini", baseUrl: "https://gemini.test/v1", model: "gemini", apiKeys: ["a"] },
+        { code: "openai", displayName: "OpenAI", baseUrl: "https://openai.test/v1", model: "openai", apiKeys: ["a"] },
         { code: "deepseek", displayName: "DeepSeek", baseUrl: "https://deepseek.test/v1", model: "deepseek", apiKeys: ["b"] },
       ],
     });
-    const starter = await router.route({ module: "highlight", metadata: { plan: "starter" }, messages: [{ role: "user", content: "rank" }] });
-    const pro = await router.route({ module: "highlight", metadata: { plan: "pro" }, messages: [{ role: "user", content: "rank" }] });
-    expect(starter.provider).toBe("deepseek");
-    expect(pro.provider).toBe("gemini");
+    const highlight = await router.route({ module: "highlight", metadata: { plan: "wallet" }, messages: [{ role: "user", content: "rank" }] });
+    const review = await router.route({ module: "review", metadata: { plan: "wallet" }, messages: [{ role: "user", content: "review" }] });
+    const publishing = await router.route({ module: "publishing", metadata: { plan: "wallet" }, messages: [{ role: "user", content: "schedule" }] });
+    expect(highlight.provider).toBe("deepseek");
+    expect(review.provider).toBe("openai");
+    expect(publishing.provider).toBe("deepseek");
   });
 
   it("uses the native Anthropic Messages protocol for Claude", async () => {
