@@ -8,16 +8,18 @@ import cliper_worker
 
 def test_ai_module_key_separates_primary_highlight_from_final_reviewer():
     assert cliper_worker.ai_module_key("Highlight Finder Batch 1/2") == "highlight"
-    assert cliper_worker.ai_module_key("Final Ranking Reviewer") == "ranking"
+    assert cliper_worker.ai_module_key("Final Ranking Reviewer") == "review"
+    assert cliper_worker.ai_module_key("Publishing Planner") == "publishing"
+    assert cliper_worker.ai_module_key("Metadata Generator") == "metadata"
 
 
 def test_reviewer_has_its_own_output_budget():
     payload = cliper_worker.payload_for_ai_module(
-        {"providerType": "cloud", "maxTokensByModule": {"ranking": 1300}},
+        {"providerType": "cloud", "maxTokensByModule": {"ranking": 1300, "review": 1100}},
         "Final Ranking Reviewer",
     )
 
-    assert payload["maxTokens"] == 1300
+    assert payload["maxTokens"] == 1100
     assert payload["timeoutMs"] == 90
 
 
@@ -263,3 +265,35 @@ def test_make_hook_text_replaces_cached_filler_with_approved_title():
 
     assert hook == "Telepon Kejutan yang Ubah Hidup Nunu"
     assert " ee " not in f" {hook.lower()} "
+
+
+def test_hook_director_skips_ungrounded_generic_hook():
+    moment = {
+        "hook": "Kamu wajib lihat ini sekarang",
+        "title": "Pembahasan biasa",
+        "transcript": "Pembicara melanjutkan obrolan tanpa klaim atau hasil yang jelas.",
+        "duration": 45,
+    }
+    payload = {
+        "addHook": True,
+        "aiFeatures": {"hook": False},
+        "featureFlags": {"hookV2": True, "hookDirectorV1": True},
+    }
+
+    assert cliper_worker.make_hook_text(moment, payload) == ""
+    assert cliper_worker.hook_overlay_plan(moment, [], payload)["enabled"] is False
+
+
+def test_hook_layouts_use_distinct_safe_frame_positions():
+    top = cliper_worker.ass_hook_card_events(
+        "Strategi Ini Mengubah Hasil", 3, 1080, 1920, 64, "top_banner"
+    )
+    center = cliper_worker.ass_hook_card_events(
+        "Strategi Ini Mengubah Hasil", 3, 1080, 1920, 64, "center_card"
+    )
+
+    assert top
+    assert center
+    assert top != center
+    assert "top_banner" == cliper_worker.normalized_hook_layout("auto", 1080, 1920)
+    assert "center_card" == cliper_worker.normalized_hook_layout("center", 1080, 1920)

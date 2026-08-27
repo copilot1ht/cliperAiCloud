@@ -40,11 +40,17 @@ try:
     from story_engine import extend_story_boundary as external_extend_story_boundary
     from story_engine import build_story_timeline as external_build_story_timeline
     from story_engine import segment_into_story_candidates as external_story_candidates
+    from story_engine import snap_to_sentence_start as external_snap_to_sentence_start
+    from story_engine import snap_to_sentence_end as external_snap_to_sentence_end
+    from story_engine import natural_end_in_range as external_natural_end_in_range
 except Exception:
     external_clip_segment_text = None
     external_extend_story_boundary = None
     external_build_story_timeline = None
     external_story_candidates = None
+    external_snap_to_sentence_start = None
+    external_snap_to_sentence_end = None
+    external_natural_end_in_range = None
 
 CameraEngine = None
 SpeakerEngine = None
@@ -91,6 +97,12 @@ except Exception:
     load_or_fetch_heatmap = None
     story_bound_heatmap_candidates = None
 
+try:
+    from publishing_planner import successful_render_outputs, write_publishing_plan
+except Exception:
+    successful_render_outputs = None
+    write_publishing_plan = None
+
 AI_DEBUG_EVENTS = []
 AI_USAGE = {
     "input_tokens": 0,
@@ -104,10 +116,13 @@ AI_USAGE = {
 AI_PROMPT_VERSIONS = {
     "highlight": "highlight_v4",
     "ranking": "ranking_v4",
+    "review": "review_v1",
     "story": "story_v3",
     "title": "title_v4",
     "hook": "hook_v5",
     "caption": "caption_v4",
+    "metadata": "metadata_v1",
+    "publishing": "publishing_v1",
     "tts": "tts_v1",
     "default": "default_v2",
 }
@@ -567,6 +582,105 @@ def test_cookies(payload):
             "status": classify_download_error(exc),
             "reason": DOWNLOAD_ERROR_MESSAGES[error_class],
             "errorClass": error_class,
+            "testedAt": datetime.now().isoformat(),
+        }
+
+
+SUPPORTED_BROWSER_SESSION_SOURCES = {
+    "chrome",
+    "edge",
+    "firefox",
+    "brave",
+    "chromium",
+}
+
+
+def update_youtube_session_from_browser(payload):
+    """Export and validate a local browser session without exposing cookies.
+
+    This operation is initiated explicitly by Electron, stays on the device,
+    and never uses Cliper Cloud or an AI provider.
+    """
+    browser = str(payload.get("browser") or "chrome").strip().lower()
+    if browser not in SUPPORTED_BROWSER_SESSION_SOURCES:
+        return {
+            "ok": False,
+            "testOk": False,
+            "errorClass": "BROWSER_SESSION_UNAVAILABLE",
+            "reason": "Browser belum didukung untuk pembaruan session otomatis.",
+            "testedAt": datetime.now().isoformat(),
+        }
+    output_path = Path(str(payload.get("outputPath") or "")).expanduser()
+    if not output_path.name or output_path.suffix.lower() not in {".txt", ".tmp"}:
+        return {
+            "ok": False,
+            "testOk": False,
+            "errorClass": "COOKIE_INVALID",
+            "reason": "Lokasi penyimpanan session browser tidak valid.",
+            "testedAt": datetime.now().isoformat(),
+        }
+
+    profile = str(payload.get("profile") or "").strip()
+    if len(profile) > 240 or "\n" in profile or "\r" in profile:
+        profile = ""
+    test_url = payload.get("url") or "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    browser_spec = (browser, profile) if profile else (browser,)
+    ydl_opts: Any = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+        "cookiesfrombrowser": browser_spec,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.youtube.com/",
+        },
+        **youtube_runtime_options(),
+    }
+    emit("log", stage="auth", message=f"COOKIE_SESSION_REFRESHED browser={browser} status=checking")
+    try:
+        yt_dlp = require_yt_dlp()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(test_url, download=False)
+            ydl.cookiejar.save(
+                str(output_path),
+                ignore_discard=True,
+                ignore_expires=True,
+            )
+        validation = validate_cookie_file(output_path)
+        if not validation.get("ok"):
+            raise RuntimeError(validation.get("reason") or "Session browser tidak valid.")
+        emit("log", stage="auth", message=f"COOKIE_SESSION_REFRESHED browser={browser} status=valid")
+        return {
+            **validation,
+            "testOk": True,
+            "status": "Session browser berhasil diperbarui",
+            "browser": browser,
+            "source": "browser",
+            "lastTestVideo": info.get("title"),
+            "testedAt": datetime.now().isoformat(),
+        }
+    except Exception as exc:
+        try:
+            output_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        error_class = download_error_class(exc)
+        if error_class == "UNKNOWN":
+            error_class = "BROWSER_SESSION_UNAVAILABLE"
+        reason = (
+            "Browser tidak dapat memberikan session. Tutup browser lain yang mengunci profil, "
+            "pastikan YouTube sudah login, atau gunakan Import File sebagai cadangan."
+        )
+        emit("log", stage="auth", message=f"COOKIE_UPDATE_REQUIRED browser={browser} class={error_class}")
+        return {
+            "ok": False,
+            "testOk": False,
+            "errorClass": error_class,
+            "reason": reason,
+            "status": reason,
             "testedAt": datetime.now().isoformat(),
         }
 
@@ -2073,7 +2187,9 @@ def ai_diagnostics_summary():
 
 def ai_module_key(module):
     text = str(module or "").lower()
-    if "rank" in text or "review" in text or "director" in text:
+    if "review" in text or "director" in text:
+        return "review"
+    if "rank" in text:
         return "ranking"
     if "story" in text or "segment" in text:
         return "story"
@@ -2083,7 +2199,11 @@ def ai_module_key(module):
         return "caption"
     if "hook" in text:
         return "hook"
-    if "title" in text or "metadata" in text or "upload" in text:
+    if "publishing" in text or "schedule" in text:
+        return "publishing"
+    if "metadata" in text or "upload" in text:
+        return "metadata"
+    if "title" in text:
         return "title"
     if "tts" in text or "voice" in text:
         return "tts"
@@ -2200,9 +2320,12 @@ def payload_for_ai_module(payload, module):
         "test": 160,
         "highlight": 820,
         "ranking": 900,
+        "review": 900,
         "title": 220,
         "hook": 160,
         "caption": 140,
+        "metadata": 260,
+        "publishing": 640,
         "tts": 180,
         "default": 260,
     }
@@ -2210,9 +2333,12 @@ def payload_for_ai_module(payload, module):
         "test": 240,
         "highlight": 1600,
         "ranking": 1400,
+        "review": 1200,
         "title": 480,
         "hook": 420,
         "caption": 700,
+        "metadata": 500,
+        "publishing": 1400,
         "tts": 260,
         "default": 420,
     }
@@ -2239,9 +2365,12 @@ def payload_for_ai_module(payload, module):
         "test": 30,
         "highlight": 90,
         "ranking": 90,
+        "review": 90,
         "title": 45,
         "hook": 45,
         "caption": 45,
+        "metadata": 45,
+        "publishing": 60,
         "tts": 45,
         "default": 45,
     }
@@ -2850,6 +2979,8 @@ BANNED_GENERIC_HOOKS = [
     "moment terbaik",
     "momen terbaik",
     "bagian ini wajib kamu lihat",
+    "wajib lihat ini",
+    "kamu wajib lihat ini",
     "ternyata endingnya tidak terduga",
     "cerita yang bikin orang berhenti scroll",
     "jadi bagian paling menarik",
@@ -3303,7 +3434,13 @@ def pick_best_hook(candidates, source_text, used_signatures=None):
             scored.append((score, hook))
     if not scored:
         fallback = local_hook_candidates(source_text)
-        return pick_best_hook(fallback, source_text, used_signatures) if fallback else "Cerita Ini Punya Sisi Tak Terduga"
+        for candidate in fallback:
+            hook = seo_clean_title(candidate, "")
+            score = hook_quality_score(hook, source_text, used_signatures)
+            if score > 0:
+                scored.append((score, hook))
+        if not scored:
+            return ""
     used_signatures = set(used_signatures or [])
     unique_scored = [item for item in scored if hook_signature(item[1]) not in used_signatures]
     if unique_scored:
@@ -3321,7 +3458,13 @@ def pick_best_title(candidates, source_text, index=1, used_signatures=None):
             scored.append((score, title))
     if not scored:
         fallback = local_title_candidates(source_text, index)
-        return pick_best_title(fallback, source_text, index, used_signatures) if fallback else f"Clip Pilihan {index}"
+        for candidate in fallback:
+            title = seo_clean_title(candidate, "")
+            score = title_quality_score(title, source_text, used_signatures)
+            if score > 0:
+                scored.append((score, title))
+        if not scored:
+            return f"Clip Pilihan {index}"
     used_signatures = set(used_signatures or [])
     unique_scored = [item for item in scored if hook_signature(item[1]) not in used_signatures]
     if unique_scored:
@@ -4341,18 +4484,22 @@ def parse_duration_target(value):
 
 def parse_duration_settings(payload):
     try:
-        minimum = float(payload.get("minDuration") or 30)
+        minimum = float(payload.get("minDuration") or 25)
         target = float(payload.get("targetDuration") or 75)
-        maximum = float(payload.get("maxDuration") or 180)
+        maximum = float(payload.get("maxDuration") or 300)
     except Exception:
-        minimum, target, maximum = 30.0, 75.0, 180.0
+        minimum, target, maximum = 25.0, 75.0, 300.0
     if not payload.get("minDuration") and not payload.get("targetDuration") and not payload.get("maxDuration"):
         legacy_min, legacy_max = parse_duration_target(payload.get("durationTarget"))
         minimum = float(legacy_min)
         maximum = float(legacy_max)
         target = min(max((minimum + maximum) / 2, minimum), maximum)
-    minimum = max(20.0, min(minimum, 180.0))
-    maximum = max(minimum, min(maximum, 180.0))
+    # v1.12.0: Natural story length — no hard 180s cap. Stories end when
+    # their narrative arc ends, not at a fixed clock position.  The ceiling
+    # is now 300s (5 min); duration-based scoring still de-prioritises
+    # unnecessarily long clips via story_completeness and filler penalties.
+    minimum = max(20.0, min(minimum, 300.0))
+    maximum = max(minimum, min(maximum, 300.0))
     target = max(minimum, min(target, maximum))
     return minimum, target, maximum
 
@@ -4557,6 +4704,13 @@ def optional_review_limit(payload, target_count):
 
 
 def resolve_target_clip_count(payload, effective_duration, transcript, minimum_duration, ranges=None):
+    """Return the TARGET clip count — a preference, not a hard limit.
+
+    v1.12.0 contract: the returned count guides broad discovery and ranking,
+    but the final recommendation count is determined by
+    `adaptive_recommendation_count` based on actual candidate quality.
+    Extra high-quality candidates are kept; low-quality padding is dropped.
+    """
     configured_limit = configured_clip_limit(payload)
     capacity = timeline_clip_capacity(effective_duration, ranges, minimum_duration)
     if all_recommended_clips_requested(payload):
@@ -4566,6 +4720,56 @@ def resolve_target_clip_count(payload, effective_duration, transcript, minimum_d
     else:
         requested = configured_limit
     return max(0, min(requested, capacity))
+
+
+def adaptive_recommendation_count(candidates, target_count, quality_floor=60):
+    """Return how many candidates to recommend based on quality, not just target.
+
+    v1.12.0 Smart Clip Count:
+    - target_count is a PREFERENCE, not a hard ceiling.
+    - Extra candidates above target are kept if they are high quality
+      (close to the best score) and add diversity.
+    - Fewer than target are returned if not enough quality candidates exist.
+    - Never recommends more than target * 1.5 (rounded up) or fewer than 1.
+
+    Returns (recommended_count, quality_info_dict).
+    """
+    if not candidates or target_count <= 0:
+        return 0, {"reason": "no_candidates"}
+
+    # Sort by score descending
+    scored = sorted(candidates, key=lambda c: float(c.get("score") or 0), reverse=True)
+    qualified = [c for c in scored if float(c.get("score") or 0) >= quality_floor]
+
+    if not qualified:
+        return 0, {"reason": "none_above_floor", "quality_floor": quality_floor}
+
+    best_score = float(qualified[0].get("score") or 0)
+    # A candidate is "close to best" if within 20 points of the top score
+    proximity_threshold = max(quality_floor, best_score - 20)
+    high_quality = [c for c in qualified if float(c.get("score") or 0) >= proximity_threshold]
+
+    max_allowed = max(target_count, min(len(qualified), int(math.ceil(target_count * 1.5))))
+    min_allowed = 1
+
+    # If all high-quality candidates fit within max, include them all
+    recommended = max(min_allowed, min(max_allowed, max(target_count, len(high_quality))))
+    # But never more than the number of qualified candidates
+    recommended = min(recommended, len(qualified))
+    # If fewer candidates than target exist, return what we have
+    if len(qualified) < target_count:
+        recommended = len(qualified)
+
+    return recommended, {
+        "reason": "adaptive",
+        "target": target_count,
+        "qualified_count": len(qualified),
+        "high_quality_count": len(high_quality),
+        "recommended": recommended,
+        "best_score": best_score,
+        "proximity_threshold": proximity_threshold,
+        "quality_floor": quality_floor,
+    }
 
 
 def enforce_moments_in_timeline_ranges(moments, ranges, transcript, minimum_duration=0.0):
@@ -5706,6 +5910,11 @@ def story_completeness_score(text, duration, min_duration, max_duration):
 def smart_boundary_start(start, transcript):
     if not transcript:
         return start
+    if callable(external_snap_to_sentence_start):
+        try:
+            return external_snap_to_sentence_start(transcript, float(start))
+        except Exception:
+            pass
     boundary = start
     for item in transcript:
         if item["start"] <= start <= item["end"]:
@@ -5719,6 +5928,11 @@ def smart_boundary_start(start, transcript):
 def smart_boundary_end(end, transcript):
     if not transcript:
         return end
+    if callable(external_snap_to_sentence_end):
+        try:
+            return external_snap_to_sentence_end(transcript, float(end))
+        except Exception:
+            pass
     boundary = end
     for item in transcript:
         if item["start"] <= end <= item["end"]:
@@ -5745,6 +5959,13 @@ def smart_boundary_end_in_range(preferred_end, transcript, minimum_end, maximum_
         return float(preferred_end or 0.0)
     if maximum < minimum:
         maximum = minimum
+    if callable(external_natural_end_in_range):
+        try:
+            return external_natural_end_in_range(
+                transcript, preferred, minimum, maximum
+            )
+        except Exception:
+            pass
     candidates = []
     for item in transcript or []:
         try:
@@ -5813,6 +6034,7 @@ def improve_story_boundaries(start, end, transcript, min_duration, target_durati
     if not transcript:
         return float(start), float(end), ""
     external_text = ""
+    external_resolved = False
     if callable(external_extend_story_boundary):
         try:
             resolved = external_extend_story_boundary(
@@ -5826,12 +6048,20 @@ def improve_story_boundaries(start, end, transcript, min_duration, target_durati
             )
             if isinstance(resolved, (list, tuple)) and len(resolved) >= 2:
                 start, end = resolved[0], resolved[1]
+                external_resolved = True
                 if len(resolved) >= 3:
                     external_text = clean_text(resolved[2] or "")
         except Exception:
             pass
-    start = smart_boundary_start(float(start), transcript)
-    end = smart_boundary_end(float(end), transcript)
+    # The external story engine already returns sentence-aligned boundaries.
+    # Snapping its small visual ending buffer a second time can jump into the
+    # next ASR segment and append an unrelated 20-40 second tail.
+    if external_resolved:
+        start = float(start)
+        end = float(end)
+    else:
+        start = smart_boundary_start(float(start), transcript)
+        end = smart_boundary_end(float(end), transcript)
     max_end = start + float(max_duration)
     minimum_end = start + float(min_duration)
     if end - start > float(max_duration):
@@ -5841,11 +6071,22 @@ def improve_story_boundaries(start, end, transcript, min_duration, target_durati
     target_end = start + float(target_duration)
     selected_segments = transcript_segments_between(transcript, start, end)
     text = clean_text(" ".join(item["text"] for item in selected_segments)) or external_text
+    initial_story_score, _ = story_completeness_score(
+        text,
+        end - start,
+        min_duration,
+        max_duration,
+    )
+    boundary_complete = (
+        end >= target_end
+        and initial_story_score >= 68
+        and has_payoff_boundary(text)
+    )
 
     # Extend through nearby transcript segments until the scene has a clean
     # ending. This is the main guard against stiff 45-60s clips that cut before
     # the payoff.
-    for item in transcript or []:
+    for item in ([] if boundary_complete else (transcript or [])):
         try:
             seg_start = float(item.get("start") or 0.0)
             seg_end = float(item.get("end") or seg_start)
@@ -6734,13 +6975,16 @@ def build_editorial_candidate_windows(info, transcript, target_count, min_durati
             continue
         seen[key] = item
         unique.append(item)
-    max_pool = max(
-        240,
+    max_pool = int(max(
+        180,
         min(
-            420,
-            max(int(target_count or 1) * 56, int(evidence_budget["max_candidates"]) * 2),
+            300,
+            max(
+                int(target_count or 1) * 32,
+                int(evidence_budget["max_candidates"]) * 1.5,
+            ),
         ),
-    )
+    ))
     if len(unique) > max_pool:
         def rough_signal(item):
             text = clean_text(item.get("text") or "")
@@ -7510,16 +7754,19 @@ def supplement_with_optional_review_candidates(selected, candidates, result_limi
     return sorted(supplemented[:result_limit], key=lambda item: float(item.get("start") or 0.0))
 
 
+# v1.12.0: Natural short-form story profiles. The maximum is a safety guardrail:
+# if a payoff cannot be completed inside it, the candidate should remain a
+# manual-review item instead of absorbing several minutes of unrelated tail.
 CONTENT_DURATION_PROFILES = {
-    "music": {"type": "music", "min": 25, "target": 50, "max": 85},
-    "podcast": {"type": "podcast", "min": 40, "target": 75, "max": 120},
-    "interview": {"type": "interview", "min": 40, "target": 75, "max": 120},
-    "news": {"type": "news", "min": 35, "target": 60, "max": 90},
-    "review": {"type": "review", "min": 40, "target": 70, "max": 110},
-    "vlog": {"type": "vlog", "min": 30, "target": 60, "max": 90},
-    "storytelling": {"type": "storytelling", "min": 55, "target": 95, "max": 145},
-    "tutorial": {"type": "tutorial", "min": 45, "target": 75, "max": 110},
-    "gaming": {"type": "gaming", "min": 25, "target": 50, "max": 80},
+    "music": {"type": "music", "min": 25, "target": 50, "max": 90},
+    "podcast": {"type": "podcast", "min": 35, "target": 75, "max": 125},
+    "interview": {"type": "interview", "min": 35, "target": 75, "max": 125},
+    "news": {"type": "news", "min": 30, "target": 60, "max": 110},
+    "review": {"type": "review", "min": 35, "target": 70, "max": 125},
+    "vlog": {"type": "vlog", "min": 25, "target": 60, "max": 105},
+    "storytelling": {"type": "storytelling", "min": 40, "target": 95, "max": 150},
+    "tutorial": {"type": "tutorial", "min": 40, "target": 75, "max": 135},
+    "gaming": {"type": "gaming", "min": 25, "target": 50, "max": 90},
 }
 
 
@@ -7529,7 +7776,7 @@ def candidate_duration_profile(text, content_profile=None):
         return dict(CONTENT_DURATION_PROFILES[video_type])
     if callable(dynamic_duration_profile):
         return dynamic_duration_profile(text)
-    return {"type": "general", "min": 30, "target": 60, "max": 90}
+    return {"type": "general", "min": 25, "target": 60, "max": 120}
 
 
 def candidate_duration_bounds(text, minimum, target, maximum, content_profile=None):
@@ -7567,8 +7814,40 @@ def candidate_duration_class(duration, minimum, target, maximum):
     return "medium"
 
 
+def prefilter_selection_candidates(candidates, target_count):
+    """Bound expensive boundary refinement while preserving timeline coverage.
+
+    Candidate discovery and evidence scoring can remain broad, but the final
+    selection previously re-ran transcript boundary analysis for every scored
+    item in several passes. Keep the strongest candidates plus a deterministic
+    timeline sample so long videos stay responsive without collapsing all
+    recommendations into one section of the source.
+    """
+    ranked = sorted(
+        list(candidates or []),
+        key=lambda item: float(item.get("score") or 0.0),
+        reverse=True,
+    )
+    limit = max(64, min(180, max(1, int(target_count or 1)) * 14))
+    if len(ranked) <= limit:
+        return ranked
+    quality_count = max(1, int(limit * 0.74))
+    selected = ranked[:quality_count]
+    selected_ids = {id(item) for item in selected}
+    timeline = sorted(
+        (item for item in ranked if id(item) not in selected_ids),
+        key=lambda item: float(item.get("start") or 0.0),
+    )
+    remaining = limit - len(selected)
+    if timeline and remaining > 0:
+        stride = len(timeline) / remaining
+        for index in range(remaining):
+            selected.append(timeline[min(len(timeline) - 1, int(index * stride))])
+    return selected[:limit]
+
+
 def select_diverse_moments(candidates, target_count, transcript, min_duration, target_duration, max_duration, payload, video_duration=0.0):
-    candidates = sorted(candidates, key=lambda item: item["score"], reverse=True)
+    candidates = prefilter_selection_candidates(candidates, target_count)
     selected = []
     timeline_ranges = list(payload.get("_timelineRanges") or [])
     exclusion_windows = []
@@ -7577,6 +7856,7 @@ def select_diverse_moments(candidates, target_count, transcript, min_duration, t
     category_counts = {}
     topic_counts = {}
     duration_class_counts = {}
+    refinement_cache = {}
     min_gap = max(float(min_duration) * 0.65, min(float(max_duration), bucket_size * 0.32))
     minimum_score = AUTO_SELECT_MIN_SCORE if bool_payload(payload, "fullAutoMode", False) else AUTO_RENDER_MIN_SCORE
 
@@ -7598,47 +7878,65 @@ def select_diverse_moments(candidates, target_count, transcript, min_duration, t
             max_duration,
             payload.get("_contentProfile"),
         )
-        improved_start, improved_end, improved_text = improve_story_boundaries(
-            candidate["start"],
-            min(float(candidate["end"]), float(candidate["start"]) + effective_max),
-            transcript,
-            effective_min,
-            effective_target,
-            effective_max,
+        refinement_key = (
+            round(float(effective_min), 3),
+            round(float(effective_target), 3),
+            round(float(effective_max), 3),
         )
-        candidate["start"] = improved_start
-        candidate["end"] = improved_end
-        if timeline_ranges:
-            clipped = clamp_interval_to_ranges(candidate["start"], candidate["end"], timeline_ranges)
-            if not clipped:
-                return False
-            candidate["start"], candidate["end"] = clipped
-            improved_text = transcript_text_between(transcript, candidate["start"], candidate["end"]) or improved_text
-        if improved_text:
-            candidate["text"] = improved_text
-            candidate["transcript"] = improved_text[:700]
-        candidate["duration"] = max(5.0, round(candidate["end"] - candidate["start"], 2))
-        candidate["time"] = f"{seconds_to_stamp(candidate['start'])} - {seconds_to_stamp(candidate['end'])}"
-        candidate.setdefault("metrics", {})["duration_profile"] = duration_profile
-        if candidate["duration"] > effective_max:
-            candidate["end"] = round(candidate["start"] + float(effective_max), 2)
-            candidate["duration"] = round(candidate["end"] - candidate["start"], 2)
+        cached_refinement = refinement_cache.get(id(candidate))
+        if not cached_refinement or cached_refinement.get("key") != refinement_key:
+            # Refine from the editorial target, then allow the boundary engine
+            # to extend only when the nearby story still needs its payoff.
+            boundary_seed_end = min(
+                float(candidate["end"]),
+                float(candidate["start"]) + effective_target,
+            )
+            improved_start, improved_end, improved_text = improve_story_boundaries(
+                candidate["start"],
+                boundary_seed_end,
+                transcript,
+                effective_min,
+                effective_target,
+                effective_max,
+            )
+            candidate["start"] = improved_start
+            candidate["end"] = improved_end
+            if timeline_ranges:
+                clipped = clamp_interval_to_ranges(candidate["start"], candidate["end"], timeline_ranges)
+                if not clipped:
+                    refinement_cache[id(candidate)] = {"key": refinement_key, "invalid": True}
+                    return False
+                candidate["start"], candidate["end"] = clipped
+                improved_text = transcript_text_between(transcript, candidate["start"], candidate["end"]) or improved_text
+            if improved_text:
+                candidate["text"] = improved_text
+                candidate["transcript"] = improved_text[:700]
+            candidate["duration"] = max(5.0, round(candidate["end"] - candidate["start"], 2))
             candidate["time"] = f"{seconds_to_stamp(candidate['start'])} - {seconds_to_stamp(candidate['end'])}"
-        if candidate["duration"] < effective_min:
+            candidate.setdefault("metrics", {})["duration_profile"] = duration_profile
+            if candidate["duration"] > effective_max:
+                candidate["end"] = round(candidate["start"] + float(effective_max), 2)
+                candidate["duration"] = round(candidate["end"] - candidate["start"], 2)
+                candidate["time"] = f"{seconds_to_stamp(candidate['start'])} - {seconds_to_stamp(candidate['end'])}"
+            if candidate["duration"] < effective_min:
+                refinement_cache[id(candidate)] = {"key": refinement_key, "invalid": True}
+                return False
+            final_text = transcript_text_between(
+                transcript, candidate["start"], candidate["end"]
+            )
+            if final_text:
+                candidate["text"] = final_text
+                candidate["transcript"] = final_text[:700]
+            revalidate_candidate_after_boundary(
+                candidate,
+                payload,
+                len(selected),
+                effective_min,
+                effective_max,
+            )
+            refinement_cache[id(candidate)] = {"key": refinement_key, "invalid": False}
+        elif cached_refinement.get("invalid"):
             return False
-        final_text = transcript_text_between(
-            transcript, candidate["start"], candidate["end"]
-        )
-        if final_text:
-            candidate["text"] = final_text
-            candidate["transcript"] = final_text[:700]
-        revalidate_candidate_after_boundary(
-            candidate,
-            payload,
-            len(selected),
-            effective_min,
-            effective_max,
-        )
         if clamp_score(candidate.get("score"), 0) < minimum_score:
             candidate["rejected"] = True
             candidate["low_quality"] = True
@@ -7936,7 +8234,15 @@ def find_moments(info, transcript, payload):
             payload.get("_contentProfile"),
         )
         end = min(end, start + effective_max)
-        start, end, improved_text = improve_story_boundaries(start, end, working_transcript, effective_min, effective_target, effective_max)
+        boundary_seed_end = min(end, start + effective_target)
+        start, end, improved_text = improve_story_boundaries(
+            start,
+            boundary_seed_end,
+            working_transcript,
+            effective_min,
+            effective_target,
+            effective_max,
+        )
         start, end = clamp_interval_to_duration(start, end, duration, effective_min)
         if improved_text:
             text = transcript_text_between(working_transcript, start, end) or improved_text
@@ -7995,7 +8301,11 @@ def find_moments(info, transcript, payload):
     ai_selections = ai_select_moments(moments, payload, target_count, working_transcript, min_duration, max_duration)
     if ai_selections:
         full_auto = bool_payload(payload, "fullAutoMode", False)
-        output_limit = target_count
+        # v1.12.0: Use adaptive recommendation count instead of hard target.
+        adaptive_count, adaptive_info = adaptive_recommendation_count(
+            ai_selections, target_count, quality_floor=AUTO_RENDER_MIN_SCORE
+        )
+        output_limit = max(adaptive_count, target_count) if adaptive_count > target_count else target_count
         if len(ai_selections) < target_count and not full_auto:
             local_fill = select_diverse_moments(
                 moments,
@@ -8851,6 +9161,8 @@ def analyze(payload):
             "events": AI_DEBUG_EVENTS,
         },
     )
+    # v1.12.0: Surface discovery diagnostics for the Studio UI header.
+    requested_clips = int(payload.get("clipCount") or payload.get("requestedClipCount") or 4)
     result = {
         "video": {
             "title": info.get("title"),
@@ -8875,6 +9187,12 @@ def analyze(payload):
         },
         "moments": moments,
         "transcript": transcript,
+        "diagnostics": {
+            "requestedClips": requested_clips,
+            "discoveredCandidates": len(moments) + int(story_map.get("summary", {}).get("storyCount", 0)),
+            "eligibleCandidates": len([m for m in moments if float(m.get("score") or 0) >= AUTO_RENDER_MIN_SCORE]),
+            "returnedCandidates": len(moments),
+        },
         "dependencies": check_dependencies(),
         "ai_usage": dict(AI_USAGE),
         "ai_diagnostics": ai_diagnostics_summary(),
@@ -9431,13 +9749,37 @@ def ass_highlight_phrase(text, active_color="&H0000FFFF&", primary_color="&H00FF
     return " ".join(parts)
 
 
-def ass_hook_card_events(hook_text, hook_end, width, height, hook_font):
+def normalized_hook_layout(value, width, height):
+    requested = str(value or "auto").strip().lower().replace(" ", "_")
+    aliases = {
+        "top": "top_banner",
+        "banner": "top_banner",
+        "center": "center_card",
+        "minimal_caption": "minimal",
+    }
+    requested = aliases.get(requested, requested)
+    if requested not in {"auto", "top_banner", "center_card", "minimal"}:
+        requested = "auto"
+    if requested == "auto":
+        return "top_banner" if height >= width else "center_card"
+    return requested
+
+
+def ass_hook_card_events(hook_text, hook_end, width, height, hook_font, layout="auto"):
     """Build a centered safe-area hook card inspired by proven short-form layouts."""
     if not hook_text or float(hook_end or 0.0) <= 0:
         return []
     portrait = height >= width
-    card_width = int(width * (0.84 if portrait else 0.64))
-    card_height = int(max(hook_font * 3.0, height * (0.145 if portrait else 0.28)))
+    layout = normalized_hook_layout(layout, width, height)
+    if layout == "minimal":
+        card_width = int(width * (0.76 if portrait else 0.56))
+        card_height = int(max(hook_font * 2.25, height * (0.105 if portrait else 0.19)))
+    elif layout == "center_card":
+        card_width = int(width * (0.82 if portrait else 0.64))
+        card_height = int(max(hook_font * 3.0, height * (0.15 if portrait else 0.28)))
+    else:
+        card_width = int(width * (0.84 if portrait else 0.72))
+        card_height = int(max(hook_font * 3.0, height * (0.145 if portrait else 0.22)))
     card_height = min(card_height, int(height * 0.28))
     card_x = int((width - card_width) / 2)
     # Keep the hook out of the central face/action zone. Short-form portraits
@@ -9445,7 +9787,12 @@ def ass_hook_card_events(hook_text, hook_end, width, height, hook_font):
     # 24.5% origin let a two-line card cover the eyes and mouth. The upper safe
     # area leaves breathing room for platform chrome while ending before that
     # central subject band.
-    card_y = int(height * (0.085 if portrait else 0.10))
+    if layout == "center_card":
+        card_y = int(height * (0.34 if portrait else 0.31))
+    elif layout == "minimal":
+        card_y = int(height * (0.12 if portrait else 0.10))
+    else:
+        card_y = int(height * (0.085 if portrait else 0.10))
     accent = max(6, int(round(width * 0.009)))
     center_x = card_x + card_width // 2
     center_y = card_y + card_height // 2
@@ -9465,7 +9812,7 @@ def ass_hook_card_events(hook_text, hook_end, width, height, hook_font):
         shape(0, card_x - accent, card_y - accent, accent, card_height, "&H00E3D916&", "&H00&"),
         shape(0, card_x + accent, card_y + card_height, card_width, accent, "&H005C38FF&", "&H00&"),
         shape(0, card_x + card_width, card_y + accent, accent, card_height, "&H005C38FF&", "&H00&"),
-        shape(1, card_x, card_y, card_width, card_height, "&H00101010&", "&H08&"),
+        shape(1, card_x, card_y, card_width, card_height, "&H00101010&", "&H20&" if layout == "minimal" else "&H08&"),
     ]
     formatted_text = ass_highlight_phrase(
         hook_text,
@@ -9900,6 +10247,7 @@ def hook_overlay_plan(moment, transcript, payload):
         return cached
     requested = bool_payload(payload, "addHook", False)
     source_duration = max(0.1, float(moment.get("duration") or 0.1))
+    source_text = clean_text(moment.get("transcript") or moment.get("text") or "")
     hook_text = make_hook_text(moment, payload) if requested else ""
     preview_events = build_timed_caption_events(
         moment, transcript or [], payload, source_duration, 0.0
@@ -9922,6 +10270,10 @@ def hook_overlay_plan(moment, transcript, payload):
     )
     tts_requested = bool(enabled and bool_payload(payload, "addTtsHook", False))
     tts_available = bool(feature_flag_enabled(payload, "ttsTimelineV2", False))
+    width, height = output_dimensions(
+        payload.get("formatProfile"), payload.get("resolutionProfile")
+    ) or (1080, 1920)
+    layout = normalized_hook_layout(payload.get("hookLayout"), width, height)
     plan = {
         "requested": requested,
         "enabled": enabled,
@@ -9936,6 +10288,8 @@ def hook_overlay_plan(moment, transcript, payload):
         "ttsGenerated": False,
         "ttsDuration": 0.0,
         "ttsFallbackUsed": bool(tts_requested and not tts_available),
+        "layout": layout,
+        "qualityScore": hook_quality_score(hook_text, source_text) if enabled else 0,
     }
     if isinstance(moment, dict):
         moment["_hookOverlayPlan"] = plan
@@ -10029,6 +10383,7 @@ def build_ass_caption_file(moment, path, payload, transcript=None):
                 width,
                 height,
                 hook_font,
+                hook_plan.get("layout") or "auto",
             )
         )
     if context_enabled:
@@ -10271,8 +10626,25 @@ def add_text_overlay_filters(filters, payload, moment=None):
 
 def make_hook_text(moment, payload=None):
     source_text = clean_text(moment.get("transcript") or moment.get("text") or moment.get("title") or "")
-    default = clean_text(moment.get("hook") or local_hook_from_text(source_text) or moment.get("titleSuggestion") or moment.get("title") or "Bagian ini penting untuk kamu lihat")
+    supplied_hook = clean_text(moment.get("hook") or "")
+    default = clean_text(supplied_hook or local_hook_from_text(source_text) or moment.get("titleSuggestion") or moment.get("title") or "")
     source_evidence = profile_source_text(source_text or default, payload)
+    evidence = highlight_evidence_quality(source_text)
+    approved_title = clean_text(moment.get("titleSuggestion") or moment.get("title") or "")
+    evidence_is_weak = (
+        evidence.get("question_signal", 0) <= 0
+        and evidence.get("strong_payoff_hits", 0) <= 0
+        and evidence.get("resolution_hits", 0) <= 0
+        and evidence.get("hook_evidence", 0) < 52
+        and evidence.get("payoff_evidence", 0) < 55
+    )
+    if (
+        evidence_is_weak
+        and supplied_hook
+        and is_generic_template(supplied_hook)
+        and hook_quality_score(approved_title, source_evidence) < 58
+    ):
+        return ""
     if payload and bool_payload(payload, "addHook", False) and is_ai_feature_enabled(payload, "hook"):
         ai_result = ai_generate_hook(moment, payload)
         if ai_result.get("response"):
@@ -10291,14 +10663,15 @@ def make_hook_text(moment, payload=None):
         or not editorial_claim_is_grounded(default, source_evidence)
         or hook_quality_score(default, source_evidence) < 58
     ):
-        approved_title = clean_text(moment.get("titleSuggestion") or moment.get("title") or "")
         if hook_quality_score(approved_title, source_evidence) >= 58:
             default = approved_title
         else:
             default = pick_best_hook(content_aware_local_hook_candidates(source_text, payload), source_evidence)
-    if not editorial_claim_is_grounded(default, source_evidence) or hook_quality_score(default, source_evidence) <= 0:
+    if not editorial_claim_is_grounded(default, source_evidence) or hook_quality_score(default, source_evidence) < 58:
         default = pick_best_hook(content_aware_local_hook_candidates(source_text, payload), source_evidence)
-    return seo_clean_title(default, "Bagian ini wajib kamu lihat")
+    if hook_quality_score(default, source_evidence) < 58:
+        return ""
+    return seo_clean_title(default, "")
 
 
 def hook_seconds(payload):
@@ -14403,11 +14776,82 @@ def render(payload):
         gc.collect()
 
     requested_count = len(moments)
-    valid_mp4_count = sum(1 for item in outputs if item.get("validated"))
+    if callable(successful_render_outputs):
+        successful_outputs = successful_render_outputs(outputs)
+    else:
+        successful_outputs = [
+            item
+            for item in outputs
+            if item.get("validated") is True
+            and Path(str(item.get("video") or "")).is_file()
+        ]
+    valid_mp4_count = len(successful_outputs)
     failed_count = max(0, requested_count - valid_mp4_count)
     if failed_count:
         warnings.append(f"Requested {requested_count} clip, valid MP4 output {valid_mp4_count}. {failed_count} clip gagal setelah retry/safe fallback.")
     emit("log", stage="summary", message=f"requested={requested_count} valid_mp4={valid_mp4_count} failed={failed_count} warnings={len(warnings)}")
+    publishing_plan_path = None
+    publishing_plan = None
+    publishing_plan_status = "disabled"
+    publishing_plan_summary = {
+        "clipCount": 0,
+        "scheduleCount": 0,
+        "renderRequested": requested_count,
+        "renderSuccessful": valid_mp4_count,
+        "plannedClips": 0,
+        "aiRequestCount": 0,
+    }
+    planner_requested = bool_payload(payload, "smartPublishingPlanner", False)
+    planner_available = feature_flag_enabled(payload, "smartPublishingPlannerV1", False)
+    planner_runtime_available = (
+        planner_available
+        and callable(successful_render_outputs)
+        and callable(write_publishing_plan)
+    )
+    if planner_requested and planner_runtime_available and not successful_outputs:
+        publishing_plan_status = "skipped_no_successful_output"
+        emit(
+            "log",
+            stage="publishing plan",
+            message="Publishing Plan dilewati: tidak ada MP4 sukses yang lolos validasi media.",
+        )
+    elif planner_requested and planner_runtime_available:
+        try:
+            planner_payload = {
+                **payload,
+                "_renderRequested": requested_count,
+                "_candidateCount": len(moments),
+            }
+            publishing_plan_path, publishing_plan = write_publishing_plan(
+                output_dirs["metadata"], successful_outputs, planner_payload
+            )
+            publishing_plan_status = "completed"
+            publishing_plan_summary = {
+                "clipCount": len(publishing_plan.get("clips") or []),
+                "scheduleCount": len(publishing_plan.get("dailyPlan") or []),
+                "renderRequested": publishing_plan.get("renderRequested"),
+                "renderSuccessful": publishing_plan.get("renderSuccessful"),
+                "plannedClips": publishing_plan.get("plannedClips"),
+                "aiRequestCount": (publishing_plan.get("aiUsage") or {}).get("requests", 0),
+                "mode": publishing_plan.get("mode"),
+                "aiEnhanced": publishing_plan.get("aiEnhanced") is True,
+            }
+            emit(
+                "log",
+                stage="publishing plan",
+                message=(
+                    f"Publishing Plan siap untuk {publishing_plan_summary['clipCount']} clip; "
+                    f"{publishing_plan_summary['scheduleCount']} slot terjadwal."
+                ),
+            )
+        except Exception as exc:
+            publishing_plan_status = "warning"
+            warning = f"Publishing Planner dilewati tanpa menggagalkan render: {short_error_text(exc, 240)}"
+            warnings.append(warning)
+            emit("log", stage="publishing plan", message=warning)
+    elif planner_requested:
+        publishing_plan_status = "unavailable"
+        warnings.append("Publishing Planner diminta tetapi feature flag/runtime belum tersedia.")
     render_plan["status"] = "Completed" if failed_count == 0 else "Completed with Warning"
     render_plan["rendered_count"] = len(outputs)
     render_plan["valid_mp4_count"] = valid_mp4_count
@@ -14456,6 +14900,14 @@ def render(payload):
         "settingsRequested": requested_renderer_settings(payload),
         "settingsUsed": aggregate_settings_used,
         "featureFlags": dict(payload.get("featureFlags") or {}),
+        "publishingPlanner": {
+            "requested": planner_requested,
+            "available": planner_runtime_available,
+            "status": publishing_plan_status,
+            "planPath": str(publishing_plan_path) if publishing_plan_path else None,
+            "plan": publishing_plan if publishing_plan_status == "completed" else None,
+            **publishing_plan_summary,
+        },
         "settings": {
             "format": payload.get("formatProfile"),
             "resolution": payload.get("resolutionProfile"),
@@ -14493,7 +14945,19 @@ def render(payload):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", required=True, choices=["check", "validate-cookies", "test-cookies", "test-provider", "analyze", "render"])
+    parser.add_argument(
+        "--mode",
+        required=True,
+        choices=[
+            "check",
+            "validate-cookies",
+            "test-cookies",
+            "update-youtube-session",
+            "test-provider",
+            "analyze",
+            "render",
+        ],
+    )
     parser.add_argument("--payload", required=True)
     args = parser.parse_args()
     payload = load_payload(args.payload)
@@ -14504,6 +14968,8 @@ def main():
             emit("done", result=validate_cookie_file(payload.get("cookiesPath")))
         elif args.mode == "test-cookies":
             emit("done", result=test_cookies(payload))
+        elif args.mode == "update-youtube-session":
+            emit("done", result=update_youtube_session_from_browser(payload))
         elif args.mode == "test-provider":
             emit("done", result=test_provider_request(payload))
         elif args.mode == "analyze":

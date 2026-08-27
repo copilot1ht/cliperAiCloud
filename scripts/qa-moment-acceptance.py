@@ -220,14 +220,25 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=ROOT / "Local Test Builds" / "V1.11.5-Release-Candidate" / "moment-acceptance.json",
+        default=ROOT / "Local Test Builds" / "V1.12.0-Release-Candidate" / "moment-acceptance.json",
+    )
+    parser.add_argument(
+        "--case",
+        choices=("all",) + tuple(item[0] for item in DEFAULT_CASES),
+        default="all",
+        help="Run one cached profile while iterating, or all profiles for the release gate.",
     )
     args = parser.parse_args()
+    selected_cases = (
+        DEFAULT_CASES
+        if args.case == "all"
+        else tuple(item for item in DEFAULT_CASES if item[0] == args.case)
+    )
     with tempfile.TemporaryDirectory(prefix="cliper-moment-acceptance-") as scratch:
         scratch_root = Path(scratch)
         results = [
             run_case(name, source_id, video_type, args.cache_root, scratch_root)
-            for name, source_id, video_type in DEFAULT_CASES
+            for name, source_id, video_type in selected_cases
         ]
     summary = {
         "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),

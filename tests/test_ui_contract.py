@@ -1,7 +1,55 @@
+from collections import Counter
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_desktop_pages_keep_one_navigation_and_settings_contract():
+    html = (ROOT / "index.html").read_text(encoding="utf-8")
+    css = (ROOT / "styles.css").read_text(encoding="utf-8")
+    app = (ROOT / "app.js").read_text(encoding="utf-8")
+
+    element_ids = re.findall(r'id="([^"]+)"', html)
+    duplicate_ids = [item for item, count in Counter(element_ids).items() if count > 1]
+
+    assert duplicate_ids == []
+    assert app.count("function setSettingsTab(") == 1
+    assert 'activeSettingsTab: "api"' in app
+    assert 'data-settings-tab="general" hidden' in html
+    assert '<div class="settings-panel active" id="settings-api">' in html
+    assert "#view-settings.active" in css
+    assert ".settings-panel.active" in css
+    assert ".field input" in css
+    assert ".provider-card" in css
+    assert ".runtime-list" in css
+    assert ".render-stats-grid strong" in css
+    assert ".review-nav-tabs" in css
+    assert ".role-progress-item" in css
+    assert 'data-analysis-adjust="-10"' in html
+    assert "function adjustAnalysisRange(seconds)" in app
+    assert 'id="hookLayout"' in html
+    assert 'id="pipelineSummary"' in html
+    assert "aiTtsToggle" not in app
+    assert "@keyframes view-enter" in css
+    assert "button:active:not(:disabled)" in css
+    assert "@media (prefers-reduced-motion: reduce)" in css
+    assert 'element.classList.add("is-pointer-dragging")' in app
+    assert 'element.classList.remove("is-pointer-dragging")' in app
+
+
+def test_empty_ui_does_not_claim_fake_video_results():
+    html = (ROOT / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="previewScore">-</strong>' in html
+    assert 'id="momentSummaryBestCount">0</span>' in html
+    assert 'id="momentSummaryAnalyzed">0</strong>' in html
+    assert 'id="bottomSelectionText">Terpilih 0 dari 0 momen</span>' in html
+    assert "BAYANGIN SEMUA ORANG TAHU" not in html
+    assert "High (0.92)" not in html
+    assert "$12.48" not in html
+    assert 'id="walletStatus"' not in html
 
 
 def test_processing_error_banner_is_state_gated_and_hidden_by_default():

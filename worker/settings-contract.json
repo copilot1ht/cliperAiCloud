@@ -55,10 +55,13 @@
   },
   "featureFlags": {
     "hookV2": true,
+    "hookDirectorV1": true,
     "ttsTimelineV2": false,
     "momentScoringV2": true,
     "naturalEditDirector": true,
     "twoPersonEditing": true,
+    "youtubeSessionV2": true,
+    "smartPublishingPlannerV1": true,
     "publishingIntelligence": false,
     "publishingGuard": false
   }

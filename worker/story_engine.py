@@ -51,10 +51,69 @@ def transcript_text_between(transcript, start, end):
     return clean_text(" ".join(parts))
 
 
+def sentence_ranges(item):
+    """Estimate sentence timestamps inside a coarse ASR segment.
+
+    Some transcript providers return 30-75 second segments even though the
+    text contains several punctuated sentences. Word-proportional timing gives
+    the boundary engine safer internal cut points without claiming word-level
+    alignment accuracy.
+    """
+    text = clean_text((item or {}).get("text") or "")
+    start = timestamp(item or {}, "start")
+    end = timestamp(item or {}, "end", start)
+    words = re.findall(r"\S+", text)
+    if not words or end <= start:
+        return []
+    sentence_ends = [
+        index
+        for index, word in enumerate(words, 1)
+        if re.search(r"[.!?…][\"')\]]*$", word)
+    ]
+    if not sentence_ends or sentence_ends[-1] != len(words):
+        sentence_ends.append(len(words))
+    ranges = []
+    first = 0
+    span = end - start
+    for last in sentence_ends:
+        if last <= first:
+            continue
+        sentence_start = start + span * (first / len(words))
+        sentence_end = start + span * (last / len(words))
+        ranges.append({
+            "start": round(sentence_start, 4),
+            "end": round(sentence_end, 4),
+            "text": clean_text(" ".join(words[first:last])),
+        })
+        first = last
+    return ranges
+
+
 STORY_STOPWORDS = {
     "yang", "dan", "atau", "dari", "untuk", "dengan", "jadi", "ini", "itu",
     "ada", "saya", "aku", "gue", "gua", "kamu", "dia", "mereka", "kita",
     "kalau", "kalo", "karena", "terus", "tapi", "ya", "kan", "nah", "gitu",
+}
+
+STORY_ROLE_MARKERS = {
+    "question": ["kenapa", "bagaimana", "gimana", "apa yang", "siapa", "kok", "apakah", "?"],
+    "setup": ["awalnya", "waktu itu", "ketika itu", "dulu", "masalahnya", "ceritanya", "pertama"],
+    "progression": ["kemudian", "setelah itu", "lalu", "karena", "sehingga", "tetapi"],
+    "conflict": ["masalah", "konflik", "ditolak", "gagal", "marah", "bohong", "kontroversi", "bahaya"],
+    "answer": ["jawabannya", "solusinya", "kuncinya", "caranya", "adalah karena"],
+    "insight": ["faktanya", "pelajarannya", "artinya", "poin pentingnya", "menariknya", "insight"],
+    "reaction": ["kaget", "nggak nyangka", "terkejut", "speechless", "reaksinya"],
+    "surprise": ["ternyata", "mendadak", "tiba-tiba", "nggak nyangka", "tidak menyangka"],
+    "payoff": [
+        "akhirnya", "hasilnya", "jawabannya", "solusinya", "intinya",
+        "kesimpulannya", "makanya", "terbukti", "berhasil", "sukses",
+    ],
+    "conclusion": ["kesimpulannya", "jadi intinya", "rangkumannya", "penutupnya"],
+}
+
+DEPENDENT_OPENINGS = {
+    "dan", "terus", "lalu", "kemudian", "karena", "makanya", "jadi", "nah",
+    "iya", "ya", "oke", "tapi", "tetapi", "sementara", "sedangkan",
 }
 
 
@@ -68,6 +127,58 @@ def semantic_similarity(left, right):
     if not left_words or not right_words:
         return 0.0
     return len(left_words & right_words) / max(1, len(left_words | right_words))
+
+
+def story_roles(text):
+    """Return observable story roles without inventing semantic evidence."""
+    lower = clean_text(text).lower()
+    roles = []
+    for role, markers in STORY_ROLE_MARKERS.items():
+        if any(marker in lower for marker in markers):
+            roles.append(role)
+    return roles or ["context"]
+
+
+def has_strong_payoff(text):
+    lower = clean_text(text).lower()
+    tail = " ".join(re.findall(r"\w+", lower)[-36:])
+    return any(marker in tail for marker in STORY_ROLE_MARKERS["payoff"])
+
+
+def starts_with_dependent_phrase(text):
+    words = re.findall(r"\w+", clean_text(text).lower())
+    if not words:
+        return False
+    opening = " ".join(words[:3])
+    return words[0] in DEPENDENT_OPENINGS or opening.startswith("karena itu")
+
+
+def contextualize_story_start(transcript, start, maximum_lookback=12.0):
+    """Move a dangling opening backward to nearby context, never forward."""
+    items = list(transcript or [])
+    selected_index = None
+    for index, item in enumerate(items):
+        seg_start = timestamp(item, "start")
+        seg_end = timestamp(item, "end", seg_start)
+        if seg_start <= float(start) <= seg_end or abs(seg_start - float(start)) <= 0.05:
+            selected_index = index
+            break
+    if selected_index is None:
+        return float(start)
+    opening_text = items[selected_index].get("text") or ""
+    if not starts_with_dependent_phrase(opening_text):
+        return timestamp(items[selected_index], "start", start)
+    earliest = max(0.0, float(start) - max(0.0, float(maximum_lookback)))
+    for index in range(selected_index - 1, -1, -1):
+        candidate = items[index]
+        candidate_start = timestamp(candidate, "start")
+        candidate_end = timestamp(candidate, "end", candidate_start)
+        if candidate_start < earliest or float(start) - candidate_end > 4.5:
+            break
+        opening_text = clean_text(candidate.get("text") or "")
+        if opening_text:
+            return candidate_start
+    return timestamp(items[selected_index], "start", start)
 
 
 def story_metadata(text, segments=None):
@@ -121,9 +232,15 @@ def build_story_timeline(transcript, config=None):
 
     total_duration = max(1.0, items[-1]["end"] - items[0]["start"])
     desired_count = max(1, min(25, int(round(total_duration / 180.0))))
-    target_duration = max(75.0, min(240.0, total_duration / desired_count))
-    min_duration = max(35.0, min(90.0, target_duration * 0.38))
-    max_duration = max(120.0, min(330.0, target_duration * 1.65))
+    inferred_target = max(75.0, min(300.0, total_duration / desired_count))
+    target_duration = max(35.0, float(config.get("target_duration") or inferred_target))
+    min_duration = max(20.0, float(config.get("min_duration") or min(90.0, target_duration * 0.38)))
+    # v1.12.0: Natural story length — raise ceiling from 330 to 480 so that
+    # complete story arcs are not broken by a fixed clock cap.
+    max_duration = max(
+        target_duration,
+        float(config.get("max_duration") or min(480.0, target_duration * 1.8)),
+    )
 
     stories = []
     current = []
@@ -141,8 +258,20 @@ def build_story_timeline(transcript, config=None):
         speaker = str(item.get("speaker_id") or item.get("speaker") or "")
         speaker_changed = bool(previous_speaker and speaker and previous_speaker != speaker)
         similarity = semantic_similarity(recent_text, item["text"])
-        topic_shift = similarity < 0.055 and span >= min_duration and (speaker_changed or gap > 1.2 or re.search(r"[.!?…]$", previous.get("text") or ""))
-        should_break = gap > 4.0 or span >= max_duration or (span >= target_duration and topic_shift)
+        previous_roles = story_roles(previous.get("text") or "")
+        current_roles = story_roles(item.get("text") or "")
+        resolved_previous = "payoff" in previous_roles
+        new_opening = bool({"question", "setup"}.intersection(current_roles))
+        topic_shift = similarity < 0.055 and span >= min_duration and (
+            speaker_changed or gap > 1.2 or re.search(r"[.!?…]$", previous.get("text") or "")
+        )
+        semantic_break = resolved_previous and new_opening and span >= min_duration
+        should_break = (
+            gap > 4.0
+            or span >= max_duration
+            or semantic_break
+            or (span >= target_duration and topic_shift)
+        )
         if should_break:
             text = clean_text(" ".join(part["text"] for part in current))
             meta = story_metadata(text, current)
@@ -192,7 +321,16 @@ def snap_to_sentence_start(transcript, start):
         seg_start = timestamp(item, "start")
         seg_end = timestamp(item, "end", seg_start)
         if seg_start <= start <= seg_end or 0 <= start - seg_start <= 2:
-            return seg_start
+            internal = [
+                sentence["start"]
+                for sentence in sentence_ranges(item)
+                if sentence["start"] <= float(start) + 0.001
+            ]
+            if internal:
+                estimated = max(internal)
+                if estimated > seg_start + 0.5:
+                    return estimated
+            return contextualize_story_start(transcript, seg_start)
     return boundary
 
 
@@ -202,6 +340,9 @@ def snap_to_sentence_end(transcript, end):
         seg_start = timestamp(item, "start")
         seg_end = timestamp(item, "end", seg_start)
         if seg_start <= end <= seg_end or 0 <= seg_end - end <= 2:
+            internal = [sentence["end"] for sentence in sentence_ranges(item)]
+            if internal:
+                return min(internal, key=lambda value: (abs(value - boundary), value < boundary))
             return max(boundary, seg_end)
     return boundary
 
@@ -212,16 +353,17 @@ def natural_end_in_range(transcript, preferred_end, minimum_end, maximum_end):
     maximum = max(minimum, float(maximum_end))
     boundaries = []
     for item in transcript or []:
-        segment_end = timestamp(item, "end")
-        if minimum - 0.001 <= segment_end <= maximum + 0.001:
-            boundaries.append(segment_end)
+        for sentence in sentence_ranges(item):
+            sentence_end = sentence["end"]
+            if minimum - 0.001 <= sentence_end <= maximum + 0.001:
+                boundaries.append(sentence_end)
     if not boundaries:
         return min(max(preferred, minimum), maximum)
     return min(boundaries, key=lambda value: (abs(value - preferred), -value))
 
 
 
-def extend_story_boundary(transcript, start, end, min_duration=30, target_duration=75, max_duration=180, ending_buffer=2.5):
+def extend_story_boundary(transcript, start, end, min_duration=25, target_duration=75, max_duration=300, ending_buffer=2.5):
     if not transcript:
         return float(start), float(end), ""
     start = snap_to_sentence_start(transcript, float(start))
@@ -231,9 +373,20 @@ def extend_story_boundary(transcript, start, end, min_duration=30, target_durati
     if end - start > float(max_duration):
         end = natural_end_in_range(transcript, max_end, minimum_end, max_end)
     target_end = start + float(target_duration)
+    early_payoff_end = start + float(min_duration) + max(
+        4.0, (float(target_duration) - float(min_duration)) * 0.42
+    )
     text = transcript_text_between(transcript, start, end)
+    boundary_complete = (
+        end >= early_payoff_end
+        and has_strong_payoff(text)
+        and is_story_finished(text)
+    ) or (
+        end >= target_end
+        and is_story_finished(text)
+    )
 
-    for item in transcript or []:
+    for item in ([] if boundary_complete else (transcript or [])):
         seg_start = timestamp(item, "start")
         seg_end = timestamp(item, "end", seg_start)
         if seg_end <= end or seg_start < start:
@@ -246,6 +399,12 @@ def extend_story_boundary(transcript, start, end, min_duration=30, target_durati
         candidate_text = clean_text(f"{text} {item.get('text') or ''}")
         end = candidate_end
         text = candidate_text
+        if (
+            candidate_end >= early_payoff_end
+            and has_strong_payoff(candidate_text)
+            and is_story_finished(candidate_text)
+        ):
+            break
         if candidate_end >= target_end and is_story_finished(candidate_text):
             break
         if end >= max_end - 0.2:
@@ -259,16 +418,10 @@ def extend_story_boundary(transcript, start, end, min_duration=30, target_durati
             max_end,
         )
         text = transcript_text_between(transcript, start, end) or text
-    if is_story_finished(text):
-        extension_limit = min(max_end, end + max(0.0, float(ending_buffer or 0)))
-        later_boundaries = [
-            timestamp(item, "end")
-            for item in transcript or []
-            if end + 0.001 < timestamp(item, "end") <= extension_limit + 0.001
-        ]
-        if later_boundaries:
-            end = min(later_boundaries, key=lambda value: abs(value - extension_limit))
-            text = transcript_text_between(transcript, start, end) or text
+    if is_story_finished(text) and ending_buffer:
+        # Keep a small visual/audio tail without pulling a whole new sentence
+        # into an already complete story.
+        end = min(max_end, end + min(0.8, max(0.0, float(ending_buffer))))
     if end - start > float(max_duration):
         end = natural_end_in_range(transcript, max_end, minimum_end, max_end)
         text = transcript_text_between(transcript, start, end) or text
@@ -319,24 +472,62 @@ def segment_into_story_candidates(transcript, config=None):
     for story in stories:
         start = float(story.get("start") or 0)
         end = float(story.get("end") or start)
-        profile_duration = max(35.0, min(180.0, float(story.get("duration") or 75)))
+        # v1.12.0: Natural story length — let each story keep its full arc.
+        profile_duration = max(35.0, min(300.0, float(story.get("duration") or 75)))
         start2, end2, text = extend_story_boundary(
             transcript,
             start,
             min(end, start + profile_duration),
             min_duration=min(60.0, profile_duration),
-            target_duration=min(120.0, profile_duration),
-            max_duration=180,
+            target_duration=min(180.0, profile_duration),
+            max_duration=300,
         )
         candidates.append({**story, "start": start2, "end": end2, "text": text, "segment_type": "Story"})
-    durations = config.get("durations", [35, 50, 75, 90, 120])
+    durations = config.get("durations", [32, 46, 68, 92, 120])
+    role_anchors = []
+    for index, item in enumerate(transcript or []):
+        roles = story_roles(item.get("text") or "")
+        if set(roles).intersection({"question", "setup", "conflict", "surprise", "payoff"}):
+            role_anchors.append({
+                "time": timestamp(item, "start"),
+                "end": timestamp(item, "end", timestamp(item, "start")),
+                "roles": roles,
+                "index": index,
+            })
+
+    # A payoff/answer needs its nearby setup; an opening question needs enough
+    # forward room to reach a response. These windows are evidence-derived and
+    # intentionally vary in length.
+    for anchor in role_anchors:
+        roles = set(anchor["roles"])
+        if "payoff" in roles or "surprise" in roles:
+            preferred_start = max(0.0, anchor["time"] - 52.0)
+            preferred_end = anchor["end"]
+        else:
+            preferred_start = max(0.0, anchor["time"] - 4.0)
+            preferred_end = anchor["end"] + 64.0
+        s2, e2, text = extend_story_boundary(
+            transcript,
+            preferred_start,
+            preferred_end,
+            min_duration=25,
+            target_duration=62,
+            max_duration=180,
+        )
+        candidates.append({
+            "start": s2,
+            "end": e2,
+            "text": text,
+            "candidate_source": "story_role",
+            "story_roles": sorted(roles),
+        })
     for a in anchors:
         t = float(a.get("time", 0) or 0)
         for d in durations:
             s = max(0, t - d * 0.35)
             e = s + d
-            s2, e2, text = extend_story_boundary(transcript, s, e, min_duration=30, target_duration=d)
-            candidates.append({"start": s2, "end": e2, "text": text})
+            s2, e2, text = extend_story_boundary(transcript, s, e, min_duration=25, target_duration=d)
+            candidates.append({"start": s2, "end": e2, "text": text, "candidate_source": "sentence_anchor"})
     # if no anchors produced, fallback to sliding windows
     if not candidates:
         total = timestamp(transcript[-1], "end", 0) if transcript else 0
@@ -345,4 +536,12 @@ def segment_into_story_candidates(transcript, config=None):
             e = s + 75
             s2, e2, text = extend_story_boundary(transcript, s, e)
             candidates.append({"start": s2, "end": e2, "text": text})
-    return candidates
+    unique = []
+    seen = set()
+    for candidate in candidates:
+        key = (round(float(candidate.get("start") or 0), 1), round(float(candidate.get("end") or 0), 1))
+        if key in seen or float(candidate.get("end") or 0) <= float(candidate.get("start") or 0):
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique

@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld("cliper", {
   validateCookies: (payload) => ipcRenderer.invoke("cliper:validate-cookies", payload),
   testCookies: (payload) => ipcRenderer.invoke("cliper:test-cookies", payload),
   getYouTubeSession: () => ipcRenderer.invoke("cliper:get-youtube-session"),
+  updateYouTubeSession: (payload) => ipcRenderer.invoke("cliper:update-youtube-session", payload),
   removeYouTubeSession: () => ipcRenderer.invoke("cliper:remove-youtube-session"),
   analyze: (payload) => ipcRenderer.invoke("cliper:analyze", payload),
   render: (payload) => ipcRenderer.invoke("cliper:render", payload),
@@ -22,6 +23,7 @@ contextBridge.exposeInMainWorld("cliper", {
   selectFontFile: () => ipcRenderer.invoke("cliper:select-font-file"),
   openFolder: (folderPath) => ipcRenderer.invoke("cliper:open-folder", folderPath),
   testProvider: (payload) => ipcRenderer.invoke("cliper:test-provider", payload),
+  getCostEstimate: (payload) => ipcRenderer.invoke("cliper:get-cost-estimate", payload),
   openUserGuide: () => ipcRenderer.invoke("cliper:open-user-guide"),
   openExternal: (url) => ipcRenderer.invoke("cliper:open-external", url),
   onWorkerEvent: (callback) => {

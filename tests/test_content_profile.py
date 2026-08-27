@@ -143,7 +143,8 @@ def test_duration_profile_follows_classified_news_not_incidental_tutorial_word()
     )
 
     assert profile["type"] == "news"
-    assert bounds == (35.0, 60.0, 90.0, "news")
+    # v1.12.0 keeps news concise while allowing a complete 30-110 second story.
+    assert bounds == (30.0, 60.0, 110.0, "news")
 
 
 def test_ai_split_suggestion_requires_two_verified_overlapping_speakers():

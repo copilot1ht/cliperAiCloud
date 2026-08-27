@@ -4,12 +4,17 @@ const path = require("path");
 const SESSION_STATES = new Set([
   "NO_SESSION",
   "SESSION_PRESENT",
+  "SESSION_CHECKING",
   "SESSION_VALID",
   "SESSION_EXPIRING",
   "SESSION_INVALID",
   "SESSION_UPDATE_REQUIRED",
+  "SESSION_UPDATING",
+  "SESSION_UPDATED",
   "SESSION_ERROR"
 ]);
+
+const SUPPORTED_BROWSERS = new Set(["chrome", "edge", "firefox", "brave", "chromium"]);
 
 function isoNow() {
   return new Date().toISOString();
@@ -54,6 +59,7 @@ class YouTubeSessionManager {
     this.rootPath = path.resolve(rootPath);
     this.cookiePath = path.join(this.rootPath, "cookies.txt");
     this.metadataPath = path.join(this.rootPath, "session-meta.json");
+    this.stagingPath = path.join(this.rootPath, "cookies.browser-update.tmp");
     this.logger = logger;
   }
 
@@ -69,13 +75,28 @@ class YouTubeSessionManager {
       : present
         ? "SESSION_PRESENT"
         : "NO_SESSION";
+    const source = stored.source || "manual_import";
+    const browser = stored.browser || "unknown";
+    const health = !present
+      ? "MISSING"
+      : ["SESSION_INVALID", "SESSION_UPDATE_REQUIRED"].includes(state)
+        ? "REAUTH_REQUIRED"
+        : state === "SESSION_EXPIRING"
+          ? "EXPIRING_SOON"
+          : state === "SESSION_VALID" || state === "SESSION_UPDATED"
+            ? "VALID"
+            : state === "SESSION_ERROR"
+              ? "UNKNOWN"
+              : "PRESENT";
     return {
-      schema: 1,
+      schema: 2,
       present,
       state: present ? state : "NO_SESSION",
+      health,
       path: present ? this.cookiePath : "",
-      source: stored.source || "manual_import",
-      browser: stored.browser || "unknown",
+      source,
+      browser,
+      autoRefresh: source === "browser" && stored.autoRefresh !== false && SUPPORTED_BROWSERS.has(browser),
       fileName: stored.fileName || "cookies.txt",
       sizeBytes: present ? Number(fs.statSync(this.cookiePath).size || 0) : 0,
       createdAt: stored.createdAt || null,
@@ -95,15 +116,17 @@ class YouTubeSessionManager {
     const next = {
       ...current,
       ...patch,
-      schema: 1,
+      schema: 2,
       path: undefined,
       present: undefined,
       sizeBytes: undefined
     };
-    fs.writeFileSync(this.metadataPath, JSON.stringify(next, null, 2), {
+    const temporaryPath = `${this.metadataPath}.${process.pid}.tmp`;
+    fs.writeFileSync(temporaryPath, JSON.stringify(next, null, 2), {
       encoding: "utf8",
       mode: 0o600
     });
+    replaceFileSync(temporaryPath, this.metadataPath);
     return this.readMetadata();
   }
 
@@ -125,6 +148,7 @@ class YouTubeSessionManager {
     const metadata = this.writeMetadata({
       state: "SESSION_PRESENT",
       source: "manual_import",
+      autoRefresh: false,
       browser: validation.browser || current.browser || "unknown",
       fileName: path.basename(source),
       createdAt: current.createdAt || now,
@@ -135,6 +159,69 @@ class YouTubeSessionManager {
       reason: validation.warning || null
     });
     this.logger("youtube-session:imported");
+    return metadata;
+  }
+
+  beginBrowserUpdate(browser) {
+    const normalized = String(browser || "").trim().toLowerCase();
+    if (!SUPPORTED_BROWSERS.has(normalized)) {
+      throw new Error("Browser belum didukung untuk pembaruan session otomatis.");
+    }
+    this.ensureDirectory();
+    try {
+      fs.unlinkSync(this.stagingPath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    this.writeMetadata({
+      state: this.readMetadata().present ? "SESSION_UPDATING" : "NO_SESSION",
+      browser: normalized,
+      reason: null,
+      errorClass: null
+    });
+    this.logger(`youtube-session:update-start browser=${normalized}`);
+    return { browser: normalized, outputPath: this.stagingPath };
+  }
+
+  completeBrowserUpdate(browser, validation = {}) {
+    const normalized = String(browser || "").trim().toLowerCase();
+    if (!SUPPORTED_BROWSERS.has(normalized) || validation.ok !== true) {
+      throw new Error("Session browser belum lolos validasi.");
+    }
+    const imported = this.importFile(this.stagingPath, validation);
+    const now = isoNow();
+    const metadata = this.writeMetadata({
+      state: "SESSION_UPDATED",
+      source: "browser",
+      browser: normalized,
+      autoRefresh: true,
+      fileName: `${normalized}-session`,
+      updatedAt: now,
+      lastChecked: validation.testedAt || now,
+      lastSuccess: now,
+      lastFailure: null,
+      errorClass: null,
+      reason: null
+    });
+    try {
+      fs.unlinkSync(this.stagingPath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    this.logger(`youtube-session:update-success browser=${normalized}`);
+    return { ...imported, ...metadata };
+  }
+
+  failBrowserUpdate(errorClass, reason) {
+    const current = this.readMetadata();
+    const now = isoNow();
+    const metadata = this.writeMetadata({
+      state: current.present ? "SESSION_UPDATE_REQUIRED" : "SESSION_ERROR",
+      lastFailure: now,
+      errorClass: String(errorClass || "UNKNOWN").slice(0, 80),
+      reason: String(reason || "Pembaruan session browser gagal.").slice(0, 300)
+    });
+    this.logger(`youtube-session:update-failed class=${metadata.errorClass}`);
     return metadata;
   }
 
@@ -171,7 +258,7 @@ class YouTubeSessionManager {
   }
 
   remove() {
-    for (const pathname of [this.cookiePath, this.metadataPath]) {
+    for (const pathname of [this.cookiePath, this.metadataPath, this.stagingPath]) {
       try {
         fs.unlinkSync(pathname);
       } catch (error) {
@@ -183,4 +270,4 @@ class YouTubeSessionManager {
   }
 }
 
-module.exports = { YouTubeSessionManager };
+module.exports = { SUPPORTED_BROWSERS, YouTubeSessionManager };

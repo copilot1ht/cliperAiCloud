@@ -104,3 +104,102 @@ def test_youtube_session_ui_does_not_display_cookie_path_or_fake_expiry():
     assert "Perbarui cookies setiap sekitar 1 minggu" not in html
     assert "HTTP 403 umum tidak otomatis dianggap" in html
     assert "removeYouTubeSession" in app
+
+
+def test_browser_session_update_is_atomic_persistent_and_auto_refreshable(tmp_path):
+    session_root = tmp_path / "app-data" / "auth" / "youtube"
+    module_path = ROOT / "electron" / "youtube-session-manager.js"
+    script = r"""
+const fs = require("fs");
+const { YouTubeSessionManager } = require(process.argv[1]);
+const manager = new YouTubeSessionManager(process.argv[2]);
+const update = manager.beginBrowserUpdate("chrome");
+fs.writeFileSync(update.outputPath, "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tsecret-browser\n");
+const completed = manager.completeBrowserUpdate("chrome", {
+  ok: true,
+  testedAt: "2026-08-25T00:00:00.000Z"
+});
+const restarted = new YouTubeSessionManager(process.argv[2]).readMetadata();
+process.stdout.write(JSON.stringify({
+  state: completed.state,
+  source: completed.source,
+  browser: completed.browser,
+  autoRefresh: completed.autoRefresh,
+  persisted: restarted.present && restarted.autoRefresh,
+  stagingRemoved: !fs.existsSync(update.outputPath)
+}));
+"""
+    result = subprocess.run(
+        ["node", "-e", script, str(module_path), str(session_root)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "state": "SESSION_UPDATED",
+        "source": "browser",
+        "browser": "chrome",
+        "autoRefresh": True,
+        "persisted": True,
+        "stagingRemoved": True,
+    }
+    assert "secret-browser" not in result.stdout
+
+
+def test_worker_browser_update_exports_local_cookie_file_without_cloud(monkeypatch, tmp_path):
+    output = tmp_path / "auth" / "youtube" / "cookies.browser-update.tmp"
+
+    class FakeCookieJar:
+        def save(self, pathname, **_kwargs):
+            Path(pathname).write_text(
+                "# Netscape HTTP Cookie File\n"
+                ".youtube.com\tTRUE\t/\tTRUE\t0\tSID\tsecret-value\n",
+                encoding="utf-8",
+            )
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+            self.cookiejar = FakeCookieJar()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def extract_info(self, _url, download=False):
+            assert download is False
+            assert self.options["cookiesfrombrowser"] == ("chrome",)
+            return {"title": "Session validation"}
+
+    fake_module = type("FakeYtDlp", (), {"YoutubeDL": FakeYoutubeDL})
+    monkeypatch.setattr(cliper_worker, "require_yt_dlp", lambda: fake_module)
+
+    result = cliper_worker.update_youtube_session_from_browser(
+        {"browser": "chrome", "outputPath": str(output)}
+    )
+
+    assert result["ok"] is True
+    assert result["testOk"] is True
+    assert result["source"] == "browser"
+    assert output.exists()
+    assert "secret-value" not in json.dumps(result)
+
+
+def test_browser_update_contract_is_exposed_to_renderer_and_has_manual_fallback():
+    app = (ROOT / "app.js").read_text(encoding="utf-8")
+    html = (ROOT / "index.html").read_text(encoding="utf-8")
+    preload = (ROOT / "electron" / "preload.js").read_text(encoding="utf-8")
+    main = (ROOT / "electron" / "main.js").read_text(encoding="utf-8")
+
+    assert "updateYouTubeSession" in preload
+    assert 'ipcMain.handle("cliper:update-youtube-session"' in main
+    assert "runWorkerWithYouTubeRecovery" in main
+    assert 'errorClass === "AUTH_REQUIRED"' in main
+    assert 'id="importCookiesButton"' in html
+    assert "updateYouTubeSession" in app
+    assert 'id="chooseCookieFile"' in html
+    assert "await resumePendingSessionJob();" in app

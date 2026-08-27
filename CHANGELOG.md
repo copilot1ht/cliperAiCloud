@@ -1,5 +1,35 @@
 # Cliper Studio Plus Changelog
 
+## v1.12.0 - Local Release Candidate
+
+Added:
+
+* Evidence-based story-role discovery with adaptive candidate durations and contextual boundary backtracking.
+* Local YouTube Session V2 with persistent browser refresh, manual cookies fallback, bounded authentication recovery, and automatic job resume.
+* Hook Director layouts for top banner, center card, and minimal safe-area presentation.
+* Smart Publishing Planner that writes per-clip and session-level plans without hidden AI requests.
+
+Improved:
+
+* Completed stories can end near a strong payoff instead of being padded toward one fixed duration.
+* Generic or unsupported hook copy is rejected while relevant explicit hooks remain available.
+* YouTube HTTP 403 remains separately classified and only confirmed authentication failures trigger session refresh.
+* Publishing schedules honor selected platforms, timezone fallback, daily caps, and minimum post gaps.
+* Restored the modern desktop layout contract across Studio, Moment AI, Render, Output, and Settings after the shell redesign dropped shared form and panel styles.
+* Settings now opens canonical runtime-backed sections instead of the prototype dashboard with sample usage/session values.
+* Moment AI empty states no longer display sample scores, candidates, source metadata, or confidence before a real analysis exists.
+* Hook placement and Render pipeline summaries are now connected to the same settings and worker payload used by the final render.
+* Candidate ranking now keeps broad timeline discovery while prefiltering expensive boundary refinement to a deterministic, diverse shortlist.
+* Podcast, interview, news, review, tutorial, storytelling, and commentary boundaries use profile-aware short-form guardrails without forcing one fixed duration.
+* The desktop shell keeps Studio, Moment AI, Render, Output, and Settings as separate active pages; Settings sections scroll internally without turning the app into one long document.
+
+Validation:
+
+* 244 automated tests pass across Electron UI/DOM contracts, worker logic, story scoring, YouTube sessions, subtitle/hook timelines, tracking, cache, render manifests, and publishing plans.
+* Cached real-content acceptance passes for podcast, interview, storytelling, and commentary with 10 non-overlapping candidates per profile and honest evidence-based scores.
+* A fresh real-content render passes ffprobe and production output validation at 720x1280 H.264/AAC with Hook, subtitles, smart crop, face tracking, and recorded GPU fallback behavior.
+* Cloud contracts, AI Router, API, Web, Prisma validation/generation, billing, and admin tests pass locally. No production deployment or online release is claimed by this entry.
+
 ## v1.11.0 - Stable Desktop Release
 
 Added:

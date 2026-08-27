@@ -20,6 +20,9 @@ def test_settings_contract_is_single_versioned_source_of_truth():
     assert contract["dependencies"]["faceTrack"] == "smartCrop"
     assert contract["dependencies"]["addTtsHook"] == "addHook"
     assert contract["featureFlags"]["hookV2"] is True
+    assert contract["featureFlags"]["hookDirectorV1"] is True
+    assert contract["featureFlags"]["youtubeSessionV2"] is True
+    assert contract["featureFlags"]["smartPublishingPlannerV1"] is True
     assert contract["featureFlags"]["publishingGuard"] is False
     assert contract["featureFlags"]["momentScoringV2"] is True
     assert contract["uiBindings"]["addTtsHook"] == "ttsHookToggle"

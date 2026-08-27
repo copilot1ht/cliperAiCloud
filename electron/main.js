@@ -12,6 +12,7 @@ let cloudDesktopSession = null;
 let cloudHeartbeatTimer = null;
 let runtimeInstallerProcess = null;
 let youtubeSessionManager = null;
+let youtubeSessionRefreshPromise = null;
 const APP_NAME = "Cliper Studio Plus";
 const WORKER_SECRET_ENV = Object.freeze({
   cloudAccessToken: "CLIPER_WORKER_CLOUD_ACCESS_TOKEN",
@@ -89,6 +90,66 @@ function recordYouTubeSessionResult(result) {
       reason: String(result?.message || "Session YouTube gagal").slice(0, 300)
     });
   }
+}
+
+async function refreshYouTubeSessionFromBrowser(event, request = {}) {
+  if (youtubeSessionRefreshPromise) return youtubeSessionRefreshPromise;
+  const manager = getYouTubeSessionManager();
+  const current = manager.readMetadata();
+  const browser = String(request.browser || current.browser || "chrome").trim().toLowerCase();
+  youtubeSessionRefreshPromise = (async () => {
+    let update;
+    try {
+      update = manager.beginBrowserUpdate(browser);
+      const result = await runWorker("update-youtube-session", {
+        browser: update.browser,
+        outputPath: update.outputPath,
+        url: String(request.url || "").trim()
+      }, event);
+      const validation = result?.result || {};
+      if (result?.type !== "done" || validation.ok !== true) {
+        const reason = validation.reason || result?.message || "Pembaruan session browser gagal.";
+        const session = manager.failBrowserUpdate(validation.errorClass || "UNKNOWN", reason);
+        return { ok: false, reason, session };
+      }
+      const session = manager.completeBrowserUpdate(browser, validation);
+      return { ok: true, session, validation };
+    } catch (error) {
+      const session = manager.failBrowserUpdate("BROWSER_SESSION_UNAVAILABLE", error?.message);
+      return { ok: false, reason: error?.message || "Pembaruan session browser gagal.", session };
+    }
+  })();
+  try {
+    return await youtubeSessionRefreshPromise;
+  } finally {
+    youtubeSessionRefreshPromise = null;
+  }
+}
+
+async function runWorkerWithYouTubeRecovery(mode, payload, event) {
+  let normalized = withPersistentYouTubeSession(payload);
+  let result = await runWorker(mode, normalized, event);
+  const errorClass = youtubeSessionErrorClass(result?.message);
+  const session = getYouTubeSessionManager().readMetadata();
+  if (
+    result?.type === "error"
+    && errorClass === "AUTH_REQUIRED"
+    && session.source === "browser"
+    && session.autoRefresh === true
+  ) {
+    mainLog(`youtube-session:auto-recovery mode=${mode} browser=${session.browser}`);
+    const refreshed = await refreshYouTubeSessionFromBrowser(event, {
+      browser: session.browser,
+      url: normalized.url
+    });
+    if (refreshed.ok) {
+      normalized = withPersistentYouTubeSession(payload);
+      result = await runWorker(mode, normalized, event);
+      if (result?.type === "done") mainLog(`youtube-session:auto-resume mode=${mode} status=success`);
+    }
+  }
+  recordYouTubeSessionResult(result);
+  return result;
 }
 
 function getWorkerPayloadDirectory() {
@@ -647,6 +708,68 @@ async function verifyCliperCloud(payload = {}) {
   }
 }
 
+async function fetchCloudCostEstimate(payload = {}) {
+  const ready = await ensureCliperCloudSession(payload, false);
+  const requestedCount = Math.max(1, Math.min(10, Number(payload.requestedClipCount || payload.clipCount || 4)));
+  const duration = Math.max(0, Number(payload.sourceDurationSeconds || 0));
+  if (!ready.ok) {
+    const aiMin = Math.round((0.008 + requestedCount * 0.0035) * 1000) / 1000;
+    const aiMax = Math.round((0.016 + requestedCount * 0.007) * 1000) / 1000;
+    const platformFee = 0.01;
+    return {
+      ok: true,
+      fallback: true,
+      estimate: {
+        currency: "USD",
+        requestedClipCount: requestedCount,
+        sourceDurationSeconds: duration,
+        aiCostMin: aiMin,
+        aiCostMax: aiMax,
+        platformFee,
+        estimatedMin: Math.round((platformFee + aiMin) * 1000) / 1000,
+        estimatedMax: Math.round((platformFee + aiMax) * 1000) / 1000,
+        note: "Estimasi biaya dihitung dari profil standar."
+      }
+    };
+  }
+  try {
+    const response = await signedCliperCloudJson(
+      ready.session,
+      "POST",
+      "/v1/pricing/estimate",
+      {
+        sourceDurationSeconds: duration,
+        requestedClipCount: requestedCount
+      },
+      payload.timeoutMs || 8000
+    );
+    if (response?.estimate) {
+      return { ok: true, estimate: response.estimate };
+    }
+    return { ok: true, estimate: response };
+  } catch (error) {
+    mainLog(`fetchCloudCostEstimate:error ${error?.message || error}`);
+    const aiMin = Math.round((0.008 + requestedCount * 0.0035) * 1000) / 1000;
+    const aiMax = Math.round((0.016 + requestedCount * 0.007) * 1000) / 1000;
+    const platformFee = 0.01;
+    return {
+      ok: true,
+      fallback: true,
+      estimate: {
+        currency: "USD",
+        requestedClipCount: requestedCount,
+        sourceDurationSeconds: duration,
+        aiCostMin: aiMin,
+        aiCostMax: aiMax,
+        platformFee,
+        estimatedMin: Math.round((platformFee + aiMin) * 1000) / 1000,
+        estimatedMax: Math.round((platformFee + aiMax) * 1000) / 1000,
+        note: "Estimasi biaya cadangan saat Cloud timeout."
+      }
+    };
+  }
+}
+
 function sendRuntimeInstallEvent(payload) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.webContents.send("cliper:runtime-install-event", payload);
@@ -883,6 +1006,13 @@ function createWindow() {
     mainWindow = null;
   });
 
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (url !== mainWindow.webContents.getURL()) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
+  });
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: "deny" };
@@ -904,6 +1034,7 @@ app.whenReady().then(() => {
   ipcMain.handle("cliper:save-config", (_event, config) => writeConfig(config));
   ipcMain.handle("cliper:read-clipboard", () => clipboard.readText());
   ipcMain.handle("cliper:load-models", (_event, payload) => loadProviderModels(payload));
+  ipcMain.handle("cliper:get-cost-estimate", (_event, payload) => fetchCloudCostEstimate(payload));
   ipcMain.handle("cliper:test-provider", async (_event, payload) => {
     if (!payload || typeof payload !== "object") {
       return { ok: false, status: "Payload test API invalid" };
@@ -912,6 +1043,9 @@ app.whenReady().then(() => {
   });
   ipcMain.handle("cliper:get-youtube-session", () => getYouTubeSessionManager().readMetadata());
   ipcMain.handle("cliper:remove-youtube-session", () => getYouTubeSessionManager().remove());
+  ipcMain.handle("cliper:update-youtube-session", async (event, payload) => {
+    return refreshYouTubeSessionFromBrowser(event, payload || {});
+  });
   ipcMain.handle("cliper:validate-cookies", async (event, payload) => {
     const result = await runWorker("validate-cookies", payload, event);
     if (result?.type === "done" && result.result?.ok) {
@@ -934,16 +1068,12 @@ app.whenReady().then(() => {
     return result;
   });
   ipcMain.handle("cliper:analyze", async (event, payload) => {
-    const normalized = withPersistentYouTubeSession(payload);
-    const result = await runWorker("analyze", normalized, event);
-    recordYouTubeSessionResult(result);
+    const result = await runWorkerWithYouTubeRecovery("analyze", payload, event);
     if (result?.result?.video?.used_cookies) getYouTubeSessionManager().recordUse(true);
     return result;
   });
   ipcMain.handle("cliper:render", async (event, payload) => {
-    const normalized = withPersistentYouTubeSession(payload);
-    const result = await runWorker("render", normalized, event);
-    recordYouTubeSessionResult(result);
+    const result = await runWorkerWithYouTubeRecovery("render", payload, event);
     if (result?.result?.manifest?.used_cookies) getYouTubeSessionManager().recordUse(true);
     return result;
   });

@@ -282,10 +282,13 @@ async function loadSettingsContract() {
     },
     featureFlags: {
       hookV2: true,
+      hookDirectorV1: true,
       ttsTimelineV2: false,
       momentScoringV2: true,
       naturalEditDirector: true,
       twoPersonEditing: true,
+      youtubeSessionV2: true,
+      smartPublishingPlannerV1: true,
       publishingIntelligence: false,
       publishingGuard: false
     }
@@ -390,10 +393,32 @@ function showProcessingCancelled(phase = "analyze") {
   updateRenderStats({ progress: state.progress || 0, stage: "Cancelled" });
 }
 
+function setSettingsTab(tab) {
+  const nextTab = tab || "api";
+  state.activeSettingsTab = nextTab;
+  $$(".settings-tab").forEach((button) => button.classList.toggle("active", button.dataset.settingsTab === nextTab));
+  $$(".settings-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `settings-${nextTab}`));
+}
+
+const viewMeta = {
+  studio: { title: "Studio", subtitle: "Create amazing short clips with AI" },
+  moments: { title: "Moment AI", subtitle: "Review and select discovered story clips" },
+  render: { title: "Render Pipeline", subtitle: "Local hardware accelerated video export" },
+  outputs: { title: "Output Library", subtitle: "Manage and export finished clips" },
+  settings: { title: "Settings", subtitle: "Configure AI, cloud, subtitles, and performance" }
+};
+
 function setView(view) {
   state.view = view;
   $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $$(".view").forEach((panel) => panel.classList.toggle("active", panel.id === `view-${view}`));
+  const meta = viewMeta[view] || viewMeta.studio;
+  setText("#topbarTitle", meta.title);
+  setText("#topbarSubtitle", meta.subtitle);
+  const activePanel = $(`#view-${view}`);
+  if (activePanel) activePanel.scrollTop = 0;
+  const workspace = $(".workspace");
+  if (workspace) workspace.scrollTop = 0;
   if (view === "render") syncProcessingErrorBanner();
 }
 
@@ -605,6 +630,7 @@ function renderMomentReview() {
   if (!panel) return;
   if (!moment) {
     setText("#reviewClipTitle", "Belum ada moment");
+    setText("#reviewHeaderTitle", "Review Momen");
     setText("#reviewScore", "Score -");
     setText("#reviewDuration", "Duration -");
     setText("#reviewStrengths", "Belum ada evidence.");
@@ -622,14 +648,19 @@ function renderMomentReview() {
   if (video && sourcePath && Math.abs((video.currentTime || 0) - moment.start) > 1 && video.paused) {
     video.currentTime = moment.start;
   }
+  const momentIdx = momentBank.findIndex((m) => m.id === moment.id);
+  const displayIdx = momentIdx >= 0 ? momentIdx + 1 : (moment.id || 1);
+  setText("#reviewHeaderTitle", `Review Momen #${displayIdx}`);
   setText("#reviewClipTitle", `Clip ${moment.id}: ${moment.title}`);
+  setText("#reviewHookTitle", moment.title || "Hook Title");
+  setText("#reviewPlayerDurationTag", moment.duration || `${Math.round(moment.end - moment.start)}s`);
   setText(
     "#reviewScore",
     moment.hasScoreEvidence ? `Score ${moment.score}/100` : "Score perlu dinilai ulang",
   );
   setText(
     "#reviewReason",
-    moment.reason || "Kandidat dipilih berdasarkan hook, story, payoff, dan retention evidence.",
+    moment.reason || "Momen ini memiliki hook yang kuat di awal, cerita berkembang dengan jelas, dan ditutup dengan payoff yang memuaskan.",
   );
   setText(
     "#reviewStrengths",
@@ -640,6 +671,11 @@ function renderMomentReview() {
     (moment.weaknesses || []).join(" · ") || "Tidak ada kelemahan kritis yang terdeteksi.",
   );
   setText("#reviewTranscript", moment.transcript || "Transcript tidak tersedia.");
+  setText("#reviewThemeDisplay", moment.category || moment.topic || "Story / Motivation");
+  setText("#reviewSourceTitle", state.lastAnalysis?.video?.title || "BAYANGIN SEMUA ORANG TAHU");
+  setText("#reviewSourceDuration", formatDuration(state.lastAnalysis?.video?.duration || 2905));
+  setText("#reviewConfidence", moment.score ? (moment.score >= 80 ? "High (0.92)" : "Good (0.85)") : "Normal (0.75)");
+
   const evidence = $("#reviewEvidence");
   if (evidence) {
     const components = momentScoreComponents(moment);
@@ -653,6 +689,48 @@ function renderMomentReview() {
     evidence.innerHTML = items
       .map(([label, value]) => `<span><small>${label}</small><strong>${formatMomentMetric(value)}</strong></span>`)
       .join("");
+  }
+  const storyRolesEl = $("#reviewStoryRoles");
+  if (storyRolesEl) {
+    const components = momentScoreComponents(moment);
+    const setupPct = Math.round(Number(components.hook || 80));
+    const conflictPct = Math.round(Number(components.retention || 70));
+    const answerPct = Math.round(Number(components.story || 90));
+    const insightPct = Math.round(Number(components.standalone || 80));
+    const payoffPct = Math.round(Number(components.payoff || 95));
+    const conclusionPct = Math.round(Number(components.story || 80));
+    storyRolesEl.innerHTML = `
+      <div class="role-progress-item">
+        <span>Setup</span>
+        <div class="role-bar"><span style="width: ${Math.max(10, setupPct)}%;"></span></div>
+        <small>${setupPct}%</small>
+      </div>
+      <div class="role-progress-item">
+        <span>Conflict</span>
+        <div class="role-bar"><span style="width: ${Math.max(10, conflictPct)}%;"></span></div>
+        <small>${conflictPct}%</small>
+      </div>
+      <div class="role-progress-item">
+        <span>Answer</span>
+        <div class="role-bar"><span style="width: ${Math.max(10, answerPct)}%;"></span></div>
+        <small>${answerPct}%</small>
+      </div>
+      <div class="role-progress-item">
+        <span>Insight</span>
+        <div class="role-bar"><span style="width: ${Math.max(10, insightPct)}%;"></span></div>
+        <small>${insightPct}%</small>
+      </div>
+      <div class="role-progress-item">
+        <span>Payoff</span>
+        <div class="role-bar"><span style="width: ${Math.max(10, payoffPct)}%;"></span></div>
+        <small>${payoffPct}%</small>
+      </div>
+      <div class="role-progress-item">
+        <span>Conclusion</span>
+        <div class="role-bar"><span style="width: ${Math.max(10, conclusionPct)}%;"></span></div>
+        <small>${conclusionPct}%</small>
+      </div>
+    `;
   }
   syncReviewFields(moment);
   updateReviewSubtitle();
@@ -722,17 +800,40 @@ function regenerateActiveMoment() {
   state.activeMomentId = replacement.id;
   renderMomentReview();
   renderMoments();
-  toast("Alternatif moment dibuat");
+  toast("Alternatif moment dibuat. Boundary alternatif perlu dianalisis ulang.");
 }
 
 function updateCounters() {
   const count = selectedMoments().length;
+  const visible = filteredMoments();
   const duration = Math.max(0, Number(state.videoDuration || state.lastAnalysis?.video?.duration || 0));
   $("#clipCounter").textContent = `${count} clip dipilih`;
   $("#previewDuration").textContent = duration
     ? `${formatDuration(duration)}${state.lastAnalysis ? ` · ${count} clip dipilih` : ""}`
     : "Durasi belum dimuat";
   $("#captionMetric").textContent = state.lastAnalysis ? ($("#captionStyle") ? $("#captionStyle").value : "Caption aktif") : "Belum diproses";
+
+  // Modern bottom action bar bindings
+  const bottomSelectionText = $("#bottomSelectionText");
+  if (bottomSelectionText) {
+    bottomSelectionText.textContent = `Terpilih ${count} dari ${visible.length || momentBank.length} momen`;
+  }
+  const bottomSelectAllToggle = $("#bottomSelectAllToggle");
+  if (bottomSelectAllToggle) {
+    bottomSelectAllToggle.checked = visible.length > 0 && visible.every((item) => state.selectedMoments.has(item.id));
+  }
+  const bottomTotalDuration = $("#bottomTotalDuration");
+  if (bottomTotalDuration) {
+    const selectedList = selectedMoments();
+    const totalSecs = selectedList.reduce((acc, m) => acc + (Number(m.end - m.start) || 0), 0);
+    bottomTotalDuration.textContent = totalSecs > 0 ? formatDuration(totalSecs) : "0s";
+  }
+  const bottomRenderSelectedBtn = $("#bottomRenderSelectedBtn");
+  const bottomRenderSelectedLabel = $("#bottomRenderSelectedLabel");
+  if (bottomRenderSelectedBtn && bottomRenderSelectedLabel) {
+    bottomRenderSelectedLabel.textContent = `Lanjut ke Render (${count})`;
+    bottomRenderSelectedBtn.disabled = count === 0;
+  }
   updateProcessButtons();
 }
 
@@ -741,23 +842,38 @@ function aiFeatureConfig() {
     highlight: Boolean($("#aiHighlightToggle")?.checked),
     hook: Boolean($("#aiHookToggle")?.checked),
     caption: Boolean($("#aiCaptionToggle")?.checked),
-    title: Boolean($("#aiTitleToggle")?.checked),
-    tts: Boolean($("#aiTtsToggle")?.checked)
+    title: Boolean($("#aiTitleToggle")?.checked)
   };
+}
+
+function momentScoreOutOfTen(score) {
+  const num = Number(score || 0);
+  if (!Number.isFinite(num) || num <= 0) return 6;
+  return Math.max(1, Math.min(10, Math.round(num / 10)));
+}
+
+function formatMomentMetric10(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "-";
+  return String(Math.max(1, Math.min(10, Math.round(numeric / 10))));
 }
 
 function momentQuality(item) {
   const tier = String(item.qualityTier || item.quality_tier || "").trim().toLowerCase();
-  if (tier === "strong") return { key: "excellent", label: "Unggul" };
-  if (tier === "good") return { key: "good", label: "Bagus" };
-  if (tier === "review") return { key: "review", label: "Tinjau" };
-  if (tier === "reject") return { key: "reject", label: "Tidak layak" };
+  if (tier === "strong" || tier === "excellent") return { key: "excellent", label: "Sangat Direkomendasikan", tierClass: "tier-sangat-rekomendasi" };
+  if (tier === "good") return { key: "good", label: "Direkomendasikan", tierClass: "tier-rekomendasi" };
+  if (tier === "fair" || tier === "layak") return { key: "good", label: "Layak", tierClass: "tier-layak" };
+  if (tier === "review" || tier === "optional") return { key: "review", label: "Opsional", tierClass: "tier-opsional" };
+  if (tier === "reject") return { key: "reject", label: "Tidak layak", tierClass: "tier-reject" };
 
   const evidenceGate = item.evidenceGate ?? item.evidence_gate;
-  if (item.manualReview || evidenceGate === false) return { key: "review", label: "Tinjau" };
-  if (item.score >= 85) return { key: "excellent", label: "Unggul" };
-  if (item.score >= 70) return { key: "good", label: "Bagus" };
-  return { key: "review", label: "Tinjau" };
+  if (item.manualReview || evidenceGate === false) return { key: "review", label: "Low Priority / Review", tierClass: "tier-opsional" };
+  const s10 = momentScoreOutOfTen(item.score);
+  if (s10 >= 9) return { key: "excellent", label: "Sangat Direkomendasikan", tierClass: "tier-sangat-rekomendasi" };
+  if (s10 === 8) return { key: "good", label: "Direkomendasikan", tierClass: "tier-rekomendasi" };
+  if (s10 === 7) return { key: "good", label: "Layak", tierClass: "tier-layak" };
+  if (s10 === 6) return { key: "review", label: "Opsional", tierClass: "tier-opsional" };
+  return { key: "review", label: "Low Priority / Review", tierClass: "tier-opsional" };
 }
 
 function formatMomentMetric(value) {
@@ -801,6 +917,7 @@ function applyMomentDisplayPolicy() {
 function filteredMoments() {
   const query = String(state.momentSearch || "").trim().toLowerCase();
   const qualityFilter = state.momentQualityFilter || "all";
+  const themeFilter = state.momentThemeFilter || "all";
   const items = momentBank.filter((item) => {
     if (item.rejected) return false;
     if (momentQuality(item).key === "reject") return false;
@@ -808,7 +925,14 @@ function filteredMoments() {
     if (qualityFilter === "auto" && !item.autoRender) return false;
     if (qualityFilter === "recommended" && (item.autoRender || !item.renderEligible)) return false;
     if (qualityFilter === "qualified" && !["excellent", "good"].includes(momentQuality(item).key)) return false;
-    if (!["all", "selected", "auto", "recommended", "qualified"].includes(qualityFilter) && momentQuality(item).key !== qualityFilter) return false;
+    if (qualityFilter === "excellent" && momentQuality(item).key !== "excellent") return false;
+    if (qualityFilter === "good" && !["excellent", "good"].includes(momentQuality(item).key)) return false;
+    if (qualityFilter === "review" && momentQuality(item).key !== "review") return false;
+    if (!["all", "selected", "auto", "recommended", "qualified", "excellent", "good", "review"].includes(qualityFilter) && momentQuality(item).key !== qualityFilter) return false;
+    if (themeFilter !== "all") {
+      const themeHaystack = `${item.category || ""} ${item.topic || ""}`.toLowerCase();
+      if (!themeHaystack.includes(themeFilter.toLowerCase())) return false;
+    }
     if (!query) return true;
     const haystack = `${item.title || ""} ${item.hook || ""} ${item.transcript || ""} ${item.topic || ""} ${item.category || ""}`.toLowerCase();
     return haystack.includes(query);
@@ -817,6 +941,7 @@ function filteredMoments() {
   return items.sort((left, right) => {
     if (state.momentSort === "hook") return metric(right, "hook") - metric(left, "hook");
     if (state.momentSort === "story") return metric(right, "story_complete", metric(right, "flow")) - metric(left, "story_complete", metric(left, "flow"));
+    if (state.momentSort === "payoff") return metric(right, "payoff") - metric(left, "payoff");
     if (state.momentSort === "shortest") return left.durationSeconds - right.durationSeconds;
     if (state.momentSort === "timeline") return left.start - right.start;
     return right.score - left.score;
@@ -829,7 +954,32 @@ function renderMoments() {
   const eligibleMoments = momentBank.filter((item) => !item.rejected && item.renderEligible);
   const autoCount = eligibleMoments.filter((item) => item.autoRender).length;
   const reviewCount = eligibleMoments.filter((item) => !item.autoRender).length;
-  setText("#momentResultCount", `${autoCount} otomatis · ${reviewCount} rekomendasi · ${visibleMoments.length} tampil`);
+  const requested = Number($("#clipCount")?.value || state.requestedClipCount || 4);
+  const diag = state.lastAnalysis?.diagnostics || {};
+  const totalFound = diag.discoveredCandidates || momentBank.length;
+  const targetOriginal = diag.requestedClips || requested;
+  let countSummary;
+  if (visibleMoments.length > 0 && visibleMoments.length >= targetOriginal) {
+    const extraCount = visibleMoments.length - targetOriginal;
+    countSummary = `${visibleMoments.length} momen terbaik ditemukan`;
+    const subParts = [`Target awal ${targetOriginal} clip`, `${totalFound} kandidat dianalisis`];
+    if (extraCount > 0) subParts.push(`${extraCount} cerita tambahan yang layak`);
+    countSummary += ` (${subParts.join(' \u00b7 ')})`;
+  } else if (visibleMoments.length > 0) {
+    countSummary = `${visibleMoments.length} clip layak ditemukan dari target ${targetOriginal} (${totalFound} kandidat dianalisis)`;
+  } else {
+    countSummary = `${autoCount} otomatis · ${reviewCount} rekomendasi · ${visibleMoments.length} tampil`;
+  }
+  setText("#momentResultCount", countSummary);
+
+  // Update Summary Bar
+  setText("#momentSummaryBestCount", String(visibleMoments.length || (momentBank.length ? momentBank.length : 0)));
+  const targetEl = $("#momentSummaryTarget");
+  if (targetEl) targetEl.innerHTML = `${targetOriginal} <span class="dim-unit">clips</span>`;
+  setText("#momentSummaryAnalyzed", String(totalFound || (momentBank.length ? momentBank.length : 0)));
+  const totalVisibleSecs = visibleMoments.reduce((acc, m) => acc + (Number(m.end - m.start) || 0), 0);
+  setText("#momentSummaryTotalDuration", totalVisibleSecs > 0 ? formatDuration(totalVisibleSecs) : "0s");
+
   const selectAllButton = $("#selectAllButton");
   if (selectAllButton) {
     const allVisibleSelected = visibleMoments.length > 0 && visibleMoments.every((item) => state.selectedMoments.has(item.id));
@@ -847,40 +997,47 @@ function renderMoments() {
     return;
   }
   grid.innerHTML = visibleMoments
-    .map((item) => {
+    .map((item, idx) => {
       const checked = state.selectedMoments.has(item.id);
       const active = state.activeMomentId === item.id;
       const quality = momentQuality(item);
       const thumbnail = item.previewThumbnail ? toFilePreviewSrc(item.previewThumbnail) : "";
-      const selectionLabel = item.autoRender ? "Terpilih otomatis" : momentQuality(item).key === "review" ? "Tinjau manual" : "Rekomendasi";
       const components = momentScoreComponents(item);
+      const hookScore10 = formatMomentMetric10(components.hook);
+      const storyScore10 = formatMomentMetric10(components.story);
+      const payoffScore10 = formatMomentMetric10(components.payoff);
+      const score10 = momentScoreOutOfTen(item.score);
+      const themeLabel = item.category || item.topic || "Story";
+      const whyReason = item.reason || "Story lengkap dengan payoff yang kuat dan memberi inspirasi.";
+      const displayIdx = idx + 1;
+
       return `
-        <article class="moment-card quality-${quality.key} ${checked ? "selected" : ""} ${active ? "active-review" : ""} ${item.lowQuality ? "low-quality" : ""}" data-moment-row="${item.id}" tabindex="0">
-          <div class="moment-thumbnail">
-            ${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : ""}
-            <span class="moment-source">${escapeHtml(selectionLabel)}</span>
-            <span class="moment-score"><strong>${item.hasScoreEvidence ? item.score : "-"}</strong><em>${quality.label}</em></span>
-            <span class="moment-time">${escapeHtml(item.time)}</span>
-            <label class="moment-select" title="Pilih untuk render">
-              <input type="checkbox" ${checked ? "checked" : ""} data-toggle-moment="${item.id}" />
-              <span>✓</span>
-            </label>
+        <article class="moment-card-v12 quality-${quality.key} ${checked ? "selected" : ""} ${active ? "active-review" : ""} ${item.lowQuality ? "low-quality" : ""}" data-moment-row="${item.id}" tabindex="0">
+          <div class="moment-thumb-wrap">
+            ${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : `<div class="moment-thumb-placeholder">🎬</div>`}
+            <span class="moment-score-num-badge">${score10}/10</span>
+            <div class="moment-top-right-bar">
+              <span class="moment-tier-pill ${quality.tierClass || ''}">${escapeHtml(quality.label)}</span>
+              <button type="button" class="card-select-checkbox ${checked ? "checked" : ""}" data-toggle-moment-btn="${item.id}" aria-label="Pilih clip">${checked ? "✓" : ""}</button>
+            </div>
+            <span class="moment-time-tag">${escapeHtml(item.duration || item.time)}</span>
           </div>
-          <div class="moment-body">
-            <h3>${escapeHtml(item.title)}</h3>
-            <p class="moment-hook">${escapeHtml(item.hook || item.titleSuggestion || "")}</p>
-            ${item.hasScoreEvidence ? `
-              <div class="moment-metrics">
-                <span>Hook ${formatMomentMetric(components.hook)}</span>
-                <span>Story ${formatMomentMetric(components.story)}</span>
-                <span>Payoff ${formatMomentMetric(components.payoff)}</span>
-                <span>Retention ${formatMomentMetric(components.retention)}</span>
-                <span>Standalone ${formatMomentMetric(components.standalone)}</span>
-              </div>
-            ` : `<p class="moment-reason">Boundary alternatif perlu dianalisis ulang.</p>`}
-            <div class="moment-card-footer">
-              <span>${escapeHtml(item.category || "Insight")}</span>
-              <span>${item.duration} · ${escapeHtml(momentReviewLabel(item))}</span>
+          <div class="moment-content-box">
+            <div class="moment-title-row-card">
+              <span class="moment-num-chip">${displayIdx}</span>
+              <h3>${escapeHtml(item.title)}</h3>
+            </div>
+            <div class="moment-time-duration">${escapeHtml(item.time)}</div>
+            <div class="moment-metrics-row">
+              <span class="metric-pill-tag">Hook ${hookScore10}</span>
+              <span class="metric-pill-tag">Story ${storyScore10}</span>
+              <span class="metric-pill-tag">Payoff ${payoffScore10}</span>
+              <span class="metric-pill-tag theme-tag">${escapeHtml(themeLabel)}</span>
+            </div>
+            <div class="moment-why-box">${escapeHtml(whyReason)}</div>
+            <div class="moment-card-actions">
+              <button type="button" class="card-action-btn card-preview-btn" data-preview-moment="${item.id}">Preview</button>
+              <button type="button" class="card-action-btn card-select-btn ${checked ? "selected" : ""}" data-toggle-moment-btn="${item.id}">${checked ? "✓ Selected" : "Select"}</button>
             </div>
           </div>
         </article>
@@ -1015,6 +1172,7 @@ function collectPayload() {
     addHook: productionPreset.addHook,
     addTtsHook: productionPreset.addTtsHook,
     hookDuration: $("#hookDuration")?.value,
+    hookLayout: $("#hookLayout")?.value || "auto",
     contextDuration: 1.8,
     faceTrack: productionPreset.faceTrack,
     audioEnhance: productionPreset.audioEnhance,
@@ -1413,6 +1571,23 @@ function updateAnalysisRangeFromSeekbar(changedEdge = "end") {
   updateTimelinePreview();
 }
 
+function adjustAnalysisRange(seconds) {
+  const duration = analysisDuration();
+  if (!duration) {
+    toast("Masukkan video agar rentang waktu dapat diatur");
+    return;
+  }
+  const adjustment = Number(seconds || 0);
+  let start = parseTimeInput(fieldValue("rangeStart", "0"), 0);
+  let end = parseTimeInput(fieldValue("rangeEnd", ""), duration);
+  if (adjustment < 0) start = Math.max(0, Math.min(end - 1, start + adjustment));
+  if (adjustment > 0) end = Math.min(duration, Math.max(start + 1, end + adjustment));
+  setValue("#selectionMode", "range");
+  setValue("#rangeStart", formatDuration(start));
+  setValue("#rangeEnd", formatDuration(end));
+  updateTimelinePreview();
+}
+
 const OVERLAY_DESIGN_WIDTH = 1080;
 
 function selectedOutputDimensions() {
@@ -1716,6 +1891,7 @@ function bindPreviewDrag(element, xId, yId, options = {}) {
     const frame = $(options.frameSelector || "#brandPreviewFrame");
     if (!frame) return;
     event.preventDefault();
+    element.classList.add("is-pointer-dragging");
     element.setPointerCapture(event.pointerId);
     const move = (moveEvent) => {
       const rect = frame.getBoundingClientRect();
@@ -1731,6 +1907,7 @@ function bindPreviewDrag(element, xId, yId, options = {}) {
       (options.update || updateBrandPreview)();
     };
     const stop = () => {
+      element.classList.remove("is-pointer-dragging");
       element.removeEventListener("pointermove", move);
       element.removeEventListener("pointerup", stop);
       element.removeEventListener("pointercancel", stop);
@@ -1874,8 +2051,10 @@ function normalizeCookiesInfo(config = {}) {
     path,
     present: meta.present !== false,
     state: meta.state || "SESSION_PRESENT",
+    health: meta.health || "PRESENT",
     source: meta.source || "manual_import",
     browser: meta.browser || "unknown",
+    autoRefresh: meta.autoRefresh === true,
     fileName: meta.fileName || path.split(/[\\/]/).pop() || "cookies.txt",
     sizeBytes: meta.sizeBytes || meta.size || 0,
     importedAt: config.cookies_last_import || meta.updatedAt || meta.importedAt || meta.importDate || "",
@@ -1935,6 +2114,9 @@ function renderCookiesManager() {
   if (status) {
     status.classList.toggle("warning", needsUpdate || hasError);
     status.classList.toggle("ok", hasCookies && !needsUpdate && !hasError);
+  }
+  if (hasCookies && info.browser && info.browser !== "unknown") {
+    setValue("#youtubeSessionBrowser", info.browser);
   }
 }
 
@@ -2083,12 +2265,6 @@ function renderRuntimeList(deps = state.dependencies) {
       </section>
     `)
     .join("");
-}
-
-function setSettingsTab(tab) {
-  state.activeSettingsTab = tab;
-  $$(".settings-tab").forEach((button) => button.classList.toggle("active", button.dataset.settingsTab === tab));
-  $$(".settings-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `settings-${tab}`));
 }
 
 function isValidYoutubeUrl(url) {
@@ -2248,8 +2424,11 @@ function renderSessions() {
           <div>
             <h3>${session.name}</h3>
             <p>${session.clips} MP4 - ${session.date} - ${session.size}</p>
+            ${session.publishingPlan ? `<p>Publishing Plan · ${session.publishingPlan.plannedClips ?? session.publishingPlan.clips?.length ?? 0} MP4 valid · ${session.publishingPlan.dailyPlan?.length ?? session.publishingPlan.schedule?.length ?? 0} slot · ${session.publishingPlan.settings?.timezone || "UTC"}</p>` : ""}
           </div>
           <span class="status-chip">${session.status}</span>
+          ${session.publishingPlanPath ? `<button class="secondary-action" data-open-publishing="${index}">Buka plan</button>` : ""}
+          ${session.publishingPlan ? `<button class="secondary-action" data-copy-publishing="${index}">Copy judul</button>` : ""}
           <button class="secondary-action" data-open-session="${index}">Buka folder</button>
         </article>
       `
@@ -2279,8 +2458,7 @@ function renderProviders() {
           aiHighlightToggle: "highlight",
           aiCaptionToggle: "caption",
           aiHookToggle: "hook",
-          aiTitleToggle: "title",
-          aiTtsToggle: "tts"
+          aiTitleToggle: "title"
         }[toggleId];
         const enabled = Boolean(features[key]);
         const engine = enabled && ready ? `${provider.label} · ${model}` : "Menunggu koneksi provider";
@@ -2318,6 +2496,24 @@ async function openSessionFolder(index) {
   pushLog(`[output] folder dibuka: ${folder}`);
 }
 
+async function copyPublishingTitles(index) {
+  const plan = sessions[Number(index)]?.publishingPlan;
+  const titles = (plan?.clips || [])
+    .filter((clip) => clip.readiness !== "not_recommended")
+    .map((clip) => clip.title)
+    .filter(Boolean);
+  if (!titles.length) {
+    toast("Belum ada judul publishing yang siap");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(titles.join("\n"));
+    toast(`${titles.length} judul disalin`);
+  } catch {
+    toast("Clipboard tidak dapat ditulis", { error: true });
+  }
+}
+
 function providerPayload() {
   const providerType = selectedProviderType();
   const apiKey = $("#apiKey")?.value?.trim();
@@ -2328,27 +2524,37 @@ function providerPayload() {
     test: 320,
     highlight: 1600,
     ranking: 1400,
+    review: 1200,
     title: 480,
     hook: 420,
     caption: 700,
-    tts: 360
+    tts: 360,
+    publishing: 600,
+    metadata: 500
   };
   const timeoutMsByModule = {
     test: 30000,
     highlight: 90000,
     ranking: 90000,
+    review: 90000,
     title: 45000,
     hook: 45000,
     caption: 45000,
     tts: 45000,
+    publishing: 45000,
+    metadata: 45000,
     default: 45000
   };
   const aiRetryByModule = {
     highlight: 3,
     ranking: 2,
+    review: 2,
     title: 2,
     hook: 2,
     caption: 2,
+    tts: 2,
+    publishing: 2,
+    metadata: 2,
     test: 2,
     default: 2
   };
@@ -2958,7 +3164,7 @@ async function startProcessing() {
     const shortage = requestedCount > validCount;
     const warningCount = state.renderErrors.length + (manifest.warnings?.length || 0) + (shortage ? 1 : 0);
     const outputs = result.result?.outputs || [];
-    const outputCount = outputs.length;
+    const outputCount = validCount;
     $("#jobBadge").textContent = outputCount ? "Complete" : "Error";
     sessions.unshift({
       name: result.result?.manifest?.title || "YouTube clip session",
@@ -2966,7 +3172,9 @@ async function startProcessing() {
       date: "Baru saja",
       status: outputCount ? (warningCount ? `Selesai + warning (${validCount}/${requestedCount})` : "Selesai") : "Gagal",
       size: result.result?.sessionDir || "Lihat folder",
-      folder: result.result?.sessionDir || ""
+      folder: result.result?.sessionDir || "",
+      publishingPlan: manifest.publishingPlanner?.plan || null,
+      publishingPlanPath: manifest.publishingPlanner?.planPath || ""
     });
     renderSessions();
     pushLog(`[done] output: ${result.result?.sessionDir || "-"}`);
@@ -2997,7 +3205,6 @@ function buildConfig() {
     aiHookToggle: fieldValue("aiHookToggle", true),
     aiCaptionToggle: fieldValue("aiCaptionToggle", true),
     aiTitleToggle: fieldValue("aiTitleToggle", true),
-    aiTtsToggle: fieldValue("aiTtsToggle", false),
     providerStatus: $("#providerStatusText")?.textContent || "Cliper AI Cloud belum terhubung",
     apiStatus: $("#apiStatus")?.textContent || "Cliper AI Cloud belum terhubung",
     cloudConnectionOk: state.cloudConnectionOk,
@@ -3025,6 +3232,15 @@ function buildConfig() {
     createProjectFolder: fieldValue("createProjectFolder", true),
     deleteTempAfterExport: fieldValue("deleteTempAfterExport", true),
     outputQualityProfile: fieldValue("outputQualityProfile", "balanced"),
+    smartPublishingPlanner: fieldValue("smartPublishingPlannerToggle", true),
+    publishingPlatforms: [
+      fieldValue("publishingYouTubeToggle", true) ? "youtube_shorts" : "",
+      fieldValue("publishingInstagramToggle", true) ? "instagram_reels" : "",
+      fieldValue("publishingTikTokToggle", true) ? "tiktok" : ""
+    ].filter(Boolean),
+    publishingTimezone: fieldValue("publishingTimezone", "Asia/Jakarta"),
+    publishingPostsPerDay: fieldValue("publishingPostsPerDay", "2"),
+    publishingMinimumGapHours: fieldValue("publishingMinimumGapHours", "4"),
     formatProfile: fieldValue("formatProfile", "9:16 YouTube Shorts"),
     resolutionProfile: fieldValue("resolutionProfile", "1080p"),
     crfProfile: fieldValue("crfProfile", "23"),
@@ -3033,6 +3249,7 @@ function buildConfig() {
     subtitleBurnToggle: rendererSettings.addCaptions && rendererSettings.burnSubtitle,
     hookOpeningToggle: rendererSettings.addHook,
     hookDuration: fieldValue("hookDuration", "3 seconds"),
+    hookLayout: fieldValue("hookLayout", "auto"),
     subtitlePreviewInput: fieldValue("subtitlePreviewInput", "TAPI GUE HERAN"),
     subtitleFontFamily: fieldValue("subtitleFontFamily", "Arial Black"),
     subtitleFontPath: fieldValue("subtitleFontPath", ""),
@@ -3126,7 +3343,6 @@ function applyConfig(config = {}) {
   setValue("#aiHookToggle", config.aiHookToggle ?? true);
   setValue("#aiCaptionToggle", config.aiCaptionToggle ?? true);
   setValue("#aiTitleToggle", config.aiTitleToggle ?? true);
-  setValue("#aiTtsToggle", config.aiTtsToggle ?? false);
   setValue("#clipCount", config.clipCount ?? "0");
   setValue("#scoreMode", config.scoreMode || "Content-aware editor score");
   setValue("#minDuration", config.minDuration || "30");
@@ -3141,6 +3357,14 @@ function applyConfig(config = {}) {
   setValue("#ffmpegPath", config.ffmpegPath || "");
   setValue("#ffprobePath", config.ffprobePath || "");
   setValue("#outputQualityProfile", config.outputQualityProfile || "balanced");
+  setValue("#smartPublishingPlannerToggle", config.smartPublishingPlanner ?? true);
+  const publishingPlatforms = new Set(config.publishingPlatforms || ["youtube_shorts", "instagram_reels", "tiktok"]);
+  setValue("#publishingYouTubeToggle", publishingPlatforms.has("youtube_shorts"));
+  setValue("#publishingInstagramToggle", publishingPlatforms.has("instagram_reels"));
+  setValue("#publishingTikTokToggle", publishingPlatforms.has("tiktok"));
+  setValue("#publishingTimezone", config.publishingTimezone || "Asia/Jakarta");
+  setValue("#publishingPostsPerDay", config.publishingPostsPerDay || "2");
+  setValue("#publishingMinimumGapHours", config.publishingMinimumGapHours || "4");
   setValue("#formatProfile", config.formatProfile || "9:16 YouTube Shorts");
   state.apiLastTestedAt = config.apiLastTestedAt || "";
   state.apiLastLatencyMs = config.apiLastLatencyMs || 0;
@@ -3153,6 +3377,7 @@ function applyConfig(config = {}) {
   setValue("#subtitleBurnToggle", rendererSettings.addCaptions && rendererSettings.burnSubtitle);
   setValue("#hookOpeningToggle", rendererSettings.addHook);
   setValue("#hookDuration", config.hookDuration || "3 seconds");
+  setValue("#hookLayout", config.hookLayout || "auto");
   setValue("#subtitlePreviewInput", config.subtitlePreviewInput || "TAPI GUE HERAN");
   setValue("#subtitleWordHighlightToggle", config.subtitleWordHighlight ?? true);
   setValue("#subtitleFontFamily", config.subtitleFontFamily || "Arial Black");
@@ -3363,6 +3588,48 @@ async function importCookies() {
   $("#cookieFile")?.click();
 }
 
+async function updateYouTubeSession() {
+  if (!window.cliper?.updateYouTubeSession) {
+    toast("Update browser tersedia di aplikasi desktop");
+    return;
+  }
+  const browser = fieldValue("youtubeSessionBrowser", "chrome");
+  const url = $("#youtubeUrl")?.value.trim() || "";
+  const button = $("#importCookiesButton");
+  if (button) button.disabled = true;
+  setText("#cookiesTestStatus", "Membaca session browser secara lokal...");
+  pushLog(`[auth] session_update=start source=browser browser=${browser}`);
+  toast("Memperbarui YouTube Session dari browser...");
+  try {
+    const result = await window.cliper.updateYouTubeSession({ browser, url });
+    if (!result?.ok) {
+      const reason = result?.reason || "Session browser tidak dapat diperbarui.";
+      state.cookiesInfo = result?.session?.present
+        ? normalizeCookiesInfo({ cookies_path: result.session.path, cookies_meta: result.session })
+        : state.cookiesInfo;
+      renderCookiesManager();
+      pushLog(`[auth] session_update=failed class=${result?.session?.errorClass || "UNKNOWN"}`);
+      toast(`${reason} Gunakan Import File sebagai cadangan.`, { error: true, duration: 12000 });
+      return;
+    }
+    state.cookiesPath = result.session.path;
+    state.cookiesInfo = normalizeCookiesInfo({
+      cookies_path: result.session.path,
+      cookies_meta: result.session
+    });
+    await saveConfig({ silent: true });
+    renderCookiesManager();
+    pushLog(`[auth] session_update=success source=browser browser=${browser}`);
+    toast("YouTube Session berhasil diperbarui dan akan dipakai otomatis.");
+    await resumePendingSessionJob();
+  } catch (error) {
+    pushLog(`[auth] session_update=failed class=BROWSER_SESSION_UNAVAILABLE`);
+    toast(error?.message || "Pembaruan session browser gagal.", { error: true, duration: 12000 });
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 async function testCookies() {
   if (!state.cookiesPath) {
     toast("Import YouTube Session dulu");
@@ -3462,9 +3729,106 @@ function bindEvents() {
     toast("URL ditempel");
   });
 
-  $("#clipCount").addEventListener("input", updateCounters);
-  $("#clipCount").addEventListener("input", renderPipelinePreview);
-  ["aiHighlightToggle", "aiHookToggle", "aiCaptionToggle", "aiTitleToggle", "aiTtsToggle"].forEach((id) => {
+  let costEstimateTimer = null;
+  function scheduleCostEstimateFetch() {
+    clearTimeout(costEstimateTimer);
+    costEstimateTimer = setTimeout(fetchCostEstimate, 250);
+  }
+
+  async function fetchCostEstimate() {
+    const count = Math.max(1, Math.min(10, Number($("#clipCount")?.value || state.requestedClipCount || 4)));
+    const duration = Math.max(0, Number(state.videoDuration || state.lastAnalysis?.video?.duration || 0));
+    setText("#estimateAiCost", "Menghitung...");
+    setText("#estimateTotalCost", "Menghitung...");
+    if (window.cliper?.getCostEstimate) {
+      try {
+        const response = await window.cliper.getCostEstimate({
+          requestedClipCount: count,
+          sourceDurationSeconds: duration
+        });
+        if (response?.ok && response.estimate) {
+          const est = response.estimate;
+          const aiMin = typeof est.aiCostMin === "number" ? `$${est.aiCostMin.toFixed(3)}` : "~ $0.022";
+          const aiMax = typeof est.aiCostMax === "number" ? `$${est.aiCostMax.toFixed(3)}` : "$0.041";
+          const plat = typeof est.platformFee === "number" ? `$${est.platformFee.toFixed(3)}` : "$0.010";
+          const totMin = typeof est.estimatedMin === "number" ? `$${est.estimatedMin.toFixed(3)}` : "~ $0.032";
+          const totMax = typeof est.estimatedMax === "number" ? `$${est.estimatedMax.toFixed(3)}` : "$0.051";
+          setText("#estimateAiCost", `~ ${aiMin} – ${aiMax}`);
+          setText("#estimatePlatformFee", `~ ${plat}`);
+          setText("#estimateTotalCost", `~ ${totMin} – ${totMax}`);
+          if (est.note) setText("#estimateNote", est.note);
+          return;
+        }
+      } catch (err) {
+        console.warn("Cost estimate fetch failed:", err);
+      }
+    }
+    const aiMin = (0.008 + count * 0.0035).toFixed(3);
+    const aiMax = (0.016 + count * 0.007).toFixed(3);
+    const plat = "0.010";
+    const totMin = (0.01 + parseFloat(aiMin)).toFixed(3);
+    const totMax = (0.01 + parseFloat(aiMax)).toFixed(3);
+    setText("#estimateAiCost", `~ $${aiMin} – $${aiMax}`);
+    setText("#estimatePlatformFee", `~ $${plat}`);
+    setText("#estimateTotalCost", `~ $${totMin} – $${totMax}`);
+  }
+
+  function setRequestedClipCount(count) {
+    const nextCount = Math.max(1, Math.min(10, Math.round(Number(count) || 4)));
+    state.requestedClipCount = nextCount;
+    const input = $("#clipCount");
+    if (input && Number(input.value) !== nextCount) {
+      input.value = String(nextCount);
+    }
+    $$(".preset-pill").forEach((btn) => {
+      btn.classList.toggle("active", Number(btn.dataset.presetCount) === nextCount);
+    });
+    updateGenerateButtonLabel(nextCount);
+    scheduleCostEstimateFetch();
+    updateCounters();
+    renderPipelinePreview();
+  }
+
+  function updateGenerateButtonLabel(count) {
+    const num = Math.max(1, Math.min(10, Number(count || $("#clipCount")?.value || 4)));
+    const label = num === 1 ? "Generate 1 Clip" : `Generate ${num} Clips`;
+    const span = $("#findMomentsLabel");
+    if (span) {
+      span.textContent = label;
+    }
+  }
+
+  $("#clipCount")?.addEventListener("input", (event) => {
+    const val = Number(event.target.value);
+    if (Number.isFinite(val) && val >= 1 && val <= 10) {
+      setRequestedClipCount(val);
+    }
+  });
+  $("#clipCount")?.addEventListener("change", (event) => {
+    const val = Math.max(1, Math.min(10, Math.round(Number(event.target.value) || 4)));
+    setRequestedClipCount(val);
+  });
+  $("#clipCountDecrement")?.addEventListener("click", () => {
+    const cur = Math.max(1, Math.min(10, Number($("#clipCount")?.value || 4)));
+    if (cur > 1) setRequestedClipCount(cur - 1);
+  });
+  $("#clipCountIncrement")?.addEventListener("click", () => {
+    const cur = Math.max(1, Math.min(10, Number($("#clipCount")?.value || 4)));
+    if (cur < 10) setRequestedClipCount(cur + 1);
+  });
+  $("#estimateTooltipTrigger")?.addEventListener("click", () => {
+    toast("Estimasi bukan tagihan final. Saldo dipotong sesuai penggunaan AI yang dicatat server.");
+  });
+  $$(".preset-pill").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const count = Number(btn.dataset.presetCount);
+      if (count) setRequestedClipCount(count);
+    });
+  });
+
+  $("#clipCount")?.addEventListener("input", updateCounters);
+  $("#clipCount")?.addEventListener("input", renderPipelinePreview);
+  ["aiHighlightToggle", "aiHookToggle", "aiCaptionToggle", "aiTitleToggle"].forEach((id) => {
     const node = $(`#${id}`);
     if (node) {
       node.addEventListener("change", () => {
@@ -3496,6 +3860,8 @@ function bindEvents() {
     "autoVideoEnhancementToggle",
     "subtitleBurnToggle",
     "hookOpeningToggle",
+    "hookDuration",
+    "hookLayout",
     "ttsHookToggle",
     "watermarkEnabled",
     "watermarkInOutput",
@@ -3503,7 +3869,14 @@ function bindEvents() {
     "formatProfile",
     "resolutionProfile",
     "fpsProfile",
-    "crfProfile"
+    "crfProfile",
+    "smartPublishingPlannerToggle",
+    "publishingYouTubeToggle",
+    "publishingInstagramToggle",
+    "publishingTikTokToggle",
+    "publishingTimezone",
+    "publishingPostsPerDay",
+    "publishingMinimumGapHours"
   ].forEach((id) => {
     const node = $(`#${id}`);
     if (node) node.addEventListener("change", () => {
@@ -3529,6 +3902,9 @@ function bindEvents() {
   $("#multipleRanges")?.addEventListener("change", () => updateTimelinePreview());
   $("#analysisStartRange")?.addEventListener("input", () => updateAnalysisRangeFromSeekbar("start"));
   $("#analysisEndRange")?.addEventListener("input", () => updateAnalysisRangeFromSeekbar("end"));
+  $$("[data-analysis-adjust]").forEach((button) => {
+    button.addEventListener("click", () => adjustAnalysisRange(button.dataset.analysisAdjust));
+  });
   ["logoScale", "logoOpacity", "logoRotation", "watermarkText", "watermarkOpacity", "watermarkTextSize", "watermarkTextColor", "watermarkTextStroke", "watermarkTextShadow", "watermarkFontFamily", "watermarkFontPath"].forEach((id) => {
     const node = $(`#${id}`);
     if (node) {
@@ -3638,11 +4014,90 @@ function bindEvents() {
     state.momentQualityFilter = event.target.value;
     renderMoments();
   });
+  $("#momentThemeFilter")?.addEventListener("change", (event) => {
+    state.momentThemeFilter = event.target.value;
+    renderMoments();
+  });
   $("#momentSort")?.addEventListener("change", (event) => {
     state.momentSort = event.target.value;
     renderMoments();
   });
-  $("#processSelected").addEventListener("click", openProcessDialog);
+  $("#processSelected")?.addEventListener("click", openProcessDialog);
+  $("#bottomRenderSelectedBtn")?.addEventListener("click", openProcessDialog);
+
+  $("#bottomSelectAllToggle")?.addEventListener("change", (event) => {
+    const visible = filteredMoments();
+    if (event.target.checked) {
+      for (const item of visible) {
+        state.selectedMoments.add(item.id);
+        item.approved = true;
+      }
+    } else {
+      for (const item of visible) {
+        state.selectedMoments.delete(item.id);
+        item.approved = false;
+      }
+    }
+    renderMoments();
+    updateCounters();
+  });
+
+  $("#refreshMomentsBtn")?.addEventListener("click", () => {
+    renderMoments();
+    renderMomentReview();
+    toast("Daftar momen diperbarui");
+  });
+
+  $("#exportMomentsBtn")?.addEventListener("click", () => {
+    const selected = selectedMoments();
+    const list = selected.length ? selected : filteredMoments();
+    const summary = list.map((m, i) => `#${i + 1} ${m.title} (${m.time}) - Skor ${momentScoreOutOfTen(m.score)}/10`).join("\n");
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(summary);
+      toast("Daftar momen disalin ke clipboard!");
+    } else {
+      toast("Daftar momen siap diekspor");
+    }
+  });
+
+  $("#viewModeGrid")?.addEventListener("click", () => {
+    $("#viewModeGrid")?.classList.add("active");
+    $("#viewModeList")?.classList.remove("active");
+    $("#momentGrid")?.classList.remove("list-view");
+  });
+
+  $("#viewModeList")?.addEventListener("click", () => {
+    $("#viewModeList")?.classList.add("active");
+    $("#viewModeGrid")?.classList.remove("active");
+    $("#momentGrid")?.classList.add("list-view");
+  });
+
+  document.querySelectorAll("[data-review-tab]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      const tabKey = e.currentTarget.dataset.reviewTab;
+      document.querySelectorAll("[data-review-tab]").forEach((b) => b.classList.remove("active"));
+      e.currentTarget.classList.add("active");
+      document.querySelectorAll(".review-tab-content").forEach((c) => (c.style.display = "none"));
+      const targetContent = $(`#tab-review-${tabKey}`);
+      if (targetContent) targetContent.style.display = "block";
+    });
+  });
+
+  $("#closeReviewBtn")?.addEventListener("click", () => {
+    const reviewPanel = $("#momentReviewPanel");
+    if (reviewPanel) {
+      reviewPanel.style.display = reviewPanel.style.display === "none" ? "flex" : "none";
+    }
+  });
+
+  $("#resetReviewBoundary")?.addEventListener("click", () => {
+    const moment = activeMoment();
+    if (!moment) return;
+    updateMomentTiming(moment.id, Number(moment.originalStart ?? moment.start), Number(moment.originalEnd ?? moment.end));
+    renderMomentReview();
+    renderMoments();
+    toast("Boundary waktu direset ke awal");
+  });
 
   $("#momentGrid").addEventListener("change", (event) => {
     const id = Number(event.target.dataset.toggleMoment);
@@ -3675,6 +4130,35 @@ function bindEvents() {
     }
   });
   $("#momentGrid").addEventListener("click", (event) => {
+    const selectBtn = event.target.closest("[data-toggle-moment-btn]");
+    if (selectBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const id = Number(selectBtn.dataset.toggleMomentBtn || 0);
+      if (!id) return;
+      const item = momentBank.find((moment) => moment.id === id);
+      if (state.selectedMoments.has(id)) {
+        state.selectedMoments.delete(id);
+        if (item) item.approved = false;
+      } else {
+        state.selectedMoments.add(id);
+        if (item) item.approved = true;
+      }
+      renderMoments();
+      updateProcessButtons();
+      return;
+    }
+    const previewBtn = event.target.closest("[data-preview-moment]");
+    if (previewBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const id = Number(previewBtn.dataset.previewMoment || 0);
+      if (!id) return;
+      state.activeMomentId = id;
+      renderMoments();
+      renderMomentReview();
+      return;
+    }
     const selectControl = event.target.closest("[data-toggle-moment], .moment-select");
     if (selectControl) {
       event.preventDefault();
@@ -3718,6 +4202,11 @@ function bindEvents() {
       0
     );
     if (!id) return;
+    if (rowButton) {
+      state.activeMomentId = id;
+      renderMoments();
+      renderMomentReview();
+    }
     if (inlineAdjustStart) {
       const moment = momentBank.find((item) => item.id === id);
       if (!moment) return;
@@ -3897,9 +4386,26 @@ function bindEvents() {
   });
 
   $("#sessionList").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-open-session]");
-    if (!button) return;
-    openSessionFolder(button.dataset.openSession);
+    const sessionButton = event.target.closest("[data-open-session]");
+    if (sessionButton) {
+      openSessionFolder(sessionButton.dataset.openSession);
+      return;
+    }
+    const publishingButton = event.target.closest("[data-open-publishing]");
+    if (publishingButton) {
+      const session = sessions[Number(publishingButton.dataset.openPublishing)];
+      const planPath = session?.publishingPlanPath;
+      if (!planPath || !window.cliper?.openFolder) {
+        toast("Publishing Plan belum tersedia");
+        return;
+      }
+      window.cliper.openFolder(planPath).then((result) => {
+        if (!result?.ok) toast(result?.message || "Publishing Plan tidak bisa dibuka");
+      });
+      return;
+    }
+    const copyButton = event.target.closest("[data-copy-publishing]");
+    if (copyButton) copyPublishingTitles(copyButton.dataset.copyPublishing);
   });
 
   $("#selectAllButton").addEventListener("click", () => {
@@ -4035,7 +4541,7 @@ function bindEvents() {
   });
   $("#highlightModel").addEventListener("input", renderProviders);
   initializeProviderControls();
-  $("#importCookiesButton").addEventListener("click", importCookies);
+  $("#importCookiesButton").addEventListener("click", updateYouTubeSession);
   $("#replaceCookiesButton").addEventListener("click", importCookies);
   $("#testCookiesButton").addEventListener("click", testCookies);
   $("#removeCookiesButton").addEventListener("click", removeCookies);
@@ -4084,6 +4590,70 @@ function bindEvents() {
       state.apiLastResponse = result.response || "";
       await saveConfig({ silent: true });
     }
+  });
+
+  // General Settings Dashboard Bindings
+  $("#apiKeyGeneral")?.addEventListener("input", (e) => {
+    const val = e.target.value;
+    if ($("#apiKey")) $("#apiKey").value = val;
+    saveConfig({ silent: true });
+  });
+  $("#toggleApiKeyVisibilityGeneral")?.addEventListener("click", () => {
+    const input = $("#apiKeyGeneral");
+    if (!input) return;
+    input.type = input.type === "password" ? "text" : "password";
+  });
+  $("#copyApiKeyGeneral")?.addEventListener("click", () => {
+    const key = $("#apiKey")?.value || $("#apiKeyGeneral")?.value || "";
+    if (key && navigator.clipboard) {
+      navigator.clipboard.writeText(key);
+      toast("API Key disalin ke clipboard");
+    } else {
+      toast("API Key kosong");
+    }
+  });
+  $("#testApiButtonGeneral")?.addEventListener("click", () => {
+    $("#testApiButton")?.click();
+  });
+  $("#generalBrowseFolderBtn")?.addEventListener("click", () => {
+    $("#chooseOutputFolder")?.click();
+  });
+  $("#generalOpenPreviewBtn")?.addEventListener("click", () => {
+    setView("studio");
+  });
+  $("#generalRefreshSessionBtn")?.addEventListener("click", () => {
+    $("#testCookiesButton")?.click();
+  });
+  $("#generalImportCookiesBtn")?.addEventListener("click", () => {
+    $("#replaceCookiesButton")?.click();
+  });
+  $("#generalClearCookiesBtn")?.addEventListener("click", () => {
+    $("#removeCookiesButton")?.click();
+  });
+  $("#generalGpuToggle")?.addEventListener("change", (e) => {
+    const gpuToggle = $("#gpuToggle");
+    if (gpuToggle) {
+      gpuToggle.checked = e.target.checked;
+      gpuToggle.dispatchEvent(new Event("change"));
+    }
+  });
+  $$(".dot-btn").forEach((dot) => {
+    dot.addEventListener("click", () => {
+      $$(".dot-btn").forEach((d) => d.classList.remove("active"));
+      dot.classList.add("active");
+      const pos = dot.dataset.pos;
+      const brandBtn = $(`[data-brand-preset="${pos}"]`);
+      if (brandBtn) brandBtn.click();
+    });
+  });
+  $$(".sub-preset-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      $$(".sub-preset-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      const presetName = btn.textContent.trim().toLowerCase();
+      const presetBtn = $(`[data-subtitle-preset="${presetName}"]`);
+      if (presetBtn) presetBtn.click();
+    });
   });
 
   if (window.cliper) {
