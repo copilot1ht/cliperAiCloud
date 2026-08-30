@@ -247,7 +247,10 @@ def test_podcast_score_exposes_weak_payoff_penalty():
         "podcast",
     )
 
-    assert {"reason": "weak_payoff", "value": -5} in provenance["adjustments"]
+    payoff_adjustment = next(
+        item for item in provenance["adjustments"] if item["reason"] == "weak_payoff"
+    )
+    assert -5 < payoff_adjustment["value"] < 0
 
 
 def test_rolling_youtube_captions_are_collapsed_without_losing_new_words():

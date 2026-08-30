@@ -451,9 +451,16 @@ def test_optional_candidates_never_bypass_incomplete_boundary_gate():
             "id": "complete",
             "start": 120,
             "end": 168,
-            "score": 61,
+            "score": 67,
             "text": "pertanyaan jelas lalu jawaban dan kesimpulan selesai.",
-            "metrics": {"dangling_start": False, "dangling_end": False},
+            "evidence_gate": True,
+            "metrics": {
+                "dangling_start": False,
+                "dangling_end": False,
+                "story_complete": 70,
+                "payoff": 62,
+                "hook": 65,
+            },
         },
     ]
 

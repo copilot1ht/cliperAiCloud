@@ -5,6 +5,51 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "worker"))
 import cliper_worker
 
 
+def qualified_candidate(score, index, evidence=True, manual=False):
+    return {
+        "id": index,
+        "start": float(index * 100),
+        "end": float(index * 100 + 60),
+        "score": score,
+        "evidence_gate": evidence,
+        "manualReview": manual,
+    }
+
+
+def test_adaptive_recommendations_never_force_target_or_optional_candidates():
+    candidates = [qualified_candidate(82 - index, index) for index in range(4)]
+    candidates.extend([
+        qualified_candidate(88, 10, evidence=False),
+        qualified_candidate(86, 11, manual=True),
+        qualified_candidate(64, 12),
+    ])
+
+    count, info = cliper_worker.adaptive_recommendation_count(candidates, 6)
+
+    assert count == 4
+    assert info["qualified_count"] == 4
+
+
+def test_adaptive_recommendations_allow_only_small_quality_margin():
+    candidates = [qualified_candidate(92 - index, index) for index in range(10)]
+
+    count, info = cliper_worker.adaptive_recommendation_count(candidates, 6)
+    single_count, _single_info = cliper_worker.adaptive_recommendation_count(candidates, 1)
+
+    assert count == 7
+    assert single_count == 1
+    assert info["qualified_count"] == 10
+
+
+def test_selection_prefilter_is_independent_of_requested_clip_count():
+    candidates = [qualified_candidate(90 - (index % 20), index) for index in range(90)]
+
+    one = cliper_worker.prefilter_selection_candidates(candidates, 1)
+    ten = cliper_worker.prefilter_selection_candidates(candidates, 10)
+
+    assert [item["id"] for item in one] == [item["id"] for item in ten]
+
+
 def test_story_score_requires_real_setup_and_payoff_evidence():
     weak = (
         "iya jadi gitu kan terus kita ngobrol biasa terus gitu kan "
@@ -60,7 +105,7 @@ def test_review_fallback_never_raises_scores_or_hides_candidates():
         "Pendapat tentang teknologi dan masa depan creator",
     ]
     candidates = []
-    for index, score in enumerate([67, 55, 42, 36, 31]):
+    for index, score in enumerate([72, 70, 68, 66, 31]):
         start = index * 180.0
         candidates.append({
             "id": index + 1,
@@ -73,7 +118,13 @@ def test_review_fallback_never_raises_scores_or_hides_candidates():
             "titleSuggestion": f"Topik {index}",
             "hook": f"Kenapa topik {index} penting",
             "score": score,
-            "metrics": {"hook": score, "story_complete": score, "trend": score},
+            "evidence_gate": index < 4,
+            "metrics": {
+                "hook": score,
+                "story_complete": score,
+                "payoff": score,
+                "trend": score,
+            },
         })
 
     fallback = cliper_worker.select_review_fallback_moments(candidates, 4, 900)
@@ -82,7 +133,8 @@ def test_review_fallback_never_raises_scores_or_hides_candidates():
     assert len(refined) == 4
     original_scores = {item["id"]: item["score"] for item in candidates}
     assert all(item["score"] == original_scores[item["id"]] for item in refined)
-    assert any(item["score"] == 67 for item in refined)
+    assert any(item["score"] == 66 for item in refined)
+    assert all(item["score"] >= cliper_worker.AUTO_RENDER_MIN_SCORE for item in refined)
     assert all(item["manual_review_candidate"] for item in refined)
     assert all(item["render_eligible"] for item in refined)
     assert all(not item.get("rejected", False) for item in refined)
@@ -97,19 +149,21 @@ def test_review_fallback_preserves_reviewer_evidence_for_manual_rendering():
         "duration": 65.0,
         "text": "Jawaban lengkap menjelaskan masalah, alasan, lalu hasil akhirnya.",
         "transcript": "Jawaban lengkap menjelaskan masalah, alasan, lalu hasil akhirnya.",
-        "score": 64,
+        "score": 65,
         "ai_evidence_gate": True,
+        "evidence_gate": True,
         "reviewer_status": "approved",
-        "providerScores": {"local": 62, "primary": 66, "reviewer": 64},
+        "providerScores": {"local": 63, "primary": 67, "reviewer": 65},
+        "metrics": {"hook": 62, "story_complete": 70, "payoff": 58},
         "scoreProvenance": {"formula": "reviewed"},
     }
 
     fallback = cliper_worker.select_review_fallback_moments([candidate], 1, 360)
 
     assert len(fallback) == 1
-    assert fallback[0]["score"] == 64
+    assert fallback[0]["score"] == 65
     assert fallback[0]["reviewer_status"] == "approved"
-    assert fallback[0]["providerScores"]["reviewer"] == 64
+    assert fallback[0]["providerScores"]["reviewer"] == 65
     assert fallback[0]["manual_review_candidate"] is True
     assert fallback[0]["auto_render"] is False
     assert fallback[0]["render_eligible"] is True
@@ -130,14 +184,18 @@ def test_optional_supplement_fills_partial_results_without_score_or_auto_render_
             "start": 180.0,
             "end": 240.0,
             "text": "Topik kedua membahas alasan spesifik lalu hasilnya dijelaskan.",
-            "score": 62,
+            "score": 72,
+            "evidence_gate": True,
+            "metrics": {"story_complete": 70, "payoff": 58, "hook": 62},
         },
         {
             "id": 3,
             "start": 360.0,
             "end": 420.0,
             "text": "Topik ketiga memberi jawaban yang berbeda dan lengkap.",
-            "score": 55,
+            "score": 67,
+            "evidence_gate": True,
+            "metrics": {"story_complete": 66, "payoff": 54, "hook": 58},
         },
     ]
 
@@ -149,11 +207,69 @@ def test_optional_supplement_fills_partial_results_without_score_or_auto_render_
     )
 
     assert [item["id"] for item in supplemented] == [1, 2, 3]
-    assert [item["score"] for item in supplemented] == [83, 62, 55]
+    assert [item["score"] for item in supplemented] == [83, 72, 67]
     assert supplemented[0].get("manual_review_candidate") is not True
     assert all(item["manual_review_candidate"] for item in supplemented[1:])
     assert all(item["auto_render"] is False for item in supplemented[1:])
     assert all(item["render_eligible"] is True for item in supplemented[1:])
+
+
+def test_manual_review_supplement_keeps_target_close_without_fake_scores():
+    selected = [
+        {
+            "id": 1,
+            "start": 0.0,
+            "end": 70.0,
+            "text": "Kenapa strategi pertama gagal lalu akhirnya solusi baru terbukti bekerja.",
+            "score": 78,
+            "evidence_gate": True,
+            "auto_render": True,
+        }
+    ]
+    candidates = selected + [
+        {
+            "id": 2,
+            "start": 130.0,
+            "end": 195.0,
+            "text": "Masalah kedua dijelaskan dengan konteks, alasan, dan hasil akhirnya selesai.",
+            "score": 67,
+            "evidence_gate": True,
+            "metrics": {"story_complete": 58, "payoff": 44, "hook": 45},
+        },
+        {
+            "id": 3,
+            "start": 260.0,
+            "end": 320.0,
+            "text": "Bagian ini memberi jawaban yang berbeda, menjelaskan sebab, lalu menutup kesimpulan.",
+            "score": 59,
+            "metrics": {"story_complete": 52, "payoff": 42, "hook": 41},
+            "rejected": True,
+            "reject_reason": "Quality/evidence gate tidak terpenuhi",
+        },
+        {
+            "id": 4,
+            "start": 390.0,
+            "end": 450.0,
+            "text": "Cerita terakhir punya pembuka, alasan utama, dan payoff yang bisa dipahami sendiri.",
+            "score": 56,
+            "metrics": {"story_complete": 50, "payoff": 40, "hook": 43},
+            "rejected": True,
+            "reject_reason": "Score di bawah 65",
+        },
+    ]
+
+    supplemented = cliper_worker.supplement_with_optional_review_candidates(
+        selected,
+        candidates,
+        result_limit=4,
+        video_duration=600,
+    )
+
+    assert len(supplemented) == 2
+    assert [item["score"] for item in supplemented] == [78, 67]
+    assert supplemented[0].get("manual_review_candidate") is not True
+    assert all(item["manual_review_candidate"] for item in supplemented[1:])
+    assert all(item["auto_render"] is False for item in supplemented[1:])
 
 
 def test_candidate_calibration_requires_real_evidence_gate():

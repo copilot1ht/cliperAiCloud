@@ -82,6 +82,7 @@ def moment_report(moment: dict[str, Any]) -> dict[str, Any]:
         "end": round(float(moment.get("end") or 0), 2),
         "duration": round(float(moment.get("duration") or 0), 2),
         "score": as_score(moment.get("score")),
+        "publicScore": as_score(moment.get("public_score")),
         "hook": as_score(metrics.get("hook")),
         "story": as_score(metrics.get("story_complete") or metrics.get("flow")),
         "payoff": as_score(metrics.get("payoff") or arc.get("payoff")),
@@ -101,7 +102,12 @@ def moment_report(moment: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_case(
-    name: str, source_id: str, video_type: str, root: Path, scratch_root: Path
+    name: str,
+    source_id: str,
+    video_type: str,
+    root: Path,
+    scratch_root: Path,
+    target_count: int,
 ) -> dict[str, Any]:
     case_dir = root / source_id
     metadata_path = case_dir / "metadata.json"
@@ -141,7 +147,7 @@ def run_case(
     payload: dict[str, Any] = {
         "sourceMode": "local",
         "url": "",
-        "clipCount": 10,
+        "clipCount": target_count,
         "allRecommendedClips": False,
         "fullAutoMode": True,
         "autoClipCount": False,
@@ -164,7 +170,8 @@ def run_case(
     started = time.perf_counter()
     moments = find_moments(info, transcript, payload)
     elapsed = round(time.perf_counter() - started, 2)
-    reported = [moment_report(moment) for moment in moments[:10]]
+    quality_margin = 0 if target_count <= 1 else max(1, round(target_count * 0.2))
+    reported = [moment_report(moment) for moment in moments]
     failures: list[str] = []
     if not reported:
         failures.append("Tidak ada kandidat yang lolos quality gate.")
@@ -178,6 +185,16 @@ def run_case(
             failures.append(f"Kandidat {item['id']} tidak memiliki score evidence lengkap.")
         if item["boundary"]["danglingStart"] or item["boundary"]["danglingEnd"]:
             failures.append(f"Kandidat {item['id']} masih memiliki boundary menggantung.")
+        if item["score"] is not None and item["score"] < 65:
+            failures.append(f"Kandidat {item['id']} berada di bawah quality gate 65.")
+        if item["publicScore"] is None or not 7 <= item["publicScore"] <= 10:
+            failures.append(f"Kandidat {item['id']} tidak memiliki public score 7-10 yang valid.")
+        if item["evidenceGate"] is not True:
+            failures.append(f"Kandidat {item['id']} tidak lolos evidence gate.")
+    if len(reported) > target_count + quality_margin:
+        failures.append(
+            f"Jumlah kandidat {len(reported)} melewati batas adaptif {target_count + quality_margin}."
+        )
 
     durations = [item["duration"] for item in reported]
     scores = [item["score"] for item in reported if item["score"] is not None]
@@ -185,7 +202,9 @@ def run_case(
         item["retention"] for item in reported if item["retention"] is not None
     ]
     retention_ceiling_count = sum(score >= 95 for score in retention_scores)
-    duration_clustering = bool(durations) and all(round(value) in {90, 120} for value in durations)
+    duration_clustering = len(durations) >= 3 and all(
+        round(value) in {90, 120} for value in durations
+    )
     if duration_clustering:
         failures.append("Semua kandidat mengelompok pada durasi 90/120 detik.")
     if (
@@ -197,12 +216,13 @@ def run_case(
         )
     return {
         "case": name,
+        "targetCount": target_count,
         "sourceId": source_id,
         "title": metadata.get("title"),
         "videoType": video_type,
         "elapsedSeconds": elapsed,
         "candidateCount": len(reported),
-        "top10Available": len(reported),
+        "available": len(reported),
         "durations": durations,
         "scores": scores,
         "retentionScores": retention_scores,
@@ -228,7 +248,15 @@ def main() -> int:
         default="all",
         help="Run one cached profile while iterating, or all profiles for the release gate.",
     )
+    parser.add_argument(
+        "--targets",
+        default="1,4,6,10",
+        help="Comma-separated requested clip targets.",
+    )
     args = parser.parse_args()
+    targets = tuple(
+        sorted({max(1, min(10, int(value.strip()))) for value in args.targets.split(",") if value.strip()})
+    )
     selected_cases = (
         DEFAULT_CASES
         if args.case == "all"
@@ -237,7 +265,15 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="cliper-moment-acceptance-") as scratch:
         scratch_root = Path(scratch)
         results = [
-            run_case(name, source_id, video_type, args.cache_root, scratch_root)
+            run_case(
+                name,
+                source_id,
+                video_type,
+                args.cache_root,
+                scratch_root,
+                target_count,
+            )
+            for target_count in targets
             for name, source_id, video_type in selected_cases
         ]
     summary = {
@@ -251,7 +287,7 @@ def main() -> int:
     args.output.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     for item in results:
         print(
-            f"{item['case']}: {item['status']} | {item['candidateCount']} kandidat | "
+            f"{item['case']} target={item['targetCount']}: {item['status']} | {item['candidateCount']} kandidat | "
             f"{item['elapsedSeconds']:.2f}s | duration={item['durations']} | score={item['scores']}"
         )
         for failure in item["failures"]:

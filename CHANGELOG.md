@@ -1,5 +1,23 @@
 # Cliper Studio Plus Changelog
 
+## v1.12.1 - Stable
+
+Improved:
+
+* Requested clip targets stay synchronized across presets, controls, button labels, saved settings, and worker payloads.
+* Adaptive discovery preserves evidence gates while widening the story pool for larger targets without padding weak candidates.
+* Public quality tiers use deterministic evidence calibration; no random or cosmetic score inflation is applied.
+* Story boundaries reduce unnecessary pre-context and tails while preserving context, development, payoff, and natural sentence endings.
+* Studio and Settings remain responsive and scrollable across supported desktop sizes without exposing wallet balance or upfront cost estimates in the main workflow.
+* Cloud connection state now communicates AI readiness without treating wallet balance as an API-key connection requirement.
+
+Validation:
+
+* 253 automated Desktop tests pass across UI contracts, story discovery, scoring, session handling, render validation, and publishing plans.
+* Real-video target acceptance completed for 1/4/6/10 with honest quality gating; weak source material is never padded to meet the requested count.
+* Real enhanced and CPU-fallback renders pass MP4 and ffprobe validation with audio, subtitles, Hook timeline, and recorded encoder fallback behavior.
+* Cloud typecheck, tests, API/Web builds, Prisma validation, and Prisma generation pass before production release.
+
 ## v1.12.0 - Local Release Candidate
 
 Added:

@@ -50,6 +50,9 @@ def test_empty_ui_does_not_claim_fake_video_results():
     assert "High (0.92)" not in html
     assert "$12.48" not in html
     assert 'id="walletStatus"' not in html
+    assert "Estimasi Penggunaan" not in html
+    assert "estimateTotalCost" not in html
+    assert "estimateAiCost" not in html
 
 
 def test_processing_error_banner_is_state_gated_and_hidden_by_default():
@@ -93,9 +96,11 @@ def test_cloud_connection_distinguishes_router_setup_from_invalid_key():
 
     assert "cloudRouterReady" in app
     assert "AI provider belum disiapkan admin" in main
+    assert "Cloud terhubung · saldo" not in main
     assert "Cloud terhubung; admin perlu menyiapkan AI provider" in app
     assert "Cliper Cloud terhubung, tetapi AI provider belum disiapkan oleh admin" in app
     assert "cloud:session-recovery" in main
+    assert "wallet_usd" not in app
 
 
 def test_runtime_installer_is_available_from_settings_and_packaged():
@@ -147,6 +152,26 @@ def test_moment_scores_and_manual_alternatives_are_evidence_based():
     assert 'qualityTier: "review"' in app
     assert "score: Math.max(60" not in app
     assert "Boundary alternatif perlu dianalisis ulang." in app
+    assert "momentScoreOutOfTen(item);" in app
+    assert "return score > 0 ? `${score}/10`" in app
+    assert "costEstimateTimer" not in app
+    assert "fetchCostEstimate" not in app
+
+
+def test_studio_target_and_layout_contract_are_desktop_safe():
+    html = (ROOT / "index.html").read_text(encoding="utf-8")
+    app = (ROOT / "app.js").read_text(encoding="utf-8")
+    css = (ROOT / "styles.css").read_text(encoding="utf-8")
+
+    assert 'input id="clipCount" type="number" min="1" max="10" step="1" value="4"' in html
+    assert "function normalizeRequestedClipCount" in app
+    assert "function syncClipTargetControls" in app
+    assert "autoClipCount: false" in app
+    assert "allRecommendedClips: false" in app
+    assert 'clipCount: String(normalizeRequestedClipCount(fieldValue("clipCount", "4")))' in app
+    assert "#view-studio.active" in css
+    assert "overflow-y: auto;" in css
+    assert "@media (max-width: 1120px)" in css
 
 
 def test_candidate_quality_scoring_emits_actual_progress():

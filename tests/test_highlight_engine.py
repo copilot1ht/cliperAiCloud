@@ -1,7 +1,13 @@
 import sys
 from pathlib import Path
 
-from worker.highlight_engine import evidence_metrics, generate_highlight_candidates, score_highlight
+from worker.highlight_engine import (
+    evidence_metrics,
+    generate_highlight_candidates,
+    progressive_deficit_penalty,
+    public_score_out_of_ten,
+    score_highlight,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "worker"))
 import cliper_worker
@@ -19,6 +25,24 @@ def test_highlight_scores_are_evidence_based_and_deterministic():
 
     assert strong_score > weak_score
     assert strong_score < 99
+
+
+def test_story_and_payoff_penalties_are_continuous_not_threshold_cliffs():
+    near_story = progressive_deficit_penalty(47.9, 48, 8, 28)
+    weak_story = progressive_deficit_penalty(20, 48, 8, 28)
+    near_payoff = progressive_deficit_penalty(51.9, 52, 5, 32)
+
+    assert 0 < near_story < 1
+    assert 0 < near_payoff < 1
+    assert weak_story == 8
+
+
+def test_public_score_uses_deterministic_rounding_and_keeps_ten_rare():
+    assert public_score_out_of_ten(65) == 7
+    assert public_score_out_of_ten(75) == 8
+    assert public_score_out_of_ten(85) == 9
+    assert public_score_out_of_ten(93) == 9
+    assert public_score_out_of_ten(94) == 10
 
 
 def test_candidate_generation_is_repeatable_without_fake_99_scores():

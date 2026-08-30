@@ -29,11 +29,15 @@ try:
     from highlight_engine import filler_ratio as highlight_filler_ratio
     from highlight_engine import dynamic_duration_profile
     from highlight_engine import generate_highlight_candidates as external_generate_highlight_candidates
+    from highlight_engine import progressive_deficit_penalty
+    from highlight_engine import public_score_out_of_ten as highlight_public_score
 except Exception:
     score_highlight_v2 = None
     highlight_filler_ratio = None
     dynamic_duration_profile = None
     external_generate_highlight_candidates = None
+    progressive_deficit_penalty = None
+    highlight_public_score = None
 
 try:
     from story_engine import clip_segment_text as external_clip_segment_text
@@ -4722,7 +4726,22 @@ def resolve_target_clip_count(payload, effective_duration, transcript, minimum_d
     return max(0, min(requested, capacity))
 
 
-def adaptive_recommendation_count(candidates, target_count, quality_floor=60):
+def candidate_passes_recommendation_gate(candidate, quality_floor=AUTO_RENDER_MIN_SCORE):
+    """Require both an honest score and final transcript evidence."""
+    source = candidate if isinstance(candidate, dict) else {}
+    if clamp_score(source.get("score"), 0) < quality_floor:
+        return False
+    reviewer_status = clean_text(source.get("reviewer_status") or "").lower()
+    if bool(source.get("rejected")) or reviewer_status in {"rejected", "missing", "unavailable"}:
+        return False
+    if source.get("manual_review_candidate") or source.get("manualReview"):
+        return False
+    if "ai_evidence_gate" in source:
+        return bool(source.get("ai_evidence_gate"))
+    return bool(source.get("evidence_gate"))
+
+
+def adaptive_recommendation_count(candidates, target_count, quality_floor=AUTO_RENDER_MIN_SCORE):
     """Return how many candidates to recommend based on quality, not just target.
 
     v1.12.0 Smart Clip Count:
@@ -4730,16 +4749,19 @@ def adaptive_recommendation_count(candidates, target_count, quality_floor=60):
     - Extra candidates above target are kept if they are high quality
       (close to the best score) and add diversity.
     - Fewer than target are returned if not enough quality candidates exist.
-    - Never recommends more than target * 1.5 (rounded up) or fewer than 1.
+    - Allows only a small quality-driven margin above target.
 
     Returns (recommended_count, quality_info_dict).
     """
     if not candidates or target_count <= 0:
         return 0, {"reason": "no_candidates"}
 
-    # Sort by score descending
     scored = sorted(candidates, key=lambda c: float(c.get("score") or 0), reverse=True)
-    qualified = [c for c in scored if float(c.get("score") or 0) >= quality_floor]
+    qualified = [
+        candidate
+        for candidate in scored
+        if candidate_passes_recommendation_gate(candidate, quality_floor)
+    ]
 
     if not qualified:
         return 0, {"reason": "none_above_floor", "quality_floor": quality_floor}
@@ -4749,16 +4771,10 @@ def adaptive_recommendation_count(candidates, target_count, quality_floor=60):
     proximity_threshold = max(quality_floor, best_score - 20)
     high_quality = [c for c in qualified if float(c.get("score") or 0) >= proximity_threshold]
 
-    max_allowed = max(target_count, min(len(qualified), int(math.ceil(target_count * 1.5))))
-    min_allowed = 1
-
-    # If all high-quality candidates fit within max, include them all
-    recommended = max(min_allowed, min(max_allowed, max(target_count, len(high_quality))))
-    # But never more than the number of qualified candidates
+    quality_margin = 0 if target_count <= 1 else max(1, int(round(target_count * 0.2)))
+    max_allowed = min(len(qualified), target_count + quality_margin)
+    recommended = min(max_allowed, max(target_count, len(high_quality)))
     recommended = min(recommended, len(qualified))
-    # If fewer candidates than target exist, return what we have
-    if len(qualified) < target_count:
-        recommended = len(qualified)
 
     return recommended, {
         "reason": "adaptive",
@@ -5775,12 +5791,22 @@ def content_weighted_highlight_score(metrics, video_type="general"):
             base_score -= 5
             adjustments.append({"reason": "flat_audio_dynamics", "value": -5})
     else:
-        if components["story"] < 45:
-            base_score -= 8
-            adjustments.append({"reason": "weak_story_boundary", "value": -8})
-        if components["payoff"] < 52:
-            base_score -= 5
-            adjustments.append({"reason": "weak_payoff", "value": -5})
+        story_penalty = (
+            progressive_deficit_penalty(components["story"], 45, 8, 25)
+            if progressive_deficit_penalty
+            else min(8.0, max(0.0, 45.0 - components["story"]) * 0.32)
+        )
+        if story_penalty:
+            base_score -= story_penalty
+            adjustments.append({"reason": "weak_story_boundary", "value": -story_penalty})
+        payoff_penalty = (
+            progressive_deficit_penalty(components["payoff"], 52, 5, 32)
+            if progressive_deficit_penalty
+            else min(5.0, max(0.0, 52.0 - components["payoff"]) * 0.16)
+        )
+        if payoff_penalty:
+            base_score -= payoff_penalty
+            adjustments.append({"reason": "weak_payoff", "value": -payoff_penalty})
         if (
             components["story"] >= 78
             and components["payoff"] >= 62
@@ -6622,22 +6648,39 @@ def build_story_units(info, transcript, min_duration, max_duration):
 
 
 def candidate_generation_budget(video_duration, target_count):
-    """Scale the evidence search without fabricating extra recommendations."""
+    """Scale the evidence search without fabricating extra recommendations.
+
+    The budget grows with source duration and requested output, but remains a
+    bounded search budget. It does not force the final recommendation count.
+    """
     duration = max(0.0, float(video_duration or 0.0))
     target = max(1, int(target_count or 1))
     if duration < 900:
-        minimum, maximum = 24, 96
-    elif duration < 1800:
         minimum, maximum = 32, 112
+    elif duration < 1800:
+        minimum, maximum = 40, 132
     elif duration < 3600:
-        minimum, maximum = 48, 144
+        minimum, maximum = 56, 168
     elif duration < 7200:
-        minimum, maximum = 64, 176
+        minimum, maximum = 72, 204
     else:
-        minimum, maximum = 80, 208
-    minimum = min(maximum, max(minimum, min(96, target * 4)))
-    maximum = min(240, max(maximum, target * 10))
+        minimum, maximum = 88, 240
+    minimum = min(maximum, max(minimum, min(120, target * 6)))
+    maximum = min(240, max(maximum, target * 12, minimum * 2))
     return {"min_candidates": minimum, "max_candidates": maximum}
+
+
+def candidate_discovery_target(video_duration):
+    """Choose discovery density from source duration, not requested output."""
+    duration = max(0.0, float(video_duration or 0.0))
+    return max(6, min(16, int(math.ceil(duration / 600.0))))
+
+
+def candidate_scoring_pool_budget(evidence_budget, target_count):
+    """Score the duration-bounded evidence pool independently of output target."""
+    minimum = max(1, int((evidence_budget or {}).get("min_candidates") or 1))
+    maximum = max(minimum, int((evidence_budget or {}).get("max_candidates") or minimum))
+    return maximum
 
 
 def build_story_arc_candidates(
@@ -6821,7 +6864,8 @@ def build_story_map_candidates(
 
 def build_editorial_candidate_windows(info, transcript, target_count, min_duration, target_duration, max_duration):
     duration = float(info.get("duration") or 0)
-    evidence_budget = candidate_generation_budget(duration, target_count)
+    discovery_target = candidate_discovery_target(duration)
+    evidence_budget = candidate_generation_budget(duration, discovery_target)
     candidates = []
     story_map = info.get("_story_map") if isinstance(info.get("_story_map"), dict) else {}
     stories = list(story_map.get("stories") or [])
@@ -6860,7 +6904,7 @@ def build_editorial_candidate_windows(info, transcript, target_count, min_durati
             emit("log", stage="story detection", message=f"Story candidate fallback: {exc}")
     story_arc_candidates = build_story_arc_candidates(
         transcript,
-        target_count,
+        discovery_target,
         min_duration,
         target_duration,
         max_duration,
@@ -6922,14 +6966,14 @@ def build_editorial_candidate_windows(info, transcript, target_count, min_durati
         except Exception as exc:
             emit("log", stage="heatmap evidence", message=f"Heatmap candidate fallback: {exc}")
     segments = build_semantic_segments(info, transcript, duration)
-    candidates.extend(build_candidate_windows_from_segments(segments, target_count, min_duration, max_duration))
+    candidates.extend(build_candidate_windows_from_segments(segments, discovery_target, min_duration, max_duration))
     candidates.extend(
         build_windows_from_transcript(
             transcript,
             target_duration=target_duration,
             max_duration=max_duration,
             min_duration=min_duration,
-            target_count=target_count * 4,
+            target_count=discovery_target * 4,
         )
     )
     unique = []
@@ -6975,16 +7019,7 @@ def build_editorial_candidate_windows(info, transcript, target_count, min_durati
             continue
         seen[key] = item
         unique.append(item)
-    max_pool = int(max(
-        180,
-        min(
-            300,
-            max(
-                int(target_count or 1) * 32,
-                int(evidence_budget["max_candidates"]) * 1.5,
-            ),
-        ),
-    ))
+    max_pool = candidate_scoring_pool_budget(evidence_budget, target_count)
     if len(unique) > max_pool:
         def rough_signal(item):
             text = clean_text(item.get("text") or "")
@@ -7265,9 +7300,14 @@ def score_moment_candidate(candidate, payload, index, min_duration, max_duration
         score_provenance["adjustments"].append(
             {"reason": "repetitive_transcript", "value": -repetition_penalty}
         )
-    if is_generic_template(hook_text):
-        score = bounded_score(score - 10, 25, 97)
-        score_provenance["adjustments"].append({"reason": "generic_hook", "value": -10})
+    if is_generic_template(hook_text) and evidence_quality["hook_evidence"] < 44:
+        # Hook strength is already capped by transcript evidence above. Penalize
+        # only a genuinely weak opening so fallback wording is not counted twice.
+        generic_hook_penalty = 3
+        score = bounded_score(score - generic_hook_penalty, 25, 97)
+        score_provenance["adjustments"].append(
+            {"reason": "generic_hook_with_weak_opening", "value": -generic_hook_penalty}
+        )
     heatmap_metrics = candidate.get("heatmap_metrics") if isinstance(candidate.get("heatmap_metrics"), dict) else {}
     heatmap_score = max(0.0, min(1.0, float(heatmap_metrics.get("score") or 0.0)))
     heatmap_bonus = 0.0
@@ -7444,9 +7484,28 @@ def candidate_quality_tier(candidate):
         return "review"
     if score >= 80:
         return "strong"
-    if score >= AUTO_SELECT_MIN_SCORE:
+    if score >= AUTO_RENDER_MIN_SCORE:
         return "good"
     return "review"
+
+
+def update_candidate_public_score(candidate):
+    """Synchronize the public 1-10 score after every evidence re-score."""
+    score = clamp_score((candidate or {}).get("score"), 0)
+    if highlight_public_score:
+        public_score = highlight_public_score(score)
+    else:
+        public_score = 10 if score >= 94 else 9 if score >= 85 else 8 if score >= 75 else 7 if score >= 65 else 6 if score >= 55 else 5
+    candidate["public_score"] = public_score
+    candidate["public_label"] = {
+        10: "Pilihan Terbaik",
+        9: "Sangat Direkomendasikan",
+        8: "Direkomendasikan",
+        7: "Layak",
+        6: "Opsional",
+    }.get(public_score, "Opsional")
+    return candidate
+
 
 def revalidate_candidate_after_boundary(
     candidate, payload, index, min_duration, max_duration
@@ -7494,6 +7553,7 @@ def revalidate_candidate_after_boundary(
         "evidenceGate": evidence_gate,
     }
     candidate["quality_tier"] = candidate_quality_tier(candidate)
+    update_candidate_public_score(candidate)
     return candidate
 
 def calibrate_candidate_scores(candidates, content_profile=None):
@@ -7550,6 +7610,7 @@ def calibrate_candidate_scores(candidates, content_profile=None):
         candidate["auto_render"] = calibrated >= AUTO_SELECT_MIN_SCORE and evidence_gate
         candidate["render_eligible"] = calibrated >= AUTO_RENDER_MIN_SCORE
         candidate["quality_tier"] = candidate_quality_tier(candidate)
+        update_candidate_public_score(candidate)
     return candidates
 
 
@@ -7667,6 +7728,33 @@ def apply_title_hook_diversity(moments, payload=None):
     return refined
 
 
+def candidate_passes_manual_review_gate(candidate, min_score=AUTO_RENDER_MIN_SCORE):
+    """Allow visible review candidates without promoting them to auto-render."""
+    source = candidate if isinstance(candidate, dict) else {}
+    score = clamp_score(source.get("score"), 0)
+    if score < min_score:
+        return False
+    reviewer_status = clean_text(source.get("reviewer_status") or "").lower()
+    if bool(source.get("rejected")) or reviewer_status == "rejected":
+        return False
+    if not bool(source.get("evidence_gate")):
+        return False
+    metrics = source.get("metrics") if isinstance(source.get("metrics"), dict) else {}
+    if metrics.get("dangling_start") or metrics.get("dangling_end"):
+        return False
+    text = clean_text(source.get("text") or source.get("transcript") or "")
+    if len(text.split()) < 5:
+        return False
+    evidence = highlight_evidence_quality(text)
+    repetition = float(evidence.get("repetition_ratio") or 0.0)
+    if repetition > 0.48:
+        return False
+    story = float(metrics.get("story_complete") or metrics.get("story") or 0.0)
+    payoff = float(metrics.get("payoff") or evidence.get("payoff_evidence") or 0.0)
+    hook = float(metrics.get("hook") or evidence.get("hook_evidence") or 0.0)
+    return story >= 45 and (payoff >= 40 or hook >= 40)
+
+
 def select_review_fallback_moments(candidates, target_count, video_duration=0.0):
     """Return honest low-confidence candidates instead of an empty Moment page.
 
@@ -7680,7 +7768,12 @@ def select_review_fallback_moments(candidates, target_count, video_duration=0.0)
         return not metrics.get("dangling_start") and not metrics.get("dangling_end")
 
     ranked = sorted(
-        [candidate for candidate in (candidates or []) if has_complete_boundary(candidate)],
+        [
+            candidate
+            for candidate in (candidates or [])
+            if has_complete_boundary(candidate)
+            and candidate_passes_manual_review_gate(candidate)
+        ],
         key=lambda item: float(item.get("score") or 0),
         reverse=True,
     )
@@ -7754,6 +7847,16 @@ def supplement_with_optional_review_candidates(selected, candidates, result_limi
     return sorted(supplemented[:result_limit], key=lambda item: float(item.get("start") or 0.0))
 
 
+def renumber_moment_results(moments):
+    ordered = sorted(list(moments or []), key=lambda item: float(item.get("start") or 0.0))
+    for index, item in enumerate(ordered, 1):
+        item["id"] = index
+        item["duration"] = round(float(item.get("end") or 0.0) - float(item.get("start") or 0.0), 2)
+        item["time"] = f"{seconds_to_stamp(item.get('start') or 0)} - {seconds_to_stamp(item.get('end') or 0)}"
+        update_candidate_public_score(item)
+    return ordered
+
+
 # v1.12.0: Natural short-form story profiles. The maximum is a safety guardrail:
 # if a payoff cannot be completed inside it, the candidate should remain a
 # manual-review item instead of absorbing several minutes of unrelated tail.
@@ -7814,6 +7917,14 @@ def candidate_duration_class(duration, minimum, target, maximum):
     return "medium"
 
 
+def selection_prefilter_limit(candidate_count):
+    """Keep final boundary refinement stable across requested clip counts."""
+    count = max(0, int(candidate_count or 0))
+    if count <= 64:
+        return count
+    return min(140, max(64, int(math.ceil(math.sqrt(count) * 10))))
+
+
 def prefilter_selection_candidates(candidates, target_count):
     """Bound expensive boundary refinement while preserving timeline coverage.
 
@@ -7828,7 +7939,7 @@ def prefilter_selection_candidates(candidates, target_count):
         key=lambda item: float(item.get("score") or 0.0),
         reverse=True,
     )
-    limit = max(64, min(180, max(1, int(target_count or 1)) * 14))
+    limit = selection_prefilter_limit(len(ranked))
     if len(ranked) <= limit:
         return ranked
     quality_count = max(1, int(limit * 0.74))
@@ -7858,7 +7969,7 @@ def select_diverse_moments(candidates, target_count, transcript, min_duration, t
     duration_class_counts = {}
     refinement_cache = {}
     min_gap = max(float(min_duration) * 0.65, min(float(max_duration), bucket_size * 0.32))
-    minimum_score = AUTO_SELECT_MIN_SCORE if bool_payload(payload, "fullAutoMode", False) else AUTO_RENDER_MIN_SCORE
+    minimum_score = AUTO_RENDER_MIN_SCORE
 
     def too_close_to_selected(candidate):
         center = (candidate["start"] + candidate["end"]) / 2
@@ -7944,12 +8055,12 @@ def select_diverse_moments(candidates, target_count, transcript, min_duration, t
             candidate["auto_render"] = False
             candidate["reject_reason"] = f"Score di bawah {minimum_score}"
             return False
-        if bool_payload(payload, "fullAutoMode", False) and not candidate.get("evidence_gate"):
+        if not candidate_passes_recommendation_gate(candidate, minimum_score):
             candidate["rejected"] = True
             candidate["low_quality"] = True
             candidate["render_eligible"] = False
             candidate["auto_render"] = False
-            candidate["reject_reason"] = "Evidence gate tidak terpenuhi"
+            candidate["reject_reason"] = "Quality/evidence gate tidak terpenuhi"
             return False
 
         metrics = candidate.get("metrics") or {}
@@ -8018,6 +8129,20 @@ def select_diverse_moments(candidates, target_count, transcript, min_duration, t
                 break
 
     ordered = sorted(selected[:target_count], key=lambda item: item["start"])
+    if not ordered and candidates:
+        diagnostics = [
+            {
+                "score": clamp_score(item.get("score"), 0),
+                "evidence": bool(item.get("evidence_gate")),
+                "reason": item.get("reject_reason") or "diversity_or_boundary",
+            }
+            for item in candidates[:5]
+        ]
+        emit(
+            "log",
+            stage="final selection",
+            message=f"Quality gate menahan seluruh kandidat; top diagnostics={json_dumps(diagnostics)}",
+        )
     for index, item in enumerate(ordered, 1):
         item["id"] = index
     return ordered
@@ -8300,132 +8425,102 @@ def find_moments(info, transcript, payload):
     moments = calibrate_candidate_scores(moments, payload.get("_contentProfile"))
     ai_selections = ai_select_moments(moments, payload, target_count, working_transcript, min_duration, max_duration)
     if ai_selections:
-        full_auto = bool_payload(payload, "fullAutoMode", False)
-        # v1.12.0: Use adaptive recommendation count instead of hard target.
-        adaptive_count, adaptive_info = adaptive_recommendation_count(
-            ai_selections, target_count, quality_floor=AUTO_RENDER_MIN_SCORE
+        quality_margin = 0 if target_count <= 1 else max(1, int(round(target_count * 0.2)))
+        quality_limit = target_count + quality_margin
+        qualified_ai = [
+            item
+            for item in ai_selections
+            if candidate_passes_recommendation_gate(item, AUTO_RENDER_MIN_SCORE)
+        ]
+        local_fill = select_diverse_moments(
+            moments,
+            quality_limit,
+            working_transcript,
+            min_duration,
+            target_duration,
+            max_duration,
+            payload,
+            effective_analysis_duration,
         )
-        output_limit = max(adaptive_count, target_count) if adaptive_count > target_count else target_count
-        if len(ai_selections) < target_count and not full_auto:
-            local_fill = select_diverse_moments(
-                moments,
-                target_count * 2,
+        for candidate in local_fill:
+            if len(qualified_ai) >= quality_limit:
+                break
+            if not candidate_passes_recommendation_gate(candidate, AUTO_RENDER_MIN_SCORE):
+                continue
+            if overlaps_any(candidate, qualified_ai):
+                continue
+            if any(text_similarity(candidate.get("text"), selected.get("text")) > 0.62 for selected in qualified_ai):
+                continue
+            filled = dict(candidate)
+            filled["ai_selected"] = False
+            filled["reason"] = filled.get("reason") or "Lolos quality gate lokal sebagai kandidat tambahan."
+            qualified_ai.append(filled)
+
+        output_limit, adaptive_info = adaptive_recommendation_count(
+            qualified_ai,
+            target_count,
+            quality_floor=AUTO_RENDER_MIN_SCORE,
+        )
+        if output_limit:
+            strongest_ai = sorted(
+                qualified_ai,
+                key=lambda item: float(item.get("score") or 0),
+                reverse=True,
+            )[:output_limit]
+            ordered_ai = sorted(strongest_ai, key=lambda item: item["start"])
+            for index, item in enumerate(ordered_ai, 1):
+                item["id"] = index
+                item["score"] = clamp_score(item.get("score"), 0)
+                item["grade"] = score_grade(item["score"])
+                item["duration"] = round(float(item["end"]) - float(item["start"]), 2)
+                item["time"] = f"{seconds_to_stamp(item['start'])} - {seconds_to_stamp(item['end'])}"
+            ordered_ai = enforce_moments_in_timeline_ranges(
+                ordered_ai,
+                timeline_ranges,
                 working_transcript,
                 min_duration,
-                target_duration,
-                max_duration,
-                payload,
-                effective_analysis_duration,
             )
-            for candidate in local_fill:
-                if len(ai_selections) >= target_count:
-                    break
-                if overlaps_any(candidate, ai_selections):
-                    continue
-                if clamp_score(candidate.get("score"), 0) < AUTO_RENDER_MIN_SCORE:
-                    continue
-                filled = dict(candidate)
-                filled["ai_selected"] = False
-                filled["score"] = clamp_score(filled.get("score"), 0)
-                filled["grade"] = score_grade(filled["score"])
-                filled["reason"] = filled.get("reason") or "Dipakai sebagai pelengkap lokal karena AI mengembalikan pilihan kurang dari target."
-                ai_selections.append(filled)
-            if len(ai_selections) < target_count and duration >= min_duration and len(ai_selections) == 0:
-                ai_selections = fill_missing_timeline_moments(
-                    ai_selections,
-                    info,
-                    working_transcript,
-                    payload,
-                    target_count,
-                    min_duration,
-                    target_duration,
-                    max_duration,
-                    duration,
-                )
-        elif full_auto:
-            if all_recommended_clips_requested(payload):
-                # AI directs the strongest candidates; the local evidence
-                # engine fills any remaining qualified, diverse moments.
-                # Optional/weak moments are not silently promoted in this
-                # mode, but remain available on a later manual run.
-                quality_fill = select_diverse_moments(
-                    moments,
-                    target_count,
+            final_ai = apply_title_hook_diversity(revise_moments_with_ai(ordered_ai, payload), payload)
+            final_ai = [
+                item
+                for item in enforce_moments_in_timeline_ranges(
+                    final_ai,
+                    timeline_ranges,
                     working_transcript,
                     min_duration,
-                    target_duration,
-                    max_duration,
-                    payload,
+                )
+                if candidate_passes_recommendation_gate(item, AUTO_RENDER_MIN_SCORE)
+            ]
+            if len(final_ai) < target_count:
+                final_ai = supplement_with_optional_review_candidates(
+                    final_ai,
+                    list(moments) + list(validated_candidates),
+                    target_count,
                     effective_analysis_duration,
                 )
-                for candidate in quality_fill:
-                    if len(ai_selections) >= output_limit:
-                        break
-                    if overlaps_any(candidate, ai_selections):
-                        continue
-                    if any(text_similarity(candidate.get("text"), selected.get("text")) > 0.62 for selected in ai_selections):
-                        continue
-                    ai_selections.append(candidate)
-                before_optional = len(ai_selections)
-                ai_selections = supplement_with_optional_review_candidates(
-                    ai_selections,
-                    moments,
-                    output_limit,
-                    effective_analysis_duration,
-                )
-                optional_count = len(ai_selections) - before_optional
-                emit(
-                    "log",
-                    stage="final selection",
-                    message=(
-                        f"Mode semua: {len(ai_selections)} rekomendasi setelah AI, evidence, diversity, dan anti-overlap "
-                        f"({optional_count} Optional untuk review manual)."
-                    ),
-                )
-            else:
-                output_limit = optional_review_limit(payload, target_count)
-                before_optional = len(ai_selections)
-                ai_selections = supplement_with_optional_review_candidates(
-                    ai_selections,
-                    moments,
-                    output_limit,
-                    effective_analysis_duration,
-                )
-                optional_count = len(ai_selections) - before_optional
-                emit(
-                    "log",
-                    stage="fallback selection",
-                    message=(
-                        f"AI memilih kurang dari target; hasil dilengkapi menjadi {len(ai_selections)} kandidat "
-                        f"dengan {optional_count} Optional evidence lokal."
-                    ),
-                )
-        ordered_ai = sorted(ai_selections[:output_limit], key=lambda item: item["start"])
-        for index, item in enumerate(ordered_ai, 1):
-            item["id"] = index
-            item["score"] = clamp_score(item.get("score"), 75 if item.get("ai_selected") else 0)
-            item["grade"] = score_grade(item["score"])
-            item["duration"] = round(float(item["end"]) - float(item["start"]), 2)
-            item["time"] = f"{seconds_to_stamp(item['start'])} - {seconds_to_stamp(item['end'])}"
-        ordered_ai = enforce_moments_in_timeline_ranges(
-            ordered_ai,
-            timeline_ranges,
-            working_transcript,
-            min_duration,
-        )
-        final_ai = apply_title_hook_diversity(revise_moments_with_ai(ordered_ai, payload), payload)
-        final_ai = enforce_moments_in_timeline_ranges(
-            final_ai,
-            timeline_ranges,
-            working_transcript,
-            min_duration,
-        )
-        emit("log", stage="final selection", message=f"Final Selection: {len(final_ai)} clip AI tanpa overlap")
-        return final_ai
+                final_ai = apply_title_hook_diversity(final_ai, payload)
+            final_ai = renumber_moment_results(final_ai)
+            strict_final_ai_count = sum(
+                1 for item in final_ai
+                if candidate_passes_recommendation_gate(item, AUTO_RENDER_MIN_SCORE)
+            )
+            emit(
+                "log",
+                stage="final selection",
+                message=(
+                    f"Final Selection: {len(final_ai)} clip AI ditampilkan "
+                    f"({strict_final_ai_count} auto-ready, target={target_count}, "
+                    f"qualified={adaptive_info.get('qualified_count', 0)})."
+                ),
+            )
+            if final_ai:
+                return final_ai
 
+    quality_margin = 0 if target_count <= 1 else max(1, int(round(target_count * 0.2)))
+    quality_limit = target_count + quality_margin
     selections = select_diverse_moments(
         moments,
-        target_count,
+        quality_limit,
         working_transcript,
         min_duration,
         target_duration,
@@ -8433,66 +8528,22 @@ def find_moments(info, transcript, payload):
         payload,
         effective_analysis_duration,
     )
-    full_auto = bool_payload(payload, "fullAutoMode", False)
-    if not selections and moments:
-        if full_auto:
-            review_target = optional_review_limit(payload, target_count)
-            selections = select_review_fallback_moments(
-                moments,
-                review_target,
-                effective_analysis_duration,
-            )
-            if selections:
-                emit(
-                    "log",
-                    stage="fallback selection",
-                    message=(
-                        f"Tidak ada kandidat automatic yang lolos evidence gate. Menampilkan {len(selections)} "
-                        "kandidat terbaik sebagai Optional tanpa menaikkan score."
-                    ),
-                )
-        else:
-            selections = [
-                item
-                for item in moments
-                if clamp_score(item.get("score"), 0) >= AUTO_RENDER_MIN_SCORE
-            ][:target_count]
-    if full_auto and moments:
-        review_target = optional_review_limit(payload, target_count)
-        before_optional = len(selections)
-        selections = supplement_with_optional_review_candidates(
-            selections,
-            moments,
-            review_target,
-            effective_analysis_duration,
-        )
-        optional_count = len(selections) - before_optional
-        if optional_count:
-            emit(
-                "log",
-                stage="fallback selection",
-                message=(
-                    f"Hasil automatic dilengkapi {optional_count} kandidat Optional yang berbeda dan "
-                    "tetap membutuhkan review manual."
-                ),
-            )
-    if (
-        not full_auto
-        and len(selections) < target_count
-        and duration >= min_duration
-        and len(selections) == 0
-    ):
-        selections = fill_missing_timeline_moments(
-            selections,
-            info,
-            working_transcript,
-            payload,
-            target_count,
-            min_duration,
-            target_duration,
-            max_duration,
-            duration,
-        )
+    selections = [
+        item
+        for item in selections
+        if candidate_passes_recommendation_gate(item, AUTO_RENDER_MIN_SCORE)
+    ]
+    local_limit, local_info = adaptive_recommendation_count(
+        selections,
+        target_count,
+        quality_floor=AUTO_RENDER_MIN_SCORE,
+    )
+    selections = sorted(
+        selections,
+        key=lambda item: float(item.get("score") or 0),
+        reverse=True,
+    )[:local_limit]
+    selections = sorted(selections, key=lambda item: float(item.get("start") or 0))
     selections = enforce_moments_in_timeline_ranges(
         selections,
         timeline_ranges,
@@ -8500,13 +8551,38 @@ def find_moments(info, transcript, payload):
         min_duration,
     )
     final_local = apply_title_hook_diversity(revise_moments_with_ai(selections, payload), payload)
-    final_local = enforce_moments_in_timeline_ranges(
-        final_local,
-        timeline_ranges,
-        working_transcript,
-        min_duration,
+    final_local = [
+        item
+        for item in enforce_moments_in_timeline_ranges(
+            final_local,
+            timeline_ranges,
+            working_transcript,
+            min_duration,
+        )
+        if candidate_passes_recommendation_gate(item, AUTO_RENDER_MIN_SCORE)
+    ]
+    if len(final_local) < target_count:
+        final_local = supplement_with_optional_review_candidates(
+            final_local,
+            moments,
+            target_count,
+            effective_analysis_duration,
+        )
+        final_local = apply_title_hook_diversity(final_local, payload)
+    final_local = renumber_moment_results(final_local)
+    strict_final_local_count = sum(
+        1 for item in final_local
+        if candidate_passes_recommendation_gate(item, AUTO_RENDER_MIN_SCORE)
     )
-    emit("log", stage="final selection", message=f"Final Selection: {len(final_local)} clip lokal tanpa overlap")
+    emit(
+        "log",
+        stage="final selection",
+        message=(
+            f"Final Selection: {len(final_local)} clip lokal ditampilkan "
+            f"({strict_final_local_count} auto-ready, target={target_count}, "
+            f"qualified={local_info.get('qualified_count', 0)})."
+        ),
+    )
     return final_local
 
 

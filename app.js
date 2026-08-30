@@ -400,6 +400,26 @@ function setSettingsTab(tab) {
   $$(".settings-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `settings-${nextTab}`));
 }
 
+function normalizeRequestedClipCount(count, fallback = 4) {
+  const numeric = Number(count);
+  return Math.max(1, Math.min(10, Math.round(Number.isFinite(numeric) && numeric > 0 ? numeric : fallback)));
+}
+
+function syncClipTargetControls(count) {
+  const nextCount = normalizeRequestedClipCount(count);
+  state.requestedClipCount = nextCount;
+  const input = $("#clipCount");
+  if (input && Number(input.value) !== nextCount) {
+    input.value = String(nextCount);
+  }
+  $$(".preset-pill").forEach((btn) => {
+    btn.classList.toggle("active", Number(btn.dataset.presetCount) === nextCount);
+  });
+  const label = nextCount === 1 ? "Generate 1 Clip" : `Generate ${nextCount} Clips`;
+  const span = $("#findMomentsLabel");
+  if (span) span.textContent = label;
+}
+
 const viewMeta = {
   studio: { title: "Studio", subtitle: "Create amazing short clips with AI" },
   moments: { title: "Moment AI", subtitle: "Review and select discovered story clips" },
@@ -631,7 +651,7 @@ function renderMomentReview() {
   if (!moment) {
     setText("#reviewClipTitle", "Belum ada moment");
     setText("#reviewHeaderTitle", "Review Momen");
-    setText("#reviewScore", "Score -");
+    setText("#reviewScore", "Kualitas -");
     setText("#reviewDuration", "Duration -");
     setText("#reviewStrengths", "Belum ada evidence.");
     setText("#reviewWeaknesses", "Belum ada evidence.");
@@ -656,7 +676,7 @@ function renderMomentReview() {
   setText("#reviewPlayerDurationTag", moment.duration || `${Math.round(moment.end - moment.start)}s`);
   setText(
     "#reviewScore",
-    moment.hasScoreEvidence ? `Score ${moment.score}/100` : "Score perlu dinilai ulang",
+    moment.hasScoreEvidence ? `Kualitas ${momentQualityDisplay(moment)}` : "Kualitas perlu ditinjau",
   );
   setText(
     "#reviewReason",
@@ -846,10 +866,21 @@ function aiFeatureConfig() {
   };
 }
 
-function momentScoreOutOfTen(score) {
-  const num = Number(score || 0);
-  if (!Number.isFinite(num) || num <= 0) return 6;
-  return Math.max(1, Math.min(10, Math.round(num / 10)));
+function momentScoreOutOfTen(item) {
+  // Prefer public_score from backend (non-linear, evidence-calibrated mapping)
+  const obj = item && typeof item === "object" ? item : {};
+  if (Number.isFinite(obj.public_score) && obj.public_score > 0) {
+    return obj.public_score;
+  }
+  // Fallback: non-linear mapping consistent with highlight_engine.public_score_out_of_ten
+  const s = Number(obj.score ?? item ?? 0);
+  if (!Number.isFinite(s) || s <= 0) return 0;
+  if (s >= 94) return 10;
+  if (s >= 85) return 9;
+  if (s >= 75) return 8;
+  if (s >= 65) return 7;
+  if (s >= 55) return 6;
+  return 5;
 }
 
 function formatMomentMetric10(value) {
@@ -868,12 +899,17 @@ function momentQuality(item) {
 
   const evidenceGate = item.evidenceGate ?? item.evidence_gate;
   if (item.manualReview || evidenceGate === false) return { key: "review", label: "Low Priority / Review", tierClass: "tier-opsional" };
-  const s10 = momentScoreOutOfTen(item.score);
+  const s10 = momentScoreOutOfTen(item);
   if (s10 >= 9) return { key: "excellent", label: "Sangat Direkomendasikan", tierClass: "tier-sangat-rekomendasi" };
   if (s10 === 8) return { key: "good", label: "Direkomendasikan", tierClass: "tier-rekomendasi" };
   if (s10 === 7) return { key: "good", label: "Layak", tierClass: "tier-layak" };
   if (s10 === 6) return { key: "review", label: "Opsional", tierClass: "tier-opsional" };
   return { key: "review", label: "Low Priority / Review", tierClass: "tier-opsional" };
+}
+
+function momentQualityDisplay(item) {
+  const score = momentScoreOutOfTen(item || {});
+  return score > 0 ? `${score}/10` : "Perlu ditinjau";
 }
 
 function formatMomentMetric(value) {
@@ -1006,7 +1042,7 @@ function renderMoments() {
       const hookScore10 = formatMomentMetric10(components.hook);
       const storyScore10 = formatMomentMetric10(components.story);
       const payoffScore10 = formatMomentMetric10(components.payoff);
-      const score10 = momentScoreOutOfTen(item.score);
+      const displayScore = momentQualityDisplay(item);
       const themeLabel = item.category || item.topic || "Story";
       const whyReason = item.reason || "Story lengkap dengan payoff yang kuat dan memberi inspirasi.";
       const displayIdx = idx + 1;
@@ -1015,7 +1051,7 @@ function renderMoments() {
         <article class="moment-card-v12 quality-${quality.key} ${checked ? "selected" : ""} ${active ? "active-review" : ""} ${item.lowQuality ? "low-quality" : ""}" data-moment-row="${item.id}" tabindex="0">
           <div class="moment-thumb-wrap">
             ${thumbnail ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" />` : `<div class="moment-thumb-placeholder">🎬</div>`}
-            <span class="moment-score-num-badge">${score10}/10</span>
+            <span class="moment-score-num-badge">${escapeHtml(displayScore)}</span>
             <div class="moment-top-right-bar">
               <span class="moment-tier-pill ${quality.tierClass || ''}">${escapeHtml(quality.label)}</span>
               <button type="button" class="card-select-checkbox ${checked ? "checked" : ""}" data-toggle-moment-btn="${item.id}" aria-label="Pilih clip">${checked ? "✓" : ""}</button>
@@ -1114,7 +1150,7 @@ function collectPayload() {
   const logoOverlayEnabled = Boolean(watermarkEnabled && logoPath);
   const sourceChannel = state.lastAnalysis?.video?.channel || "YouTube";
   const watermarkText = $("#watermarkText")?.value?.trim() || (logoOverlayEnabled ? "Cliper Studio Plus" : "");
-  const requestedClipCount = Math.max(0, Math.floor(Number($("#clipCount").value || 0)));
+  const requestedClipCount = normalizeRequestedClipCount($("#clipCount").value);
   const settingsContractVersion = Number(state.settingsContract?.version || 1);
   return {
     sourceMode: "youtube",
@@ -1122,12 +1158,10 @@ function collectPayload() {
     // Keep the source duration explicit for Cloud job reservation. The Worker
     // also receives the selected duration when a range is chosen below.
     videoDuration: Math.max(0, Number(state.videoDuration || state.lastAnalysis?.video?.duration || 0)),
-    // Zero is an explicit product contract: return every qualified,
-    // non-overlapping recommendation found in the chosen timeline.
     clipCount: requestedClipCount,
-    allRecommendedClips: requestedClipCount === 0,
+    allRecommendedClips: false,
     fullAutoMode: true,
-    autoClipCount: true,
+    autoClipCount: false,
     autoRenderMinScore: AUTO_SELECT_MIN_SCORE,
     subtitleLang: $("#subtitleLang").value,
     minDuration: Number(fieldValue("minDuration", 30)),
@@ -1991,7 +2025,7 @@ function estimateRenderSeconds() {
 function renderPipelinePreview() {
   const summary = $("#pipelineSummary");
   if (!summary) {
-    setText("#pipelineEstimate", `Estimasi: ${formatDuration(estimateRenderSeconds())}`);
+    setText("#pipelineEstimate", `Waktu proses: ${formatDuration(estimateRenderSeconds())}`);
     return;
   }
   const items = activeEnhancements();
@@ -2007,7 +2041,7 @@ function renderPipelinePreview() {
     <div><span>Skipped</span><strong>${skipped.length ? skipped.map((item) => item.label).join(", ") : "-"}</strong></div>
     <div><span>Output</span><strong>${output}</strong></div>
   `;
-  setText("#pipelineEstimate", `Estimasi: ${formatDuration(estimateRenderSeconds())}`);
+  setText("#pipelineEstimate", `Waktu proses: ${formatDuration(estimateRenderSeconds())}`);
 }
 
 function updateRenderStats(event = {}) {
@@ -2830,7 +2864,10 @@ async function testProvider(options = {}) {
   const usage = response.usage ? `usage=${JSON.stringify(response.usage)}` : "usage=unknown";
   addAiUsage(response.usage_total || response.usage || {});
   state.cloudRouterReady = response.routerReady !== false;
-  setProviderStatus(response.status || "Connected · Cliper AI Cloud · AI Router OK", true);
+  const connectedStatus = response.routerReady === false
+    ? "Cloud terhubung · AI provider belum disiapkan admin"
+    : "Cloud terhubung · AI siap";
+  setProviderStatus(connectedStatus, true);
   if (payload.providerType === "cloud") {
     state.cloudConnectionOk = true;
     state.cloudConnectionKeyFingerprint = apiKeyFingerprint(payload.apiKey);
@@ -2839,10 +2876,8 @@ async function testProvider(options = {}) {
   pushLog(`[ai] Test API response received in ${duration}ms, ${usage}`);
   pushLog(`[ai] provider=${payload.providerType} model=${payload.model} response=${responseText}`);
   if (payload.providerType === "cloud" && response.license) {
-    const cloudBalance = response.license.unlimited
-      ? "unlimited"
-      : `$${Number(response.license.wallet?.availableUsd ?? response.license.availableUsd ?? 0).toFixed(2)}`;
-    pushLog(`[cloud] billing_mode=${response.license.billingMode || "wallet"} status=${response.license.status || "active"} wallet_usd=${cloudBalance}`);
+    const walletState = response.license.unlimited ? "internal" : "server-managed";
+    pushLog(`[cloud] billing_mode=${response.license.billingMode || "wallet"} status=${response.license.status || "active"} wallet=${walletState}`);
   }
   state.apiLastLatencyMs = duration;
   state.apiLastResponse = responseText;
@@ -2966,8 +3001,9 @@ async function scanSubtitles() {
 
 async function findMoments() {
   setSourceMode("youtube");
-  const requestedClipCount = Math.max(0, Math.floor(Number($("#clipCount").value || 0)));
-  const target = requestedClipCount || "semua rekomendasi layak";
+  const requestedClipCount = normalizeRequestedClipCount($("#clipCount").value);
+  syncClipTargetControls(requestedClipCount);
+  const target = requestedClipCount;
   if (!$("#youtubeUrl").value.trim()) {
     toast("Masukkan YouTube URL dulu");
     return;
@@ -3093,7 +3129,7 @@ async function findMoments() {
   $("#previewTitle").textContent = data.video?.title || "YouTube video";
   $("#previewUrl").textContent = data.video?.webpage_url || $("#youtubeUrl").value;
   $("#subtitleMetric").textContent = data.video?.subtitle_language || "No subtitle";
-  $("#previewScore").textContent = momentBank[0]?.score || "-";
+  $("#previewScore").textContent = momentBank[0] ? momentQualityDisplay(momentBank[0]) : "-";
   state.previewImageUrl = data.video?.thumbnail || "";
   drawPreview();
   $("#jobBadge").textContent = "Ready";
@@ -3214,7 +3250,7 @@ function buildConfig() {
     apiLastLatencyMs: state.apiLastLatencyMs || 0,
     apiLastResponse: state.apiLastResponse || "",
     aiUsageToday: normalizeAiUsage(state.aiUsageToday),
-    clipCount: fieldValue("clipCount", "0"),
+    clipCount: String(normalizeRequestedClipCount(fieldValue("clipCount", "4"))),
     scoreMode: "Content-aware editor score",
     minDuration: fieldValue("minDuration", "30"),
     targetDuration: fieldValue("targetDuration", "75"),
@@ -3334,16 +3370,21 @@ function applyConfig(config = {}) {
   setValue("#baseUrl", providerType === "cloud" ? aiProviders.cloud.baseUrl : config.baseUrl || "");
   setValue("#apiKey", config.apiKey || "");
   setValue("#highlightModel", providerType === "cloud" ? aiProviders.cloud.model : config.model || config.highlightModel || "");
+  const connectedProviderStatus = state.cloudRouterReady
+    ? "Cloud terhubung · AI siap"
+    : state.cloudConnectionOk
+      ? "Cloud terhubung · AI provider belum disiapkan admin"
+      : "Belum dites";
   setText(
     "#providerStatusText",
-    isConnectedProviderStatus(config.providerStatus) ? config.providerStatus : "Belum dites"
+    isConnectedProviderStatus(config.providerStatus) ? connectedProviderStatus : "Belum dites"
   );
   applyProviderDefaults(false);
   setValue("#aiHighlightToggle", config.aiHighlightToggle ?? true);
   setValue("#aiHookToggle", config.aiHookToggle ?? true);
   setValue("#aiCaptionToggle", config.aiCaptionToggle ?? true);
   setValue("#aiTitleToggle", config.aiTitleToggle ?? true);
-  setValue("#clipCount", config.clipCount ?? "0");
+  syncClipTargetControls(config.clipCount ?? 4);
   setValue("#scoreMode", config.scoreMode || "Content-aware editor score");
   setValue("#minDuration", config.minDuration || "30");
   setValue("#targetDuration", config.targetDuration || "75");
@@ -3729,68 +3770,15 @@ function bindEvents() {
     toast("URL ditempel");
   });
 
-  let costEstimateTimer = null;
-  function scheduleCostEstimateFetch() {
-    clearTimeout(costEstimateTimer);
-    costEstimateTimer = setTimeout(fetchCostEstimate, 250);
-  }
-
-  async function fetchCostEstimate() {
-    const count = Math.max(1, Math.min(10, Number($("#clipCount")?.value || state.requestedClipCount || 4)));
-    const duration = Math.max(0, Number(state.videoDuration || state.lastAnalysis?.video?.duration || 0));
-    setText("#estimateAiCost", "Menghitung...");
-    setText("#estimateTotalCost", "Menghitung...");
-    if (window.cliper?.getCostEstimate) {
-      try {
-        const response = await window.cliper.getCostEstimate({
-          requestedClipCount: count,
-          sourceDurationSeconds: duration
-        });
-        if (response?.ok && response.estimate) {
-          const est = response.estimate;
-          const aiMin = typeof est.aiCostMin === "number" ? `$${est.aiCostMin.toFixed(3)}` : "~ $0.022";
-          const aiMax = typeof est.aiCostMax === "number" ? `$${est.aiCostMax.toFixed(3)}` : "$0.041";
-          const plat = typeof est.platformFee === "number" ? `$${est.platformFee.toFixed(3)}` : "$0.010";
-          const totMin = typeof est.estimatedMin === "number" ? `$${est.estimatedMin.toFixed(3)}` : "~ $0.032";
-          const totMax = typeof est.estimatedMax === "number" ? `$${est.estimatedMax.toFixed(3)}` : "$0.051";
-          setText("#estimateAiCost", `~ ${aiMin} – ${aiMax}`);
-          setText("#estimatePlatformFee", `~ ${plat}`);
-          setText("#estimateTotalCost", `~ ${totMin} – ${totMax}`);
-          if (est.note) setText("#estimateNote", est.note);
-          return;
-        }
-      } catch (err) {
-        console.warn("Cost estimate fetch failed:", err);
-      }
-    }
-    const aiMin = (0.008 + count * 0.0035).toFixed(3);
-    const aiMax = (0.016 + count * 0.007).toFixed(3);
-    const plat = "0.010";
-    const totMin = (0.01 + parseFloat(aiMin)).toFixed(3);
-    const totMax = (0.01 + parseFloat(aiMax)).toFixed(3);
-    setText("#estimateAiCost", `~ $${aiMin} – $${aiMax}`);
-    setText("#estimatePlatformFee", `~ $${plat}`);
-    setText("#estimateTotalCost", `~ $${totMin} – $${totMax}`);
-  }
-
   function setRequestedClipCount(count) {
-    const nextCount = Math.max(1, Math.min(10, Math.round(Number(count) || 4)));
-    state.requestedClipCount = nextCount;
-    const input = $("#clipCount");
-    if (input && Number(input.value) !== nextCount) {
-      input.value = String(nextCount);
-    }
-    $$(".preset-pill").forEach((btn) => {
-      btn.classList.toggle("active", Number(btn.dataset.presetCount) === nextCount);
-    });
-    updateGenerateButtonLabel(nextCount);
-    scheduleCostEstimateFetch();
+    const nextCount = normalizeRequestedClipCount(count);
+    syncClipTargetControls(nextCount);
     updateCounters();
     renderPipelinePreview();
   }
 
   function updateGenerateButtonLabel(count) {
-    const num = Math.max(1, Math.min(10, Number(count || $("#clipCount")?.value || 4)));
+    const num = normalizeRequestedClipCount(count || $("#clipCount")?.value || 4);
     const label = num === 1 ? "Generate 1 Clip" : `Generate ${num} Clips`;
     const span = $("#findMomentsLabel");
     if (span) {
@@ -3815,9 +3803,6 @@ function bindEvents() {
   $("#clipCountIncrement")?.addEventListener("click", () => {
     const cur = Math.max(1, Math.min(10, Number($("#clipCount")?.value || 4)));
     if (cur < 10) setRequestedClipCount(cur + 1);
-  });
-  $("#estimateTooltipTrigger")?.addEventListener("click", () => {
-    toast("Estimasi bukan tagihan final. Saldo dipotong sesuai penggunaan AI yang dicatat server.");
   });
   $$(".preset-pill").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -4051,7 +4036,7 @@ function bindEvents() {
   $("#exportMomentsBtn")?.addEventListener("click", () => {
     const selected = selectedMoments();
     const list = selected.length ? selected : filteredMoments();
-    const summary = list.map((m, i) => `#${i + 1} ${m.title} (${m.time}) - Skor ${momentScoreOutOfTen(m.score)}/10`).join("\n");
+    const summary = list.map((m, i) => `#${i + 1} ${m.title} (${m.time}) - Kualitas ${momentQualityDisplay(m)}`).join("\n");
     if (navigator.clipboard) {
       navigator.clipboard.writeText(summary);
       toast("Daftar momen disalin ke clipboard!");

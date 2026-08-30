@@ -374,7 +374,7 @@ button:active:not(:disabled) {
 }
 
 #view-studio.active {
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 /* ==========================================================================
@@ -384,11 +384,11 @@ button:active:not(:disabled) {
 .studio-2col-layout {
   display: grid;
   gap: 18px;
-  grid-template-columns: minmax(340px, 420px) minmax(520px, 1fr);
-  align-items: stretch;
+  grid-template-columns: minmax(320px, 400px) minmax(420px, 1fr);
+  align-items: start;
   flex: 1;
   min-height: 0;
-  max-width: 1180px;
+  max-width: 1220px;
   width: 100%;
   margin: 0 auto;
 }
@@ -406,7 +406,7 @@ button:active:not(:disabled) {
 }
 
 .studio-col-right .preview-panel {
-  min-height: min(640px, calc(100vh - 112px));
+  min-height: 0;
 }
 
 .panel {
@@ -700,34 +700,52 @@ button:active:not(:disabled) {
 }
 
 /* ==========================================================================
-   Cost Estimate Card
+   Usage Policy Card
    ========================================================================== */
 
-.cost-estimate-card {
+.usage-policy-card {
   background: #ffffff;
-  border: 1px dashed #b9d8d3;
+  border: 1px solid #c9e8e3;
   border-radius: var(--radius-md);
   display: grid;
-  gap: 6px;
-  padding: 10px 12px;
+  grid-template-columns: 34px 1fr;
+  gap: 10px;
+  padding: 12px;
+  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.08);
 }
 
-.estimate-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.usage-policy-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-md);
+  display: grid;
+  place-items: center;
+  background: #e7fbf7;
+  color: #008f86;
 }
 
-.estimate-title-wrap {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.usage-policy-icon svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
 }
 
-.estimate-title-wrap strong {
-  font-size: 12px;
-  font-weight: 800;
-  color: #166534;
+.usage-policy-card strong {
+  display: block;
+  color: #043f3a;
+  font-size: 12.5px;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
+.usage-policy-card span {
+  display: block;
+  color: #4c6470;
+  font-size: 11.5px;
+  line-height: 1.45;
+  margin-top: 3px;
 }
 
 .dim-tag {
@@ -742,52 +760,6 @@ button:active:not(:disabled) {
   cursor: pointer;
   font-size: 12px;
   padding: 0;
-}
-
-.estimate-hero-price {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.estimate-hero-price strong {
-  color: #059669;
-  font-size: 15px;
-  font-weight: 900;
-}
-
-.estimate-hero-price span {
-  color: #15803d;
-  font-size: 11px;
-}
-
-.estimate-details {
-  border-top: 1px dashed #bbf7d0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding-top: 7px;
-}
-
-.estimate-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 11.5px;
-  color: #15803d;
-}
-
-.estimate-row strong {
-  color: #166534;
-  font-weight: 700;
-}
-
-.estimate-note {
-  color: #16a34a;
-  font-size: 10.5px;
-  line-height: 1.35;
-  margin-top: 2px;
 }
 
 .compact-upload-strip {
@@ -1563,10 +1535,15 @@ button:active:not(:disabled) {
   border: 1.5px solid rgba(255, 255, 255, 0.2);
   border-radius: var(--radius-sm);
   color: #ffffff;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 900;
-  padding: 3px 7px;
+  letter-spacing: 0;
+  padding: 4px 7px;
   backdrop-filter: blur(8px);
+  max-width: calc(100% - 82px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .moment-top-right-bar {
@@ -3369,12 +3346,43 @@ button:active:not(:disabled) {
    ========================================================================== */
 
 @media (max-width: 1280px) {
+  .settings-dashboard-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 1120px) {
   .studio-2col-layout {
     grid-template-columns: 1fr;
   }
+}
 
-  .settings-dashboard-grid {
-    grid-template-columns: repeat(2, 1fr);
+@media (max-height: 820px) and (min-width: 1121px) {
+  .view {
+    padding: 16px 22px 22px;
+  }
+
+  .studio-2col-layout {
+    gap: 14px;
+  }
+
+  .studio-col-left,
+  .studio-col-right,
+  .generate-clips-panel,
+  .preview-panel {
+    gap: 12px;
+  }
+
+  .panel {
+    padding: 14px;
+  }
+
+  .video-stage {
+    max-height: calc(100vh - 250px);
+  }
+
+  .timeline-selector-compact {
+    margin-top: 8px;
   }
 }
 

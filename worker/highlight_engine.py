@@ -5,6 +5,7 @@ import hashlib
 import math
 from typing import List, Dict, Any
 
+
 def bounded_score(value, floor=0, ceiling=100):
     try:
         return int(max(floor, min(ceiling, round(float(value)))))
@@ -25,6 +26,44 @@ def bounded_score_with_penalty(value, floor=0, ceiling=100, penalties=None):
         return int(max(floor, min(ceiling, round(score))))
     except Exception:
         return int(floor)
+
+
+def progressive_deficit_penalty(value, threshold, maximum, span):
+    """Return a continuous evidence penalty without a threshold cliff."""
+    try:
+        deficit = max(0.0, float(threshold) - float(value or 0))
+        if deficit <= 0:
+            return 0.0
+        ratio = min(1.0, deficit / max(float(span), 1.0))
+        return round(float(maximum) * math.pow(ratio, 0.75), 2)
+    except (TypeError, ValueError):
+        return float(maximum)
+
+
+def public_score_out_of_ten(raw_score) -> int:
+    """Convert internal 0-100 evidence score to honest 1-10 public display.
+
+    Mapping non-linear agar score 8-9 dapat dicapai bila evidence kuat,
+    dan score 10 tetap langka (raw >= 94). Konsisten antara backend & frontend.
+
+    6/10  = Opsional                (raw 55-64)
+    7/10  = Layak                   (raw 65-74)
+    8/10  = Direkomendasikan        (raw 75-84)
+    9/10  = Sangat Direkomendasikan (raw 85-93)
+    10/10 = Pilihan Terbaik         (raw 94+)
+    """
+    s = float(raw_score or 0)
+    if s >= 94:
+        return 10
+    if s >= 85:
+        return 9
+    if s >= 75:
+        return 8
+    if s >= 65:
+        return 7
+    if s >= 55:
+        return 6
+    return 5
 
 
 def filler_ratio(text):
@@ -75,29 +114,20 @@ def dynamic_duration_profile(text):
 
 
 def detect_penalties(transcript, duration, metrics=None):
-    """Detect penalty conditions and return list of penalty values.
-
-    Penalty types:
-    - too_silent: -20 if silence detected
-    - too_short: -10 if duration below minimum
-    - no_payoff: -15 if story incomplete without payoff
-    """
+    """Detect penalty conditions and return list of penalty values."""
     penalties = []
     metrics = metrics or {}
 
-    # Check for too short
     if duration:
         profile = dynamic_duration_profile(str(transcript or ""))
         min_dur = float(profile.get("min", 35))
         if float(duration) < min_dur:
             penalties.append(-10)
 
-    # Check for no_payoff
     payoff = float(metrics.get("payoff", 0))
     if payoff < 45:
         penalties.append(-15)
 
-    # Check for too_silent (low emotion score)
     emotion = float(metrics.get("emotion", 0))
     if emotion < 30:
         penalties.append(-20)
@@ -119,8 +149,6 @@ def score_highlight(metrics):
     seo_potential = float(metrics.get("seo_potential", metrics.get("knowledge", 0)))
     virality = float(metrics.get("virality", metrics.get("trend", 0)))
     retention_predictor = float(metrics.get("retention_predictor", retention))
-    # Prompt V3.3 weights total 105%. Divide by 1.05 so the result remains
-    # a real 0-100 score instead of inflating strong candidates to 99.
     score = (
         hook * 0.18
         + story * 0.18
@@ -136,11 +164,8 @@ def score_highlight(metrics):
     filler = float(metrics.get("filler_ratio", 0) or 0)
     if filler > 0.08:
         score -= min(12, (filler - 0.08) * 85)
-    if story < 48:
-        score -= 8
-    if payoff < 52:
-        score -= 5
-    # Add penalty scores
+    score -= progressive_deficit_penalty(story, 48, 8, 28)
+    score -= progressive_deficit_penalty(payoff, 52, 5, 32)
     penalties = metrics.get("penalties", [])
     for penalty in penalties:
         score += float(penalty)
@@ -148,17 +173,9 @@ def score_highlight(metrics):
 
 
 def score_highlight_v2(metrics):
-    """Enhanced highlight scoring with penalties and forced alignment support.
-
-    New features:
-    - Penalty scoring (too_silent, too_short, no_payoff)
-    - Forced alignment confidence
-    - Multi-face confidence boost
-    - Real engagement predictor
-    """
+    """Enhanced highlight scoring with penalties and forced alignment support."""
     metrics = metrics or {}
 
-    # Extract metrics
     hook = float(metrics.get("hook", 0))
     emotion = float(metrics.get("emotion", 0))
     payoff = float(metrics.get("payoff", 0))
@@ -171,7 +188,6 @@ def score_highlight_v2(metrics):
     virality = float(metrics.get("virality", metrics.get("trend", 0)))
     retention_predictor = float(metrics.get("retention_predictor", retention))
 
-    # Base score calculation
     score = (
         hook * 0.17
         + emotion * 0.13
@@ -185,35 +201,27 @@ def score_highlight_v2(metrics):
         + duration_fit * 0.02
     )
 
-    # Apply filler penalty
     filler = float(metrics.get("filler_ratio", 0) or 0)
     if filler > 0.08:
         score -= min(12, (filler - 0.08) * 85)
 
-    # Apply forced alignment confidence boost
     alignment_score = float(metrics.get("forced_alignment_score", 50))
     if alignment_score > 70:
         score += 3
 
-    # Face tracking is editing evidence, not proof that a story is valuable.
     face_confidence = float(metrics.get("face_confidence", 0))
     if face_confidence > 80:
         score += 1
     elif face_confidence > 60:
         score += 0.5
 
-    # Apply engagement predictor boost
     engagement = float(metrics.get("real_engagement", 0))
     if engagement > 70:
         score += 3
 
-    # Apply story penalties
-    if story < 48:
-        score -= 8
-    if payoff < 52:
-        score -= 5
+    score -= progressive_deficit_penalty(story, 48, 8, 28)
+    score -= progressive_deficit_penalty(payoff, 52, 5, 32)
 
-    # Apply additional penalties from detect_penalties
     penalties = metrics.get("penalties", [])
     for penalty in penalties:
         score += float(penalty)
@@ -222,14 +230,7 @@ def score_highlight_v2(metrics):
 
 
 def multi_face_confidence(face_tracks):
-    """Calculate confidence score for multi-face tracking.
-
-    Args:
-        face_tracks: List of face track dicts with "confidence", "visibility", "stability"
-
-    Returns:
-        float confidence score from 0-100
-    """
+    """Calculate confidence score for multi-face tracking."""
     if not face_tracks:
         return 0.0
 
@@ -238,26 +239,15 @@ def multi_face_confidence(face_tracks):
         confidence = float(track.get("confidence", 0.5) or 0.5)
         visibility = float(track.get("visibility", 0.5) or 0.5)
         stability = float(track.get("stability", 0.5) or 0.5)
-
-        # Weighted combination
         track_score = confidence * 0.5 + visibility * 0.25 + stability * 0.25
         total_score += track_score
 
-    # Average score scaled to 0-100
     avg_score = total_score / max(len(face_tracks), 1)
     return round(min(100.0, avg_score * 100), 2)
 
 
 def shot_boundary_detection(frames, threshold=0.3):
-    """Detect shot boundaries in a sequence of frames.
-
-    Args:
-        frames: List of frame metrics with "scene_confidence" or "frame_diff"
-        threshold: Difference threshold to detect shot boundary (0-1)
-
-    Returns:
-        list of shot boundaries (frame indices)
-    """
+    """Detect shot boundaries in a sequence of frames."""
     boundaries = []
     prev_confidence = None
 
@@ -276,53 +266,27 @@ def shot_boundary_detection(frames, threshold=0.3):
 
 
 def real_engagement_predictor(transcript, metrics=None):
-    """Predict real engagement score based on content analysis.
-
-    Args:
-        transcript: Video transcript text
-        metrics: Optional additional metrics
-
-    Returns:
-        float engagement score from 0-100
-    """
+    """Predict real engagement score based on content analysis."""
     if not transcript:
         return 30.0
 
     lower = str(transcript).lower()
 
-    # Engagement indicators
     engagement_factors = {
-        "question": 5,
-        "ajaib": 8,
-        "gila": 7,
-        "kaget": 7,
-        "wah": 6,
-        "ngakak": 8,
-        "ketawa": 6,
-        "lucu": 7,
-        "penting": 5,
-        "harus": 6,
-        "jangan": 5,
-        "kenapa": 7,
-        "bagaimana": 6,
-        "bener": 5,
-        "seru": 7,
-        "mantap": 6,
-        "keren": 6,
+        "question": 5, "ajaib": 8, "gila": 7, "kaget": 7, "wah": 6,
+        "ngakak": 8, "ketawa": 6, "lucu": 7, "penting": 5, "harus": 6,
+        "jangan": 5, "kenapa": 7, "bagaimana": 6, "bener": 5, "seru": 7,
+        "mantap": 6, "keren": 6,
     }
 
     total_score = 0
     words = re.findall(r"\w+", lower)
-
     for word in words:
         if word in engagement_factors:
             total_score += engagement_factors[word]
 
-    # Normalize score based on word count
     word_count = len(words)
     normalized_score = min(100.0, (total_score / max(word_count, 1)) * 20)
-
-    # Bonus for short, punchy content
     if word_count < 50:
         normalized_score += 10
 
@@ -441,18 +405,8 @@ def evidence_metrics(text, duration, segments=None, metadata=None):
     emotion_hits = keyword_hits(lower, ["ketawa", "ngakak", "lucu", "sedih", "nangis", "marah", "takut", "kaget", "hening", "merinding", "kecewa"])
     payoff_hits = keyword_hits(
         last,
-        [
-            "akhirnya",
-            "ternyata",
-            "makanya",
-            "intinya",
-            "hasilnya",
-            "jawabannya",
-            "solusinya",
-            "berhasil",
-            "terbukti",
-            "terjawab",
-        ],
+        ["akhirnya", "ternyata", "makanya", "intinya", "hasilnya", "jawabannya",
+         "solusinya", "berhasil", "terbukti", "terjawab"],
     )
     setup_hits = curiosity + keyword_hits(
         first,
@@ -525,34 +479,23 @@ def evidence_metrics(text, duration, segments=None, metadata=None):
 
 
 # -- Candidate generation, filtering and selection ---------------------
-def generate_highlight_candidates(transcript: List[Dict[str, Any]],
-                                  anchors: List[Dict[str, Any]] = None,
-                                  metadata: Dict[str, Any] = None,
-                                  config: Dict[str, Any] = None) -> List[Dict[str, Any]]:
-    """Generate 40-80 highlight candidates from transcript and anchors.
-
-    Args:
-        transcript: list of transcript segments with `start`, `end`, `text`.
-        anchors: list of important timestamps (e.g., speaker changes, shots)
-        metadata: optional video metadata
-        config: tuning parameters
-
-    Returns:
-        list of candidate dicts with start,end,text,metrics,score
-    """
+def generate_highlight_candidates(
+    transcript: List[Dict[str, Any]],
+    anchors: List[Dict[str, Any]] = None,
+    metadata: Dict[str, Any] = None,
+    config: Dict[str, Any] = None,
+) -> List[Dict[str, Any]]:
+    """Generate highlight candidates from transcript and anchors."""
     anchors = anchors or []
     metadata = metadata or {}
     config = config or {}
 
-    # Check cache
-    key = transcript_hash({"schema": 3, "transcript": transcript, "anchors": anchors, "meta": metadata, "config": config})
+    key = transcript_hash({"schema": 4, "transcript": transcript, "anchors": anchors, "meta": metadata, "config": config})
     cache = _load_cache()
     cached = cache.get(key)
     if cached:
         return cached
 
-    # Candidate generation is deterministic. Every seed comes from a transcript,
-    # story, or timeline anchor; no random score or random ordering is allowed.
     seeds = []
     story_candidates = metadata.get("story_candidates") or []
     for item in story_candidates:
@@ -572,7 +515,6 @@ def generate_highlight_candidates(transcript: List[Dict[str, Any]],
         except Exception:
             continue
 
-    # anchors
     for a in anchors:
         try:
             t = float(a.get("time", a.get("timestamp", 0)) or 0)
@@ -580,7 +522,6 @@ def generate_highlight_candidates(transcript: List[Dict[str, Any]],
         except Exception:
             continue
 
-    # sliding windows around transcript with variable durations
     source_items = list(transcript or [])
     desired_seed_count = max(80, min(240, int(config.get("max_candidates", 80)) * 3))
     stride = max(1, len(source_items) // desired_seed_count)
@@ -595,7 +536,6 @@ def generate_highlight_candidates(transcript: List[Dict[str, Any]],
         for start in range(0, int(metadata.get("duration") or 0), 45):
             seeds.append((float(start), min(float(metadata.get("duration") or 0), start + 75.0), "fallback"))
 
-    # Deduplicate seeds and clamp
     normalized = []
     video_duration = float(metadata.get("duration") or 0)
     for s, e, source_type in seeds:
@@ -611,7 +551,8 @@ def generate_highlight_candidates(transcript: List[Dict[str, Any]],
 
     normalized = sorted(set(normalized), key=lambda item: (item[0], item[1], item[2]))
     candidates = []
-    for s, e, source_type in normalized[:320]:
+    search_limit = min(320, max(80, int(config.get("max_candidates", 80)) * 2))
+    for s, e, source_type in normalized[:search_limit]:
         text = transcript_text_between(transcript, s, e)
         if len(re.findall(r"\w+", text)) < 18:
             continue
@@ -628,28 +569,14 @@ def generate_highlight_candidates(transcript: List[Dict[str, Any]],
             "candidate_source": source_type,
         })
 
-    # Normalize and apply diversity & overlap filters
     candidates = normalize_scores(candidates)
     candidates = apply_diversity_filter(candidates)
     ranked_before_overlap = sorted(candidates, key=lambda x: x.get("score", 0), reverse=True)
     candidates = apply_overlap_filter(ranked_before_overlap, overlap_threshold=0.65)
 
-    # Choose final batch: aim 40-80 candidates, ranked
     candidates = sorted(candidates, key=lambda x: x.get("score", 0), reverse=True)
-    n_min = int(config.get("min_candidates", 40))
     n_max = int(config.get("max_candidates", 80))
     final = candidates[:n_max]
-    if len(final) < n_min:
-        seen = {(item.get("start"), item.get("end")) for item in final}
-        for item in ranked_before_overlap:
-            key_item = (item.get("start"), item.get("end"))
-            if key_item in seen:
-                continue
-            final.append(item)
-            seen.add(key_item)
-            if len(final) >= min(n_min, n_max):
-                break
-    # Save to cache
     try:
         cache[key] = final
         _save_cache(cache)
@@ -659,11 +586,10 @@ def generate_highlight_candidates(transcript: List[Dict[str, Any]],
     return final
 
 
-def apply_diversity_filter(candidates: List[Dict[str, Any]], similarity_threshold: float = 0.75) -> List[Dict[str, Any]]:
-    """Penalize or drop candidates that are semantically too similar.
-
-    This is a lightweight heuristic: compare normalized text overlap.
-    """
+def apply_diversity_filter(
+    candidates: List[Dict[str, Any]], similarity_threshold: float = 0.75
+) -> List[Dict[str, Any]]:
+    """Penalize or drop candidates that are semantically too similar."""
     out = []
     texts = []
     for c in sorted(candidates, key=lambda x: x.get("score", 0), reverse=True):
@@ -677,9 +603,7 @@ def apply_diversity_filter(candidates: List[Dict[str, Any]], similarity_threshol
             union = max(1, len(words | ot))
             sim = common / union
             if sim >= similarity_threshold:
-                # penalize by reducing score
                 c["score"] = max(0, c.get("score", 0) - 20)
-                # if score drops too low, skip
                 if c["score"] < 40:
                     keep = False
                     break
@@ -689,12 +613,10 @@ def apply_diversity_filter(candidates: List[Dict[str, Any]], similarity_threshol
     return out
 
 
-def apply_overlap_filter(candidates: List[Dict[str, Any]], overlap_threshold: float = 0.4) -> List[Dict[str, Any]]:
-    """Remove or merge overlapping candidates.
-
-    If two candidates overlap more than threshold proportion of the shorter one,
-    keep the one with higher score.
-    """
+def apply_overlap_filter(
+    candidates: List[Dict[str, Any]], overlap_threshold: float = 0.4
+) -> List[Dict[str, Any]]:
+    """Remove overlapping candidates, keep highest scored."""
     res = []
     for c in sorted(candidates, key=lambda x: x.get("score", 0), reverse=True):
         s1, e1 = float(c.get("start", 0)), float(c.get("end", 0))
@@ -712,7 +634,6 @@ def apply_overlap_filter(candidates: List[Dict[str, Any]], overlap_threshold: fl
             if smaller <= 0:
                 continue
             if inter / smaller >= overlap_threshold:
-                # overlap too large -> keep only higher scored (we iterate high->low)
                 conflict = True
                 break
         if not conflict:

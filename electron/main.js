@@ -625,16 +625,15 @@ async function verifyCliperCloud(payload = {}) {
     // Authentication and device activation never depend on wallet balance.
     // The API evaluates the reservation for the specific paid job later.
     const walletReady = true;
-    const creditLabel = unlimited ? "Unlimited" : formatUsd(availableUsd);
     return {
       ok: true,
       routerReady: true,
       walletReady,
       status: unlimited
-        ? `Cloud terhubung · saldo ${creditLabel}`
+        ? "Cloud terhubung · internal"
         : spendableUsd > 0
-          ? `Cloud terhubung · saldo ${creditLabel}`
-          : "Cloud terhubung · isi saldo sebelum pekerjaan AI berbayar",
+          ? "Cloud terhubung · AI siap"
+          : "Cloud terhubung · top up diperlukan untuk AI berbayar",
       response: "CLOUD_SESSION_AND_WALLET_OK",
       usage: {},
       route: { provider: "cliper-cloud", model: "auto" },

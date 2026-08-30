@@ -46,7 +46,7 @@
         </nav>
 
         <div class="sidebar-footer-minimal">
-          <span class="version-tag">v1.12.0</span>
+          <span class="version-tag">v1.12.1</span>
         </div>
 
         <div class="project-status" style="display: none;">
@@ -70,7 +70,7 @@
           <div class="status-row">
             <span class="status-pill status-cloud" id="apiStatus">Cloud belum diperiksa</span>
             <span class="status-pill" id="clipCounter">0 clip dipilih</span>
-            <span class="status-pill version-pill" id="appVersion">v1.12.0</span>
+            <span class="status-pill version-pill" id="appVersion">v1.12.1</span>
             <button class="icon-button" id="saveConfig" title="Simpan setting">
               <svg viewBox="0 0 24 24"><path d="M5 4h12l2 2v14H5V4Zm3 0v6h8V4M8 20v-6h8v6" /></svg>
             </button>
@@ -147,29 +147,13 @@
                     </button>
                   </div>
 
-                  <div class="cost-estimate-card" id="costEstimateCard">
-                    <div class="estimate-header">
-                      <div class="estimate-title-wrap">
-                        <strong>Estimasi Penggunaan</strong>
-                        <button type="button" class="tooltip-trigger" id="estimateTooltipTrigger" aria-label="Info estimasi biaya" title="Biaya akhir mengikuti penggunaan AI yang tercatat server">ⓘ</button>
-                      </div>
+                  <div class="usage-policy-card" id="usagePolicyCard">
+                    <div class="usage-policy-icon">
+                      <svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.4 2.7 8.4 7 10 4.3-1.6 7-5.6 7-10V6l-7-3Zm3.4 6.7-4.1 4.1-1.9-1.9" /></svg>
                     </div>
-                    <div class="estimate-hero-price">
-                      <strong id="estimateTotalCost">$0.02 – $0.05</strong>
-                      <span>Total estimasi (USD)</span>
-                    </div>
-                    <div class="estimate-details" id="estimateDetails">
-                      <div class="estimate-row">
-                        <span>AI Analysis</span>
-                        <strong id="estimateAiCost">~ $0.03</strong>
-                      </div>
-                      <div class="estimate-row">
-                        <span>Platform / Story Engine</span>
-                        <strong id="estimatePlatformFee">~ $0.01</strong>
-                      </div>
-                    </div>
-                    <div class="estimate-note" id="estimateNote">
-                      Estimasi berdasarkan durasi video dan target clip. Biaya aktual dihitung oleh server sesuai penggunaan nyata.
+                    <div>
+                      <strong>Penggunaan AI dicatat sesuai proses aktual</strong>
+                      <span>Render video berjalan lokal. Cliper Cloud mencatat pemakaian AI berdasarkan penggunaan yang benar-benar terjadi.</span>
                     </div>
                   </div>
                 </div>
@@ -214,7 +198,7 @@
                 <div class="video-stage">
                   <canvas id="previewCanvas" width="900" height="506"></canvas>
                   <div class="stage-overlay">
-                    <span class="score-overlay-badge">Score <strong id="previewScore">-</strong></span>
+                    <span class="score-overlay-badge">Kualitas <strong id="previewScore">-</strong></span>
                     <span class="duration-overlay-badge" id="previewDuration">Durasi belum dimuat</span>
                   </div>
                 </div>
@@ -548,7 +532,7 @@
               <!-- Hidden elements for test and engine backward compatibility -->
               <div style="display: none;">
                 <h3 id="reviewClipTitle">Clip</h3>
-                <span id="reviewScore">Score -</span>
+                <span id="reviewScore">Kualitas -</span>
                 <span id="reviewDuration">Duration -</span>
                 <input id="reviewStartInput" placeholder="00:00" />
                 <input id="reviewEndInput" placeholder="01:00" />
@@ -613,7 +597,7 @@
                 <article><span>Speed</span><strong id="renderSpeedStat">-</strong></article>
               </div>
               <div class="pipeline-summary" id="pipelineSummary" aria-label="Ringkasan pipeline render"></div>
-              <p class="pipeline-estimate" id="pipelineEstimate">Estimasi: menunggu pilihan clip</p>
+              <p class="pipeline-estimate" id="pipelineEstimate">Waktu proses: menunggu pilihan clip</p>
               <ol class="step-list" id="stepList"></ol>
             </section>
             <section class="panel logs-panel">

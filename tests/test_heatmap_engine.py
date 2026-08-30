@@ -7,7 +7,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "worker"))
 
 from cliper_worker import (
     build_editorial_candidate_windows,
+    candidate_discovery_target,
     candidate_generation_budget,
+    candidate_scoring_pool_budget,
     public_heatmap_status,
     score_moment_candidate,
 )
@@ -275,6 +277,22 @@ def test_candidate_generation_budget_scales_for_long_videos_without_unbounded_gr
 
     assert short["min_candidates"] < long["min_candidates"]
     assert short["max_candidates"] < long["max_candidates"] <= 240
+
+
+def test_expensive_scoring_pool_scales_with_requested_output():
+    evidence_budget = candidate_generation_budget(3_700, 10)
+
+    assert candidate_scoring_pool_budget(evidence_budget, 1) == 204
+    assert candidate_scoring_pool_budget(evidence_budget, 4) == 204
+    assert candidate_scoring_pool_budget(evidence_budget, 6) == 204
+    assert candidate_scoring_pool_budget(evidence_budget, 10) == 204
+    assert candidate_scoring_pool_budget(evidence_budget, 100) <= 240
+
+
+def test_discovery_density_depends_on_source_not_requested_clip_count():
+    assert candidate_discovery_target(600) == 6
+    assert candidate_discovery_target(3_700) == 7
+    assert candidate_discovery_target(20_000) == 16
 
 
 def test_heatmap_cannot_raise_incoherent_candidate_score():
