@@ -242,7 +242,13 @@ def test_manual_review_supplement_keeps_target_close_without_fake_scores():
             "end": 320.0,
             "text": "Bagian ini memberi jawaban yang berbeda, menjelaskan sebab, lalu menutup kesimpulan.",
             "score": 59,
-            "metrics": {"story_complete": 52, "payoff": 42, "hook": 41},
+            "metrics": {
+                "story_complete": 52,
+                "payoff": 42,
+                "hook": 41,
+                "retention_predictor": 62,
+                "filler_ratio": 0.08,
+            },
             "rejected": True,
             "reject_reason": "Quality/evidence gate tidak terpenuhi",
         },
@@ -252,7 +258,13 @@ def test_manual_review_supplement_keeps_target_close_without_fake_scores():
             "end": 450.0,
             "text": "Cerita terakhir punya pembuka, alasan utama, dan payoff yang bisa dipahami sendiri.",
             "score": 56,
-            "metrics": {"story_complete": 50, "payoff": 40, "hook": 43},
+            "metrics": {
+                "story_complete": 50,
+                "payoff": 40,
+                "hook": 43,
+                "retention_predictor": 60,
+                "filler_ratio": 0.10,
+            },
             "rejected": True,
             "reject_reason": "Score di bawah 65",
         },
@@ -265,11 +277,34 @@ def test_manual_review_supplement_keeps_target_close_without_fake_scores():
         video_duration=600,
     )
 
-    assert len(supplemented) == 2
-    assert [item["score"] for item in supplemented] == [78, 67]
+    assert len(supplemented) == 4
+    assert [item["score"] for item in supplemented] == [78, 67, 59, 56]
     assert supplemented[0].get("manual_review_candidate") is not True
     assert all(item["manual_review_candidate"] for item in supplemented[1:])
     assert all(item["auto_render"] is False for item in supplemented[1:])
+    assert all(item["render_eligible"] is True for item in supplemented[1:])
+    assert all(item.get("review_fallback") is True for item in supplemented[1:])
+
+
+def test_manual_review_fallback_rejects_repetitive_low_evidence_padding():
+    candidate = {
+        "id": 1,
+        "start": 0.0,
+        "end": 70.0,
+        "text": "iya iya iya jadi gitu jadi gitu iya iya jadi gitu terus begitu terus",
+        "score": 58,
+        "rejected": True,
+        "reject_reason": "Score di bawah 65",
+        "metrics": {
+            "story_complete": 58,
+            "payoff": 46,
+            "hook": 50,
+            "retention_predictor": 62,
+            "filler_ratio": 0.08,
+        },
+    }
+
+    assert cliper_worker.select_review_fallback_moments([candidate], 1, 300) == []
 
 
 def test_candidate_calibration_requires_real_evidence_gate():

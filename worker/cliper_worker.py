@@ -1323,7 +1323,11 @@ def classify_content_profile(title, channel, text, speakers=None, lyric_marker_r
     if any(keyword in title_lower for keyword in ["podcast", "interview", "bincang", "ngobrol", "talkshow"]):
         subtype = "interview" if "interview" in title_lower or "wawancara" in haystack else "conversation"
         return "podcast", subtype
-    if any(keyword in title_lower for keyword in ["vlog", "daily", "travel", "perjalanan"]) or "vlog" in haystack:
+    vlog_title_terms = [
+        "vlog", "daily", "travel", "perjalanan", "jalan-jalan", "jalan jalan",
+        "liburan", "trip ", "tour ", "keliling", "pertama kali ke", "wisata",
+    ]
+    if any(keyword in title_lower for keyword in vlog_title_terms) or "vlog" in haystack:
         return "vlog", "lifestyle"
     story_title = any(keyword in title_lower for keyword in ["kisah", "cerita", "story", "pengalaman", "kronologi"])
     story_signals = sum(haystack.count(keyword) for keyword in ["awalnya", "kemudian", "setelah itu", "akhirnya"])
@@ -2972,6 +2976,7 @@ FYP_POWER_WORDS = [
 
 AUTO_RENDER_MIN_SCORE = 65
 AUTO_SELECT_MIN_SCORE = 70
+REVIEW_FALLBACK_MIN_SCORE = 55
 EDITORIAL_MIN_OVERLAP = 0.12
 
 BANNED_GENERIC_HOOKS = [
@@ -7474,12 +7479,14 @@ def candidate_quality_tier(candidate):
         or source.get("manualReview")
         or reviewer_status in {"missing", "unavailable"}
     )
-    if bool(source.get("rejected")) or reviewer_status == "rejected" or score < 60:
+    if bool(source.get("rejected")) or reviewer_status == "rejected":
         return "reject"
     if "ai_evidence_gate" in source:
         evidence_gate = bool(source.get("ai_evidence_gate"))
     else:
         evidence_gate = bool(source.get("evidence_gate"))
+    if score < REVIEW_FALLBACK_MIN_SCORE:
+        return "reject"
     if manual_review or not evidence_gate:
         return "review"
     if score >= 80:
@@ -7728,31 +7735,55 @@ def apply_title_hook_diversity(moments, payload=None):
     return refined
 
 
-def candidate_passes_manual_review_gate(candidate, min_score=AUTO_RENDER_MIN_SCORE):
-    """Allow visible review candidates without promoting them to auto-render."""
+def candidate_passes_manual_review_gate(candidate, min_score=REVIEW_FALLBACK_MIN_SCORE):
+    """Allow structurally usable alternatives without weakening auto-render.
+
+    Recommendations still need score 65 plus the strict evidence gate. This
+    lower tier is only a visible, manually selectable fallback when that set is
+    too short. Scores remain unchanged and every item still needs a clean
+    boundary, readable transcript, story/retention evidence, and one concrete
+    hook, payoff, value, emotion, or activity signal.
+    """
     source = candidate if isinstance(candidate, dict) else {}
     score = clamp_score(source.get("score"), 0)
     if score < min_score:
         return False
     reviewer_status = clean_text(source.get("reviewer_status") or "").lower()
-    if bool(source.get("rejected")) or reviewer_status == "rejected":
-        return False
-    if not bool(source.get("evidence_gate")):
+    reject_reason = clean_text(source.get("reject_reason") or "").lower()
+    soft_gate_rejection = (
+        reject_reason.startswith("score di bawah")
+        or reject_reason == "quality/evidence gate tidak terpenuhi"
+    )
+    if reviewer_status == "rejected" or (bool(source.get("rejected")) and not soft_gate_rejection):
         return False
     metrics = source.get("metrics") if isinstance(source.get("metrics"), dict) else {}
     if metrics.get("dangling_start") or metrics.get("dangling_end"):
         return False
     text = clean_text(source.get("text") or source.get("transcript") or "")
-    if len(text.split()) < 5:
+    words = [word for word in re.findall(r"[a-z0-9]+", text.lower()) if word]
+    strict_evidence = score >= AUTO_RENDER_MIN_SCORE and bool(source.get("evidence_gate"))
+    if len(words) < (5 if strict_evidence else 8):
         return False
     evidence = highlight_evidence_quality(text)
     repetition = float(evidence.get("repetition_ratio") or 0.0)
-    if repetition > 0.48:
+    filler = float(metrics.get("filler_ratio") or 0.0)
+    unique_ratio = len(set(words)) / max(1, len(words))
+    if repetition > (0.48 if strict_evidence else 0.40) or unique_ratio < 0.52 or filler > 0.24:
         return False
     story = float(metrics.get("story_complete") or metrics.get("story") or 0.0)
     payoff = float(metrics.get("payoff") or evidence.get("payoff_evidence") or 0.0)
     hook = float(metrics.get("hook") or evidence.get("hook_evidence") or 0.0)
-    return story >= 45 and (payoff >= 40 or hook >= 40)
+    if strict_evidence:
+        return story >= 45 and (payoff >= 40 or hook >= 40)
+    retention = float(metrics.get("retention_predictor") or metrics.get("retention") or 0.0)
+    value = float(metrics.get("value") or metrics.get("knowledge") or 0.0)
+    activity = max(
+        float(metrics.get("emotion") or 0.0),
+        float(metrics.get("visual_activity") or 0.0),
+        float(metrics.get("audio_activity") or 0.0),
+    )
+    support_signal = payoff >= 35 or hook >= 42 or value >= 55 or activity >= 58
+    return story >= 45 and retention >= 55 and support_signal
 
 
 def select_review_fallback_moments(candidates, target_count, video_duration=0.0):
@@ -7807,6 +7838,7 @@ def select_review_fallback_moments(candidates, target_count, video_duration=0.0)
             review["rejected"] = False
             review["priority"] = "OPTIONAL"
             review["quality_tier"] = "review"
+            review["review_fallback"] = True
             review["reason"] = clean_text(
                 f"{review.get('reason') or ''}; Kandidat terbaik tersedia untuk review manual, score tidak dinaikkan"
             ).strip("; ")

@@ -14,6 +14,7 @@ def test_content_profile_classifies_supported_creator_formats():
         ("Berita Hari Ini: Konferensi Pers Pemerintah", "", "reporter menjelaskan dampak", "news"),
         ("Podcast Bersama Pendiri Startup", "", "ngobrol panjang", "podcast"),
         ("Vlog Perjalanan ke Yogyakarta", "", "hari pertama perjalanan", "vlog"),
+        ("Pertama Kali ke Menara Eiffel di Paris", "", "kami berangkat lalu keliling kota", "vlog"),
         ("Kisah Saya Memulai Usaha dari Nol", "", "awalnya sulit kemudian berubah akhirnya berhasil", "storytelling"),
         ("Cara Mengatur Kamera untuk Pemula", "", "langkah-langkah tutorial", "tutorial"),
         ("Valorant Gameplay Ranked", "", "gaming match", "gaming"),

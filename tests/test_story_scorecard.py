@@ -358,6 +358,9 @@ def test_quality_tier_requires_evidence_before_promoting_raw_score():
     assert cliper_worker.candidate_quality_tier(candidate) == "review"
 
     candidate["score"] = 55
+    assert cliper_worker.candidate_quality_tier(candidate) == "review"
+
+    candidate["score"] = 54
     assert cliper_worker.candidate_quality_tier(candidate) == "reject"
 
 

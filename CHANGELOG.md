@@ -1,5 +1,19 @@
 # Cliper Studio Plus Changelog
 
+## v1.12.2 - Stable Hotfix
+
+Fixed:
+
+* Target-aware manual review fallback prevents a valid analysis from ending with zero visible moments when Cloud selection is empty and the strict auto-render gate rejects every candidate.
+* Honest raw scores are preserved; review fallback moments are never promoted to auto-render or cosmetically boosted.
+* Travel vlog titles such as first-visit and destination videos now use the vlog content profile instead of conversational podcast defaults.
+
+Validation:
+
+* 254 automated Desktop tests pass, including target fallback, low-evidence rejection, content profile, story scoring, session handling, render validation, and publishing plans.
+* The production-reported 41-minute source now returns 4 reviewable moments for target 4 instead of 0 while retaining the original evidence scores.
+* Target 1 returns 1 and target 6 returns 5 on the same weak-evidence source; target 10 remains quality-limited to 5 rather than padding unsafe candidates.
+
 ## v1.12.1 - Stable
 
 Improved:
