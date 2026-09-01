@@ -1,5 +1,19 @@
 # Cliper Studio Plus Changelog
 
+## v1.12.4 - Stable Production Release
+
+Released:
+
+* Includes the complete v1.12.3 candidate-selection reliability fix with honest scores and exact target fulfillment when enough structurally valid candidates exist.
+* Repairs GitHub Actions release packaging for versioned Setup, Portable, blockmap, updater metadata, and checksum artifact names.
+* Keeps the v1.12.3 source tag immutable; v1.12.4 is the first online release produced by the corrected workflow.
+
+Validation:
+
+* The production-reported 41-minute source returns exactly `1/4/6/10` visible moments for requested targets `1/4/6/10` without paid AI requests or cosmetic score changes.
+* 256 automated Desktop tests, packaged worker parity, checksum validation, and packaged startup pass.
+* Wallet, payment, ledger, reservation, settlement, release, provider routing, API, and Web source are unchanged.
+
 ## v1.12.3 - Stable Reliability Hotfix
 
 Fixed:
