@@ -51,28 +51,36 @@ jobs:
       - name: Build installers without electron-builder publishing
         run: npm run build -- --publish never
 
-      - name: Verify installers and create checksums
+      - name: Verify versioned release artifacts
         shell: pwsh
         run: |
+          $version = $env:RELEASE_TAG.TrimStart("v")
           $required = @(
-            "dist/Cliper-Studio-Plus-Portable.exe",
-            "dist/Cliper-Studio-Plus-Setup.exe"
+            "dist/Cliper-Studio-Plus-Portable-$version.exe",
+            "dist/Cliper-Studio-Plus-Setup-$version.exe",
+            "dist/Cliper-Studio-Plus-Setup-$version.exe.blockmap",
+            "dist/latest.yml",
+            "dist/SHA256SUMS.txt"
           )
           foreach ($file in $required) {
             if (-not (Test-Path $file)) { throw "Missing release artifact: $file" }
           }
-          $lines = $required | ForEach-Object {
-            $hash = (Get-FileHash -Algorithm SHA256 $_).Hash.ToLowerInvariant()
-            "$hash  $([IO.Path]::GetFileName($_))"
+          $checksums = Get-Content "dist/SHA256SUMS.txt" -Raw
+          foreach ($file in $required[0..1]) {
+            $name = [IO.Path]::GetFileName($file)
+            if ($checksums -notmatch [regex]::Escape($name)) {
+              throw "Checksum manifest does not include $name"
+            }
           }
-          Set-Content -Path "dist/SHA256SUMS.txt" -Value $lines -Encoding ascii
 
       - uses: actions/upload-artifact@v4
         with:
           name: Cliper-Studio-Plus-${{ env.RELEASE_TAG }}
           path: |
-            dist/Cliper-Studio-Plus-Portable.exe
-            dist/Cliper-Studio-Plus-Setup.exe
+            dist/Cliper-Studio-Plus-Portable-*.exe
+            dist/Cliper-Studio-Plus-Setup-*.exe
+            dist/Cliper-Studio-Plus-Setup-*.exe.blockmap
+            dist/latest.yml
             dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
@@ -84,6 +92,8 @@ jobs:
           prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
           fail_on_unmatched_files: true
           files: |
-            dist/Cliper-Studio-Plus-Portable.exe
-            dist/Cliper-Studio-Plus-Setup.exe
+            dist/Cliper-Studio-Plus-Portable-*.exe
+            dist/Cliper-Studio-Plus-Setup-*.exe
+            dist/Cliper-Studio-Plus-Setup-*.exe.blockmap
+            dist/latest.yml
             dist/SHA256SUMS.txt
