@@ -2977,6 +2977,7 @@ FYP_POWER_WORDS = [
 AUTO_RENDER_MIN_SCORE = 65
 AUTO_SELECT_MIN_SCORE = 70
 REVIEW_FALLBACK_MIN_SCORE = 55
+TARGET_FILL_MIN_SCORE = 40
 EDITORIAL_MIN_OVERLAP = 0.12
 
 BANNED_GENERIC_HOOKS = [
@@ -3889,12 +3890,14 @@ def highlight_batch_prompt(candidate_payload, target_count, min_duration, max_du
         "Prioritas: hook kuat pada pembuka, konflik/emosi/komedi/value, setup jelas, payoff selesai, dan retention.\n"
         "heatmap_score adalah bukti Most Replayed tambahan saja. Jangan pilih kandidat yang ramai tetapi konteks/payoff-nya lemah.\n"
         "Jangan pilih scene menggantung, filler tinggi, topik kabur, atau kandidat yang hanya ramai tanpa makna.\n"
-        f"Batch {batch_index}/{batch_count}. Pilih maksimal {target_count} kandidat terbaik dari batch ini.\n"
+        f"Batch {batch_index}/{batch_count}. Urutkan tepat {min(int(target_count or 1), len(candidate_payload))} kandidat terbaik dari batch ini.\n"
+        "Jika tidak ada yang layak auto-render, tetap kembalikan kandidat terbaik sebagai tier review dengan score jujur. "
+        "Jangan mengembalikan [] selama Kandidat berisi transcript yang dapat dibaca.\n"
         f"Durasi: punchline 25-65 detik, tutorial 45-110 detik, storytelling maksimal {int(min(max_duration, 145))} detik; minimum {int(min_duration)} detik.\n"
         f"Mode: {score_mode or 'Random Viral Mix'}. Score 78-100 hanya bila benar-benar layak auto-render; 65-77 optional.\n"
         "Title Bahasa Indonesia 4-9 kata dan hook 6-10 kata harus spesifik pada transcript. Jangan mengarang nama, angka, konflik, atau fakta.\n"
         "Balas HANYA JSON array valid tanpa markdown. Format:\n"
-        "[{\"source_id\":1,\"score\":88,\"title\":\"...\",\"hook\":\"...\",\"reason\":\"maksimal 12 kata\",\"start_anchor\":\"4-12 kata persis dari transcript awal\",\"end_anchor\":\"4-12 kata persis dari payoff transcript\",\"layout\":\"single|split\"}]\n"
+        "[{\"source_id\":1,\"score\":88,\"tier\":\"auto|review\",\"title\":\"...\",\"hook\":\"...\",\"reason\":\"maksimal 12 kata\",\"start_anchor\":\"4-12 kata persis dari transcript awal\",\"end_anchor\":\"4-12 kata persis dari payoff transcript\",\"layout\":\"single|split\"}]\n"
         f"Kandidat:\n{json_dumps(candidate_payload)}"
     )
 
@@ -4182,7 +4185,8 @@ def ai_select_moments(candidates, payload, target_count, transcript, min_duratio
                 failed_batches.append(f"batch {batch_index}: {short_error_text(batch_exc, 180)}")
                 emit("log", stage="ai moments", message=f"AI batch {batch_index}/{len(batches)} gagal, batch lain tetap dilanjutkan: {short_error_text(batch_exc, 180)}")
         if not parsed:
-            raise RuntimeError("Semua AI highlight batch gagal. " + "; ".join(failed_batches[:3]))
+            detail = "; ".join(failed_batches[:3]) if failed_batches else "provider mengembalikan pilihan kosong"
+            raise RuntimeError(f"CLOUD_EMPTY_SELECTION: {detail}")
         by_id = {int(item.get("id")): item for item in shortlist if item.get("id") is not None}
         validated_candidates = []
         seen_source_ids = set()
@@ -7485,7 +7489,8 @@ def candidate_quality_tier(candidate):
         evidence_gate = bool(source.get("ai_evidence_gate"))
     else:
         evidence_gate = bool(source.get("evidence_gate"))
-    if score < REVIEW_FALLBACK_MIN_SCORE:
+    minimum_visible_score = TARGET_FILL_MIN_SCORE if source.get("target_fill_fallback") else REVIEW_FALLBACK_MIN_SCORE
+    if score < minimum_visible_score:
         return "reject"
     if manual_review or not evidence_gate:
         return "review"
@@ -7786,6 +7791,57 @@ def candidate_passes_manual_review_gate(candidate, min_score=REVIEW_FALLBACK_MIN
     return story >= 45 and retention >= 55 and support_signal
 
 
+def candidate_passes_target_fill_gate(candidate, min_score=TARGET_FILL_MIN_SCORE):
+    """Accept the best structurally sound remainder when a requested target is short.
+
+    This is deliberately weaker than the recommendation and review gates, but
+    it is not arbitrary padding: a candidate still needs a readable, diverse
+    transcript, clean boundaries, basic story/retention evidence, and a useful
+    supporting signal. Its score is never changed and it remains manual-only.
+    """
+    source = candidate if isinstance(candidate, dict) else {}
+    score = clamp_score(source.get("score"), 0)
+    if score < min_score:
+        return False
+    reviewer_status = clean_text(source.get("reviewer_status") or "").lower()
+    reject_reason = clean_text(source.get("reject_reason") or "").lower()
+    soft_gate_rejection = (
+        reject_reason.startswith("score di bawah")
+        or reject_reason == "quality/evidence gate tidak terpenuhi"
+    )
+    if reviewer_status == "rejected" or (bool(source.get("rejected")) and not soft_gate_rejection):
+        return False
+    metrics = source.get("metrics") if isinstance(source.get("metrics"), dict) else {}
+    if metrics.get("dangling_start") or metrics.get("dangling_end"):
+        return False
+    start = float(source.get("start") or 0.0)
+    end = float(source.get("end") or 0.0)
+    if end <= start:
+        return False
+    text = clean_text(source.get("text") or source.get("transcript") or "")
+    words = [word for word in re.findall(r"[a-z0-9]+", text.lower()) if word]
+    if len(words) < 8:
+        return False
+    evidence = highlight_evidence_quality(text)
+    repetition = float(evidence.get("repetition_ratio") or 0.0)
+    filler = float(metrics.get("filler_ratio") or 0.0)
+    unique_ratio = len(set(words)) / max(1, len(words))
+    if repetition > 0.50 or unique_ratio < 0.45 or filler > 0.33:
+        return False
+    story = float(metrics.get("story_complete") or metrics.get("story") or 0.0)
+    retention = float(metrics.get("retention_predictor") or metrics.get("retention") or 0.0)
+    payoff = float(metrics.get("payoff") or evidence.get("payoff_evidence") or 0.0)
+    hook = float(metrics.get("hook") or evidence.get("hook_evidence") or 0.0)
+    value = float(metrics.get("value") or metrics.get("knowledge") or 0.0)
+    activity = max(
+        float(metrics.get("emotion") or 0.0),
+        float(metrics.get("visual_activity") or 0.0),
+        float(metrics.get("audio_activity") or 0.0),
+    )
+    support_signal = score >= 50 or payoff >= 20 or hook >= 28 or value >= 35 or activity >= 40
+    return story >= 30 and retention >= 40 and support_signal
+
+
 def select_review_fallback_moments(candidates, target_count, video_duration=0.0):
     """Return honest low-confidence candidates instead of an empty Moment page.
 
@@ -7849,6 +7905,49 @@ def select_review_fallback_moments(candidates, target_count, video_duration=0.0)
     return sorted(selected, key=lambda item: float(item.get("start") or 0.0))
 
 
+def select_target_fill_moments(candidates, target_count, video_duration=0.0):
+    """Select distinct manual-only candidates until the requested count is met."""
+    ranked = sorted(
+        [candidate for candidate in (candidates or []) if candidate_passes_target_fill_gate(candidate)],
+        key=lambda item: float(item.get("score") or 0.0),
+        reverse=True,
+    )
+    if not ranked:
+        return []
+    target_count = max(1, min(int(target_count or 1), len(ranked)))
+    bucket_size = max(90.0, float(video_duration or 0.0) / max(target_count, 1))
+    selected = []
+    used_buckets = set()
+    for enforce_bucket in [True, False]:
+        for candidate in ranked:
+            if len(selected) >= target_count:
+                break
+            if candidate in selected or overlaps_any(candidate, selected, tolerance=0.25):
+                continue
+            if any(text_similarity(candidate.get("text"), previous.get("text")) > 0.68 for previous in selected):
+                continue
+            bucket = int(float(candidate.get("start") or 0.0) / bucket_size)
+            if enforce_bucket and bucket in used_buckets:
+                continue
+            review = dict(candidate)
+            review["manual_review_candidate"] = True
+            review["auto_render"] = False
+            review["render_eligible"] = True
+            review["rejected"] = False
+            review["priority"] = "OPTIONAL"
+            review["quality_tier"] = "review"
+            review["review_fallback"] = True
+            review["target_fill_fallback"] = True
+            review["reason"] = clean_text(
+                f"{review.get('reason') or ''}; Kandidat terbaik untuk memenuhi target, confidence rendah dan score tidak dinaikkan"
+            ).strip("; ")
+            selected.append(review)
+            used_buckets.add(bucket)
+        if len(selected) >= target_count:
+            break
+    return sorted(selected, key=lambda item: float(item.get("start") or 0.0))
+
+
 def supplement_with_optional_review_candidates(selected, candidates, result_limit, video_duration=0.0):
     """Fill a shortfall with distinct manual-review candidates only.
 
@@ -7876,6 +7975,27 @@ def supplement_with_optional_review_candidates(selected, candidates, result_limi
         ):
             continue
         supplemented.append(candidate)
+    if len(supplemented) < result_limit:
+        remaining = [
+            candidate
+            for candidate in (candidates or [])
+            if not overlaps_any(candidate, supplemented, tolerance=0.25)
+            and not any(
+                text_similarity(candidate.get("text"), previous.get("text")) > 0.68
+                for previous in supplemented
+            )
+        ]
+        target_fill = select_target_fill_moments(
+            remaining,
+            result_limit - len(supplemented),
+            video_duration,
+        )
+        for candidate in target_fill:
+            if len(supplemented) >= result_limit:
+                break
+            if overlaps_any(candidate, supplemented, tolerance=0.25):
+                continue
+            supplemented.append(candidate)
     return sorted(supplemented[:result_limit], key=lambda item: float(item.get("start") or 0.0))
 
 

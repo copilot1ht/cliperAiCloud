@@ -305,6 +305,85 @@ def test_manual_review_fallback_rejects_repetitive_low_evidence_padding():
     }
 
     assert cliper_worker.select_review_fallback_moments([candidate], 1, 300) == []
+    assert cliper_worker.supplement_with_optional_review_candidates([], [candidate], 1, 300) == []
+
+
+def test_target_fill_returns_exact_requested_count_without_changing_scores():
+    topics = [
+        "Perjalanan kereta terlambat membuat rombongan mengubah rute dan akhirnya tiba melalui jalur berbeda.",
+        "Penjual pasar menjelaskan pilihan bahan segar lalu menunjukkan hasil masakan kepada pengunjung.",
+        "Pemandu museum menceritakan asal lukisan terkenal dan menutup penjelasan dengan fakta penemuan baru.",
+        "Keluarga mencari hotel dekat stasiun kemudian menemukan kamar setelah membandingkan beberapa lokasi.",
+        "Fotografer mencoba sudut cahaya sore dan memperlihatkan hasil gambar setelah mengganti posisi kamera.",
+        "Pengunjung mencicipi makanan lokal, menjelaskan rasanya, lalu memilih menu yang paling disukai.",
+        "Sopir menjelaskan jalan yang ditutup sehingga perjalanan dialihkan dan rombongan mencapai tujuan lain.",
+        "Pemilik toko menunjukkan barang buatan tangan serta alasan desain yang akhirnya dipilih pelanggan.",
+        "Wisatawan kehilangan tiket sementara, memeriksa kembali tas, dan menemukan tiket sebelum keberangkatan.",
+        "Musisi jalanan memulai pertunjukan pelan lalu penonton berkumpul ketika bagian lagu utama dimainkan.",
+        "Koki memperbaiki adonan yang terlalu cair dan menunjukkan tekstur akhir setelah menambah bahan.",
+    ]
+    selected = [{
+        "id": 1,
+        "start": 0.0,
+        "end": 70.0,
+        "text": "Pembuka utama menjelaskan tujuan perjalanan dan hasil pertama yang sudah selesai.",
+        "score": 72,
+        "evidence_gate": True,
+        "auto_render": True,
+    }]
+    candidates = list(selected)
+    original_scores = {1: 72}
+    for index, text in enumerate(topics, 2):
+        score = 54 - index
+        original_scores[index] = score
+        candidates.append({
+            "id": index,
+            "start": float(index * 130),
+            "end": float(index * 130 + 75),
+            "text": text,
+            "score": score,
+            "rejected": True,
+            "reject_reason": "Score di bawah 65",
+            "metrics": {
+                "story_complete": 38,
+                "retention_predictor": 48,
+                "payoff": 25,
+                "hook": 33,
+                "filler_ratio": 0.08,
+            },
+        })
+
+    supplemented = cliper_worker.supplement_with_optional_review_candidates(
+        selected,
+        candidates,
+        result_limit=10,
+        video_duration=1800,
+    )
+
+    assert len(supplemented) == 10
+    assert all(item["score"] == original_scores[item["id"]] for item in supplemented)
+    target_fill = [item for item in supplemented if item.get("target_fill_fallback")]
+    assert len(target_fill) == 9
+    assert all(item["manual_review_candidate"] for item in target_fill)
+    assert all(item["auto_render"] is False for item in target_fill)
+    assert all(item["render_eligible"] is True for item in target_fill)
+    assert all(cliper_worker.candidate_quality_tier(item) == "review" for item in target_fill)
+
+
+def test_highlight_prompt_requires_ranked_review_output_instead_of_empty_array():
+    prompt = cliper_worker.highlight_batch_prompt(
+        [{"id": 1, "text": "Kandidat pertama"}, {"id": 2, "text": "Kandidat kedua"}],
+        2,
+        25,
+        120,
+        "Random Viral Mix",
+        1,
+        1,
+    )
+
+    assert "Urutkan tepat 2 kandidat" in prompt
+    assert "Jangan mengembalikan []" in prompt
+    assert '"tier":"auto|review"' in prompt
 
 
 def test_candidate_calibration_requires_real_evidence_gate():

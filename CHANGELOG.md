@@ -1,5 +1,25 @@
 # Cliper Studio Plus Changelog
 
+## v1.12.3 - Stable Reliability Hotfix
+
+Fixed:
+
+* Requested clip count is now fulfilled exactly when the discovered pool contains enough structurally valid, non-overlapping story candidates.
+* When strict auto-ready evidence is unavailable, additional candidates remain honest-score manual-review moments instead of disappearing from Moment AI or being promoted to auto-render.
+* Cloud Highlight Finder batches now request a ranked review result for the requested count instead of allowing an empty array when reviewable candidates exist.
+
+Safety:
+
+* Target-fill rejects invalid boundaries, empty or highly repetitive transcript windows, excessive overlap, and candidates without minimum story or retention support.
+* Raw evidence scores are unchanged. Target-fill candidates are labeled `review`, require user selection, and are never selected for automatic rendering.
+* Wallet, payment, ledger, reservation, settlement, release, and provider accounting code are unchanged.
+
+Validation:
+
+* Regression coverage verifies exact target fulfillment without score mutation and rejects repetitive padding.
+* The production-reported 41-minute cached source returns exactly `1/4/6/10` visible moments for requested targets `1/4/6/10` using local analysis with no paid AI request.
+* Setup, Portable, updater metadata, checksums, packaged worker parity, and packaged startup are validated before publication.
+
 ## v1.12.2 - Stable Hotfix
 
 Fixed:
