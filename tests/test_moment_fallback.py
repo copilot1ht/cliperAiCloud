@@ -214,7 +214,7 @@ def test_optional_supplement_fills_partial_results_without_score_or_auto_render_
     assert all(item["render_eligible"] is True for item in supplemented[1:])
 
 
-def test_manual_review_supplement_keeps_target_close_without_fake_scores():
+def test_manual_review_supplement_does_not_pad_below_quality_floor():
     selected = [
         {
             "id": 1,
@@ -277,8 +277,8 @@ def test_manual_review_supplement_keeps_target_close_without_fake_scores():
         video_duration=600,
     )
 
-    assert len(supplemented) == 4
-    assert [item["score"] for item in supplemented] == [78, 67, 59, 56]
+    assert len(supplemented) == 2
+    assert [item["score"] for item in supplemented] == [78, 67]
     assert supplemented[0].get("manual_review_candidate") is not True
     assert all(item["manual_review_candidate"] for item in supplemented[1:])
     assert all(item["auto_render"] is False for item in supplemented[1:])
@@ -308,7 +308,7 @@ def test_manual_review_fallback_rejects_repetitive_low_evidence_padding():
     assert cliper_worker.supplement_with_optional_review_candidates([], [candidate], 1, 300) == []
 
 
-def test_target_fill_returns_exact_requested_count_without_changing_scores():
+def test_requested_count_does_not_pad_results_with_low_quality_candidates():
     topics = [
         "Perjalanan kereta terlambat membuat rombongan mengubah rute dan akhirnya tiba melalui jalur berbeda.",
         "Penjual pasar menjelaskan pilihan bahan segar lalu menunjukkan hasil masakan kepada pengunjung.",
@@ -360,14 +360,68 @@ def test_target_fill_returns_exact_requested_count_without_changing_scores():
         video_duration=1800,
     )
 
-    assert len(supplemented) == 10
-    assert all(item["score"] == original_scores[item["id"]] for item in supplemented)
-    target_fill = [item for item in supplemented if item.get("target_fill_fallback")]
-    assert len(target_fill) == 9
-    assert all(item["manual_review_candidate"] for item in target_fill)
-    assert all(item["auto_render"] is False for item in target_fill)
-    assert all(item["render_eligible"] is True for item in target_fill)
-    assert all(cliper_worker.candidate_quality_tier(item) == "review" for item in target_fill)
+    assert len(supplemented) == 1
+    assert supplemented[0]["score"] == original_scores[1]
+    assert not any(item.get("target_fill_fallback") for item in supplemented)
+
+
+def test_find_moments_preserves_ai_candidates_after_title_revision(monkeypatch):
+    transcript = [
+        {
+            "start": 0.0,
+            "end": 80.0,
+            "text": "Kenapa strategi awal gagal, lalu solusi baru diuji dan akhirnya terbukti berhasil.",
+        }
+    ]
+    ai_candidate = {
+        "id": 1,
+        "start": 0.0,
+        "end": 70.0,
+        "duration": 70.0,
+        "time": "00:00 - 01:10",
+        "text": transcript[0]["text"],
+        "transcript": transcript[0]["text"],
+        "title": "Strategi Gagal yang Akhirnya Berhasil",
+        "titleSuggestion": "Strategi Gagal yang Akhirnya Berhasil",
+        "score": 78,
+        "evidence_gate": True,
+        "ai_evidence_gate": True,
+        "reviewer_status": "approved",
+        "auto_render": True,
+        "render_eligible": True,
+        "metrics": {"story_complete": 80, "payoff": 72, "hook": 75},
+    }
+    title_calls = []
+    supplement_sources = []
+
+    monkeypatch.setattr(cliper_worker, "load_or_fetch_heatmap", None)
+    monkeypatch.setattr(cliper_worker, "build_semantic_segments", lambda *_args: [])
+    monkeypatch.setattr(cliper_worker, "build_editorial_candidate_windows", lambda *_args: [])
+    monkeypatch.setattr(cliper_worker, "build_audio_activity_timeline", lambda *_args: [])
+    monkeypatch.setattr(cliper_worker, "ai_select_moments", lambda *_args: [dict(ai_candidate)])
+    monkeypatch.setattr(cliper_worker, "select_diverse_moments", lambda *_args: [])
+    monkeypatch.setattr(cliper_worker, "apply_title_hook_diversity", lambda moments, *_args: list(moments))
+
+    def revise(moments, _payload):
+        title_calls.append([item["id"] for item in moments])
+        return list(moments)
+
+    def supplement(selected, candidates, result_limit, _video_duration):
+        supplement_sources.extend(candidates)
+        return list(selected)[:result_limit]
+
+    monkeypatch.setattr(cliper_worker, "revise_moments_with_ai", revise)
+    monkeypatch.setattr(cliper_worker, "supplement_with_optional_review_candidates", supplement)
+
+    result = cliper_worker.find_moments(
+        {"duration": 600.0},
+        transcript,
+        {"requestedClipCount": 2, "clipCount": 2, "minDuration": 25, "maxDuration": 120},
+    )
+
+    assert [item["id"] for item in result] == [1]
+    assert title_calls == [[1]]
+    assert any(item.get("title") == ai_candidate["title"] for item in supplement_sources)
 
 
 def test_highlight_prompt_requires_ranked_review_output_instead_of_empty_array():

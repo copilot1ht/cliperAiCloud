@@ -1002,7 +1002,7 @@ function renderMoments() {
     if (extraCount > 0) subParts.push(`${extraCount} cerita tambahan yang layak`);
     countSummary += ` (${subParts.join(' \u00b7 ')})`;
   } else if (visibleMoments.length > 0) {
-    countSummary = `${visibleMoments.length} clip layak ditemukan dari target ${targetOriginal} (${totalFound} kandidat dianalisis)`;
+    countSummary = `${visibleMoments.length} momen terbaik ditemukan · Anda meminta ${targetOriginal} clip; kandidat lemah tidak ditambahkan`;
   } else {
     countSummary = `${autoCount} otomatis · ${reviewCount} rekomendasi · ${visibleMoments.length} tampil`;
   }
@@ -1026,7 +1026,7 @@ function renderMoments() {
     grid.innerHTML = `
       <div class="empty-state wide">
         <strong>${analysisFinished ? "Belum ada moment yang lolos validasi." : "Masukkan link YouTube untuk menganalisa moment terbaik."}</strong>
-        <span>${analysisFinished ? "Kandidat tidak disembunyikan lagi. Jalankan analisa ulang untuk memuat kandidat Optional dengan score asli." : "Moment AI muncul setelah metadata, transcript, story, dan scoring selesai dianalisis."}</span>
+        <span>${analysisFinished ? "Cliper tidak menambahkan kandidat lemah hanya untuk memenuhi target. Coba area video lain bila diperlukan." : "Moment AI muncul setelah metadata, transcript, story, dan scoring selesai dianalisis."}</span>
       </div>
     `;
     updateCounters();

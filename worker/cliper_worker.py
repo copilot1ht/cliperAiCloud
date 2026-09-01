@@ -7949,11 +7949,11 @@ def select_target_fill_moments(candidates, target_count, video_duration=0.0):
 
 
 def supplement_with_optional_review_candidates(selected, candidates, result_limit, video_duration=0.0):
-    """Fill a shortfall with distinct manual-review candidates only.
+    """Add distinct, evidence-backed manual-review candidates up to the target.
 
     This never changes a score or turns an Optional candidate into an
-    automatic render. It merely keeps valid, evidence-derived alternatives
-    visible when the strict automatic set is shorter than the requested goal.
+    automatic render. The requested count remains a target: weak candidates
+    are not added merely to fill the remaining quota.
     """
     supplemented = list(selected or [])
     result_limit = max(0, int(result_limit or 0))
@@ -7967,6 +7967,13 @@ def supplement_with_optional_review_candidates(selected, candidates, result_limi
     for candidate in review_candidates:
         if len(supplemented) >= result_limit:
             break
+        evidence_gate = bool(
+            candidate.get("ai_evidence_gate")
+            if "ai_evidence_gate" in candidate
+            else candidate.get("evidence_gate")
+        )
+        if clamp_score(candidate.get("score"), 0) < AUTO_RENDER_MIN_SCORE or not evidence_gate:
+            continue
         if overlaps_any(candidate, supplemented):
             continue
         if any(
@@ -7975,27 +7982,6 @@ def supplement_with_optional_review_candidates(selected, candidates, result_limi
         ):
             continue
         supplemented.append(candidate)
-    if len(supplemented) < result_limit:
-        remaining = [
-            candidate
-            for candidate in (candidates or [])
-            if not overlaps_any(candidate, supplemented, tolerance=0.25)
-            and not any(
-                text_similarity(candidate.get("text"), previous.get("text")) > 0.68
-                for previous in supplemented
-            )
-        ]
-        target_fill = select_target_fill_moments(
-            remaining,
-            result_limit - len(supplemented),
-            video_duration,
-        )
-        for candidate in target_fill:
-            if len(supplemented) >= result_limit:
-                break
-            if overlaps_any(candidate, supplemented, tolerance=0.25):
-                continue
-            supplemented.append(candidate)
     return sorted(supplemented[:result_limit], key=lambda item: float(item.get("start") or 0.0))
 
 
@@ -8646,7 +8632,7 @@ def find_moments(info, transcript, payload):
             if len(final_ai) < target_count:
                 final_ai = supplement_with_optional_review_candidates(
                     final_ai,
-                    list(moments) + list(validated_candidates),
+                    list(moments) + list(ai_selections),
                     target_count,
                     effective_analysis_duration,
                 )

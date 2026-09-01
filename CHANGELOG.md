@@ -1,5 +1,19 @@
 # Cliper Studio Plus Changelog
 
+## v1.12.5 - Critical Highlight Reliability Hotfix
+
+Fixed:
+
+* Fixes the production `validated_candidates is not defined` crash after Final Reviewer and Title Generator by preserving the validated `ai_selections` returned to the main Moment pipeline.
+* Requested clip count remains available from 1 through 10 and guides broad discovery without acting as a duration-based hard limit.
+* Candidate supplementation no longer pads a requested target with score-below-65 or evidence-gate failures. If fewer complete stories qualify, the UI reports the actual result and explains that weak candidates were not added.
+
+Validation:
+
+* 257 automated Desktop tests pass, including the exact reviewer/title shortfall branch that previously crashed.
+* The reported cached production source passes requested targets `1/2/4/6/8/10`; each run returns the same strongest evidence-backed story (score 73, 107.86 seconds) without fake score or low-quality padding.
+* Source download/cache, cookies fallback, wallet, payment, ledger, reservation, settlement, release, provider routing, API, and Web source are unchanged.
+
 ## v1.12.4 - Stable Production Release
 
 Released:
