@@ -7,7 +7,1310 @@ SPLIT_SCREEN = "SPLIT_SCREEN"
 CENTER_CROP = "CENTER_CROP"
 DIRECTOR_CUT = "DIRECTOR_CUT"
 EDITOR_DIRECTOR = "EDITOR_DIRECTOR_V2"
+LANDSCAPE_BLUR = "LANDSCAPE_BLUR"
 EDITOR_PLAN_SCHEMA = 2
+
+# Editing Profiles
+AUTO_EDIT = "AUTO_EDIT"
+PODCAST_DYNAMIC = "PODCAST_DYNAMIC"
+GAMING_SPLIT = "GAMING_SPLIT"
+SUMMARY_COMPOSED = "SUMMARY_COMPOSED"
+
+CONTENT_MODE_TO_EDITING_PROFILE = {
+    "auto": AUTO_EDIT,
+    "podcast": PODCAST_DYNAMIC,
+    "gaming": GAMING_SPLIT,
+    "summary": SUMMARY_COMPOSED,
+    "landscape_blur": LANDSCAPE_BLUR,
+}
+
+
+def resolve_editing_profile(content_mode="auto"):
+    normalized = str(content_mode or "auto").strip().lower()
+    return CONTENT_MODE_TO_EDITING_PROFILE.get(normalized, AUTO_EDIT)
+
+
+# Layout Constants (Section A)
+LAYOUT_PORTRAIT_SINGLE = "PORTRAIT_SINGLE"
+LAYOUT_GAMING_SPLIT = "GAMING_SPLIT"
+LAYOUT_LANDSCAPE_BLUR = "LANDSCAPE_BLUR"
+LAYOUT_SUMMARY_COMPOSED = "SUMMARY_COMPOSED"
+
+# Keyframe Event Types (Section C and Legacy UI Contract)
+KEYFRAME_STATIC = "KEYFRAME_STATIC"
+KEYFRAME_PUNCH_IN = "KEYFRAME_PUNCH_IN"
+KEYFRAME_PUNCH_OUT = "KEYFRAME_PUNCH_OUT"
+KEYFRAME_REFRAME = "KEYFRAME_REFRAME"
+KEYFRAME_PAN = "KEYFRAME_PAN"
+KEYFRAME_SPEAKER_FOCUS = "KEYFRAME_SPEAKER_FOCUS"
+KEYFRAME_REACTION_FOCUS = "KEYFRAME_REACTION_FOCUS"
+KEYFRAME_PRODUCT_FOCUS = "KEYFRAME_PRODUCT_FOCUS"
+KEYFRAME_SCREEN_FOCUS = "KEYFRAME_SCREEN_FOCUS"
+KEYFRAME_GAMEPLAY_FOCUS = "KEYFRAME_GAMEPLAY_FOCUS"
+KEYFRAME_FACECAM_FOCUS = "KEYFRAME_FACECAM_FOCUS"
+KEYFRAME_WIDE_RETURN = "KEYFRAME_WIDE_RETURN"
+
+# Section C Unprefixed Constants
+STATIC = "STATIC"
+PUNCH_IN = "PUNCH_IN"
+PUNCH_OUT = "PUNCH_OUT"
+REFRAME = "REFRAME"
+PAN = "PAN"
+SPEAKER_FOCUS = "SPEAKER_FOCUS"
+REACTION_FOCUS = "REACTION_FOCUS"
+PRODUCT_FOCUS = "PRODUCT_FOCUS"
+SCREEN_FOCUS = "SCREEN_FOCUS"
+GAMEPLAY_FOCUS = "GAMEPLAY_FOCUS"
+FACECAM_FOCUS = "FACECAM_FOCUS"
+WIDE_RETURN = "WIDE_RETURN"
+
+VALID_KEYFRAME_TYPES = {
+    "STATIC", "PUNCH_IN", "PUNCH_OUT", "REFRAME", "PAN",
+    "SPEAKER_FOCUS", "REACTION_FOCUS", "PRODUCT_FOCUS", "SCREEN_FOCUS",
+    "GAMEPLAY_FOCUS", "FACECAM_FOCUS", "WIDE_RETURN",
+    # Legacy prefixed aliases:
+    "KEYFRAME_STATIC", "KEYFRAME_PUNCH_IN", "KEYFRAME_PUNCH_OUT",
+    "KEYFRAME_PAN", "KEYFRAME_REFRAME", "KEYFRAME_REACTION_FOCUS",
+    "KEYFRAME_PRODUCT_FOCUS", "KEYFRAME_SCREEN_FOCUS",
+    "KEYFRAME_GAMEPLAY_FOCUS", "KEYFRAME_FACECAM_FOCUS", "KEYFRAME_WIDE_RETURN",
+}
+
+
+def normalize_keyframe_type(raw_type):
+    t = str(raw_type or "STATIC").strip().upper()
+    if t.startswith("KEYFRAME_"):
+        t = t[9:]
+    return t if t in {
+        "STATIC", "PUNCH_IN", "PUNCH_OUT", "REFRAME", "PAN",
+        "SPEAKER_FOCUS", "REACTION_FOCUS", "PRODUCT_FOCUS", "SCREEN_FOCUS",
+        "GAMEPLAY_FOCUS", "FACECAM_FOCUS", "WIDE_RETURN"
+    } else "STATIC"
+
+
+# Internal Semantic Events (Section B)
+EVENT_SPEAKER_START = "SPEAKER_START"
+EVENT_SPEAKER_HANDOFF = "SPEAKER_HANDOFF"
+EVENT_QUESTION = "QUESTION"
+EVENT_ANSWER = "ANSWER"
+EVENT_IMPORTANT_POINT = "IMPORTANT_POINT"
+EVENT_EMPHASIS = "EMPHASIS"
+EVENT_REACTION = "REACTION"
+EVENT_LAUGH = "LAUGH"
+EVENT_PAYOFF = "PAYOFF"
+EVENT_TOPIC_CHANGE = "TOPIC_CHANGE"
+EVENT_SPEAKER_CHANGE = "SPEAKER_CHANGE"
+
+EVENT_PRODUCT_MENTION = "PRODUCT_MENTION"
+EVENT_PRODUCT_SHOW = "PRODUCT_SHOW"
+EVENT_PRODUCT_DEMO = "PRODUCT_DEMO"
+EVENT_PRODUCT_DETAIL = "PRODUCT_DETAIL"
+EVENT_PRODUCT_PROBLEM = "PRODUCT_PROBLEM"
+EVENT_VERDICT = "VERDICT"
+
+EVENT_GAME_BUILDUP = "GAME_BUILDUP"
+EVENT_GAME_ACTION = "GAME_ACTION"
+EVENT_GAME_CLIMAX = "GAME_CLIMAX"
+EVENT_GAMEPLAY_CLIMAX = EVENT_GAME_CLIMAX
+EVENT_GAME_RESULT = "GAME_RESULT"
+EVENT_STREAMER_REACTION = "STREAMER_REACTION"
+
+EVENT_VISUAL_REFERENCE = "VISUAL_REFERENCE"
+EVENT_SCREEN_REFERENCE = "SCREEN_REFERENCE"
+EVENT_BROLL_OPPORTUNITY = "BROLL_OPPORTUNITY"
+EVENT_PAUSE = "PAUSE"
+EVENT_TOPIC_SHIFT = "TOPIC_SHIFT"
+
+# Event Priority for Motion Budget (Section E)
+# HIGH: 100, MEDIUM: 60, LOW: 20
+EVENT_PRIORITY = {
+    EVENT_SPEAKER_HANDOFF: 100,
+    EVENT_SPEAKER_CHANGE: 100,
+    EVENT_GAME_CLIMAX: 100,
+    EVENT_PRODUCT_DEMO: 100,
+    EVENT_STREAMER_REACTION: 100,
+    EVENT_REACTION: 90,
+    EVENT_LAUGH: 85,
+    EVENT_IMPORTANT_POINT: 65,
+    EVENT_ANSWER: 60,
+    EVENT_PAYOFF: 60,
+    EVENT_PRODUCT_SHOW: 55,
+    EVENT_GAME_ACTION: 55,
+    EVENT_QUESTION: 50,
+    EVENT_EMPHASIS: 25,
+    EVENT_PAUSE: 20,
+}
+
+# Overlay Event Types
+OVERLAY_SOURCE_REGION = "SOURCE_REGION_OVERLAY"
+OVERLAY_LOCAL_BROLL = "LOCAL_BROLL"
+OVERLAY_SCREEN_FOCUS = "SCREEN_FOCUS"
+OVERLAY_PRODUCT_CROP = "PRODUCT_CROP"
+OVERLAY_GAMEPLAY_CROP = "GAMEPLAY_CROP"
+
+
+class SpeakerAttentionMap:
+    """Speaker Attention Map combining diarization, speaking activity, and reaction confidence."""
+
+    def __init__(self, regions=None):
+        self.regions = regions or []
+
+    @classmethod
+    def build(cls, speaker_timeline=None, face_analysis=None, transcript=None, clip_start=0.0, clip_end=0.0):
+        turns = (speaker_timeline or {}).get("turns") or []
+        subjects = (face_analysis or {}).get("subject_tracks") or []
+        subject_map = {str(s.get("speaker")): s for s in subjects if isinstance(s, dict) and s.get("speaker")}
+
+        regions = []
+        clip_start_f = float(clip_start or 0.0)
+        clip_end_f = float(clip_end or 0.0)
+
+        for turn in turns:
+            if not isinstance(turn, dict):
+                continue
+            ts = float(turn.get("start", 0.0))
+            te = float(turn.get("end", ts + 1.0))
+            if clip_end_f > clip_start_f:
+                if te <= clip_start_f or ts >= clip_end_f:
+                    continue
+                ts = max(clip_start_f, ts)
+                te = min(clip_end_f, te)
+
+            spk = str(turn.get("speaker") or "speaker_1")
+            sub = subject_map.get(spk, {})
+            text = str(turn.get("text") or "")
+            lower = text.lower()
+
+            sem_imp = 0.5
+            if any(k in lower for k in ["kuncinya", "rahasianya", "penting", "faktanya", "kesimpulannya", "akhirnya"]):
+                sem_imp = 0.95
+            elif "?" in text or any(k in lower for k in ["kenapa", "bagaimana", "mengapa"]):
+                sem_imp = 0.8
+            elif any(k in lower for k in ["jawabannya", "solusinya", "caranya"]):
+                sem_imp = 0.85
+
+            react_prob = 0.85 if any(k in lower for k in ["kaget", "wah", "gila", "lucu", "parah", "hah", "shock"]) else 0.15
+
+            regions.append({
+                "start": round(ts - clip_start_f, 3),
+                "end": round(te - clip_start_f, 3),
+                "speakerId": spk,
+                "faceBox": sub.get("box") or [round(float(sub.get("focus_x", 0.5)) - 0.15, 3), 0.2, 0.3, 0.4],
+                "speakingProbability": float(turn.get("speaking_prob", 0.94)),
+                "semanticImportance": sem_imp,
+                "reactionProbability": react_prob,
+                "confidence": float(sub.get("confidence", 0.90)),
+            })
+        return cls(regions)
+
+
+def create_keyframe_event(time, event_type, scale=1.0, duration=0.45, reason="", metadata=None):
+    """Event-driven keyframe for intelligent, subtle motion without timer-based random zoom."""
+    raw_type = str(event_type or "STATIC").strip().upper()
+    return {
+        "time": round(float(time or 0.0), 3),
+        "type": raw_type,
+        "scale": round(float(scale or 1.0), 3),
+        "duration": round(float(duration or 0.45), 3),
+        "reason": str(reason or ""),
+        "metadata": metadata or {},
+    }
+
+
+def create_keyframe(
+    start_time=0.0,
+    end_time=0.5,
+    event_type=KEYFRAME_STATIC,
+    start_scale=1.0,
+    end_scale=1.0,
+    start_x=0.5,
+    start_y=0.5,
+    end_x=0.5,
+    end_y=0.5,
+    easing="easeInOut",
+    reason="",
+    focus_target=None,
+    **kwargs,
+):
+    """Normalized Keyframe Director item (Section C) with full legacy compatibility."""
+    st = float(kwargs.get("start", start_time) or 0.0)
+    et = float(kwargs.get("end", end_time) or (st + 0.5))
+    raw_t = kwargs.get("type", event_type)
+    norm_type = normalize_keyframe_type(raw_t)
+    sf = float(kwargs.get("scaleFrom", start_scale) or 1.0)
+    st_scale = float(kwargs.get("scaleTo", end_scale) or sf)
+    target = kwargs.get("focusTarget", focus_target)
+    rsn = str(kwargs.get("reason", reason) or "")
+    eas = str(kwargs.get("easing", easing) or "easeInOut")
+    sx = float(kwargs.get("startX", start_x) or 0.5)
+    sy = float(kwargs.get("startY", start_y) or 0.5)
+    ex = float(kwargs.get("endX", end_x) or sx)
+    ey = float(kwargs.get("endY", end_y) or sy)
+
+    return {
+        # Section C Normalized Keyframe Specification
+        "start": round(st, 3),
+        "end": round(et, 3),
+        "type": norm_type,
+        "scaleFrom": round(sf, 3),
+        "scaleTo": round(st_scale, 3),
+        "focusTarget": target,
+        "easing": eas,
+        "reason": rsn,
+        # Legacy compatibility properties for filter expressions and existing tests
+        "startTime": round(st, 3),
+        "endTime": round(et, 3),
+        "startScale": round(sf, 3),
+        "endScale": round(st_scale, 3),
+        "startX": round(sx, 3),
+        "startY": round(sy, 3),
+        "endX": round(ex, 3),
+        "endY": round(ey, 3),
+    }
+
+
+def create_overlay_event(
+    start_time=0.0,
+    end_time=1.0,
+    overlay_type=OVERLAY_SOURCE_REGION,
+    source="source",
+    placement="center",
+    region=None,
+    reason="",
+    **kwargs,
+):
+    """Create normalized source-based overlay event."""
+    st = float(kwargs.get("start", start_time) or 0.0)
+    et = float(kwargs.get("end", end_time) or (st + 1.0))
+    return {
+        "start": round(st, 3),
+        "end": round(et, 3),
+        "startTime": round(st, 3),
+        "endTime": round(et, 3),
+        "type": str(kwargs.get("type", overlay_type) or OVERLAY_SOURCE_REGION),
+        "source": str(kwargs.get("source", source) or "source"),
+        "placement": str(kwargs.get("placement", placement) or "center"),
+        "region": region or [0.0, 0.0, 1.0, 1.0],
+        "reason": str(kwargs.get("reason", reason) or ""),
+    }
+
+
+def validate_edit_plan(edit_plan, clip_duration=None):
+    """Validate editPlan structure, bounding boxes, scales, and timelines.
+
+    If corrupted, degrades gracefully to safe fallback without crashing render.
+    """
+    if not isinstance(edit_plan, dict):
+        return _fallback_edit_plan(clip_duration)
+
+    duration = float(clip_duration or edit_plan.get("duration") or 10.0)
+
+    # Validate cuts
+    cuts = edit_plan.get("cuts") or []
+    valid_cuts = []
+    for cut in cuts:
+        if not isinstance(cut, dict):
+            continue
+        try:
+            start = max(0.0, min(duration, float(cut.get("start", 0.0))))
+            end = max(start, min(duration, float(cut.get("end", duration))))
+            valid_cuts.append({
+                **cut,
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "focus_x": round(max(0.05, min(0.95, float(cut.get("focus_x", 0.5)))), 3),
+                "focus_y": round(max(0.05, min(0.95, float(cut.get("focus_y", 0.5)))), 3),
+            })
+        except (TypeError, ValueError):
+            continue
+    valid_cuts.sort(key=lambda c: c["start"])
+    edit_plan["cuts"] = valid_cuts
+
+    # Validate keyframes
+    keyframes = edit_plan.get("keyframes") or []
+    valid_keyframes = []
+    for kf in keyframes:
+        if not isinstance(kf, dict):
+            continue
+        try:
+            start = max(0.0, min(duration, float(kf.get("start", kf.get("startTime", 0.0)))))
+            end = max(start, min(duration, float(kf.get("end", kf.get("endTime", start + 0.5)))))
+            start_scale = max(1.0, min(1.15, float(kf.get("scaleFrom", kf.get("startScale", 1.0)))))
+            end_scale = max(1.0, min(1.15, float(kf.get("scaleTo", kf.get("endScale", 1.0)))))
+            start_x = max(0.0, min(1.0, float(kf.get("startX", 0.5))))
+            start_y = max(0.0, min(1.0, float(kf.get("startY", 0.5))))
+            end_x = max(0.0, min(1.0, float(kf.get("endX", 0.5))))
+            end_y = max(0.0, min(1.0, float(kf.get("endY", 0.5))))
+            norm_type = normalize_keyframe_type(kf.get("type"))
+            valid_keyframes.append({
+                **kf,
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "type": norm_type,
+                "scaleFrom": round(start_scale, 3),
+                "scaleTo": round(end_scale, 3),
+                "focusTarget": kf.get("focusTarget"),
+                "easing": str(kf.get("easing") or "easeInOut"),
+                "reason": str(kf.get("reason") or ""),
+                "startTime": round(start, 3),
+                "endTime": round(end, 3),
+                "startScale": round(start_scale, 3),
+                "endScale": round(end_scale, 3),
+                "startX": round(start_x, 3),
+                "startY": round(start_y, 3),
+                "endX": round(end_x, 3),
+                "endY": round(end_y, 3),
+            })
+        except (TypeError, ValueError):
+            continue
+    valid_keyframes.sort(key=lambda k: k.get("start", k.get("startTime", 0.0)))
+    edit_plan["keyframes"] = valid_keyframes
+
+    # Validate overlays
+    overlays = edit_plan.get("overlays") or []
+    valid_overlays = []
+    for ov in overlays:
+        if not isinstance(ov, dict):
+            continue
+        try:
+            start = max(0.0, min(duration, float(ov.get("startTime", 0.0))))
+            end = max(start, min(duration, float(ov.get("endTime", start + 1.0))))
+            if end > start:
+                valid_overlays.append({
+                    **ov,
+                    "startTime": round(start, 3),
+                    "endTime": round(end, 3),
+                })
+        except (TypeError, ValueError):
+            continue
+    edit_plan["overlays"] = valid_overlays
+
+    edit_plan.setdefault("qa", {})
+    edit_plan["qa"]["valid"] = True
+    edit_plan["qa"]["cutCount"] = len(valid_cuts)
+    edit_plan["qa"]["keyframeCount"] = len(valid_keyframes)
+    edit_plan["qa"]["overlayCount"] = len(valid_overlays)
+    edit_plan["qa"]["motionBudgetCompliant"] = len(valid_keyframes) <= max(3, int(duration / 4.0))
+    return edit_plan
+
+
+def _fallback_edit_plan(clip_duration=10.0):
+    duration = max(1.0, float(clip_duration or 10.0))
+    return {
+        "schema": 3,
+        "contentMode": "auto",
+        "resolvedMode": "auto",
+        "editingProfile": AUTO_EDIT,
+        "layout": CENTER_CROP,
+        "duration": round(duration, 2),
+        "cuts": [{"start": 0.0, "end": round(duration, 2), "focus_x": 0.5, "focus_y": 0.5, "shot": "medium", "reason": "safe_fallback"}],
+        "keyframes": [],
+        "overlays": [],
+        "focusEvents": [],
+        "safeRegions": [{"type": "center_safe", "region": [0.2, 0.0, 0.6, 1.0]}],
+        "transitions": [],
+        "fallbackUsed": True,
+        "qa": {
+            "valid": True,
+            "cutCount": 1,
+            "keyframeCount": 0,
+            "overlayCount": 0,
+            "motionBudgetCompliant": True,
+            "fallbackReason": "corrupt_or_missing_plan",
+        },
+    }
+
+
+def normalized_visual_region(region):
+    if isinstance(region, dict):
+        region = [region.get(key) for key in ("x", "y", "width", "height")]
+    if not isinstance(region, (list, tuple)) or len(region) != 4:
+        return None
+    try:
+        x, y, w, h = map(float, region)
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(v) for v in (x, y, w, h)):
+        return None
+    if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > 1.001 or y + h > 1.001:
+        return None
+    return [x, y, min(w, 1.0 - x), min(h, 1.0 - y)]
+
+
+MODE_STORYBOARD_SCHEMAS = {
+    "auto": [
+        {"name": "Hook", "description": "Menarik perhatian", "ratio_range": (0.00, 0.10), "shot": "MEDIUM_SPEAKER", "action": "HOLD"},
+        {"name": "Context", "description": "Perkenalan topik", "ratio_range": (0.10, 0.30), "shot": "MEDIUM_SPEAKER", "action": "HOLD"},
+        {"name": "Important Point", "description": "Penjelasan utama", "ratio_range": (0.30, 0.56), "shot": "PUNCH_IN", "action": "PUNCH_IN"},
+        {"name": "Visual Reference", "description": "Tampilkan contoh", "ratio_range": (0.56, 0.80), "shot": "MEDIUM_SPEAKER", "action": "HOLD"},
+        {"name": "Payoff", "description": "Kesimpulan", "ratio_range": (0.80, 1.00), "shot": "PUNCH_IN", "action": "PUNCH_IN"},
+    ],
+    "podcast": [
+        {"name": "Setup", "description": "Wide two shot", "ratio_range": (0.00, 0.10), "shot": "WIDE_TWO_SHOT", "action": "HOLD"},
+        {"name": "Question", "description": "Speaker A", "ratio_range": (0.10, 0.33), "shot": "MEDIUM_SPEAKER", "action": "SPEAKER_FOCUS"},
+        {"name": "Answer / Insight", "description": "Speaker B", "ratio_range": (0.33, 0.67), "shot": "MEDIUM_SPEAKER", "action": "PUNCH_IN"},
+        {"name": "Reaction", "description": "Respons alami", "ratio_range": (0.67, 0.83), "shot": "REACTION_FOCUS", "action": "REACTION_FOCUS"},
+        {"name": "Conclusion", "description": "Wide return", "ratio_range": (0.83, 1.00), "shot": "WIDE_RETURN", "action": "WIDE_RETURN"},
+    ],
+    "gaming": [
+        {"name": "Setup", "description": "Split 65/35", "ratio_range": (0.00, 0.13), "shot": "SPLIT_65_35", "action": "HOLD"},
+        {"name": "Build-up", "description": "Persiapan / rotasi", "ratio_range": (0.13, 0.33), "shot": "GAMEPLAY_FOCUS", "action": "HOLD"},
+        {"name": "Action / Climax", "description": "Gameplay fokus", "ratio_range": (0.33, 0.58), "shot": "GAMEPLAY_FOCUS", "action": "PUNCH_IN"},
+        {"name": "Result", "description": "Hasil pertarungan", "ratio_range": (0.58, 0.75), "shot": "GAMEPLAY_FOCUS", "action": "HOLD"},
+        {"name": "Streamer Reaction", "description": "Facecam lebih besar", "ratio_range": (0.75, 1.00), "shot": "FACECAM_FOCUS", "action": "FACECAM_FOCUS"},
+    ],
+    "summary": [
+        {"name": "Hook", "description": "Perkenalan produk", "ratio_range": (0.00, 0.14), "shot": "PRESENTER_FOCUS", "action": "HOLD"},
+        {"name": "Feature", "description": "Fitur utama", "ratio_range": (0.14, 0.38), "shot": "PRODUCT_FOCUS", "action": "HOLD"},
+        {"name": "Demo", "description": "Tunjukkan penggunaan", "ratio_range": (0.38, 0.58), "shot": "SCREEN_FOCUS", "action": "SCREEN_FOCUS"},
+        {"name": "Weakness", "description": "Kekurangan jujur", "ratio_range": (0.58, 0.78), "shot": "PRESENTER_FOCUS", "action": "HOLD"},
+        {"name": "Verdict", "description": "Rekomendasi akhir", "ratio_range": (0.78, 1.00), "shot": "PUNCH_IN", "action": "PUNCH_IN"},
+    ],
+    "landscape_blur": [
+        {"name": "Establishing", "description": "Tampilkan full frame", "ratio_range": (0.00, 0.13), "shot": "FULL_FRAME", "action": "HOLD"},
+        {"name": "Highlight", "description": "Area penting", "ratio_range": (0.13, 0.33), "shot": "FULL_FRAME", "action": "HOLD"},
+        {"name": "Detail", "description": "Fokus tanpa crop", "ratio_range": (0.33, 0.67), "shot": "FULL_FRAME", "action": "HOLD"},
+        {"name": "Closing", "description": "View stabil", "ratio_range": (0.67, 1.00), "shot": "FULL_FRAME", "action": "HOLD"},
+    ],
+}
+
+
+def get_mode_storyboard_beats(mode="auto", duration=60.0):
+    norm_mode = str(mode or "auto").strip().lower()
+    schema_beats = MODE_STORYBOARD_SCHEMAS.get(norm_mode) or MODE_STORYBOARD_SCHEMAS["auto"]
+    total_dur = max(1.0, float(duration or 60.0))
+    beats = []
+    for item in schema_beats:
+        r_start, r_end = item["ratio_range"]
+        s_time = round(r_start * total_dur, 2)
+        e_time = round(r_end * total_dur, 2)
+        beats.append({
+            "beat": item["name"],
+            "name": item["name"],
+            "description": item["description"],
+            "start": s_time,
+            "end": e_time,
+            "timeRange": f"{int(s_time//60):02d}:{int(s_time%60):02d} - {int(e_time//60):02d}:{int(e_time%60):02d}",
+            "shotType": item["shot"],
+            "cameraAction": item["action"],
+            "label": f"{item['name']} ({item['description']})",
+        })
+    return beats
+
+
+def build_visual_storyboard(plan):
+    """Describe the existing edit timeline without inventing story roles or detections."""
+    duration = float(plan.get("duration") or 0.0)
+    layout = plan.get("layout") or CENTER_CROP
+    resolved_mode = str(plan.get("resolvedMode") or plan.get("contentMode") or "auto").strip().lower()
+    events = sorted(plan.get("storyEvents") or [], key=lambda e: float(e.get("time", 0.0)))
+    cuts = plan.get("cuts") or []
+    keyframes = plan.get("keyframes") or []
+    boundaries = {0.0, duration}
+    for item in cuts + keyframes:
+        for key in ("start", "end"):
+            value = float(item.get(key, 0.0))
+            if math.isfinite(value) and 0 < value < duration:
+                boundaries.add(value)
+    for event in events:
+        value = float(event.get("time", 0.0))
+        if math.isfinite(value) and 0 < value < duration:
+            boundaries.add(value)
+    safe_region = next((r.get("region") for r in plan.get("safeRegions", [])
+                        if r.get("type") == "subtitle_safe"), None)
+    scenes = []
+    times = sorted(boundaries)
+    storyboard_beats = get_mode_storyboard_beats(resolved_mode, duration)
+
+    for start, end in zip(times, times[1:]):
+        event = next((e for e in reversed(events) if float(e.get("time", 0)) <= start), {})
+        cut = next((c for c in cuts if c["start"] <= start < c["end"]), {})
+        keyframe = next((k for k in keyframes if k["start"] <= start < k["end"]), {})
+        action = normalize_keyframe_type(keyframe.get("type")) if keyframe else "HOLD"
+        shot = "LANDSCAPE_PRESERVE" if layout == LANDSCAPE_BLUR else (
+            "BALANCED_SPLIT" if layout == GAMING_SPLIT else "MEDIUM_SPEAKER" if cut.get("speaker") else "STATIC_SAFE")
+        reason = keyframe.get("reason") or cut.get("reason") or "preserve_source_composition"
+
+        # Match corresponding storyboard beat
+        matching_beat = next(
+            (b for b in storyboard_beats if b["start"] <= start < b["end"]),
+            storyboard_beats[-1] if storyboard_beats else None
+        )
+        beat_name = matching_beat["name"] if matching_beat else "Scene"
+        beat_desc = matching_beat["description"] if matching_beat else reason
+
+        scenes.append({
+            "start": round(start, 3), "end": round(end, 3),
+            "storyboardPhase": beat_name,
+            "storyboardDesc": beat_desc,
+            "storyEvent": event.get("type") or "SOURCE_CONTENT",
+            "purpose": event.get("reason") or beat_desc,
+            "subject": cut.get("speaker"), "visualPriority": keyframe.get("focusTarget") or "source",
+            "shotType": shot, "layout": layout, "cameraAction": action,
+            "scaleFrom": keyframe.get("scaleFrom", 1.0), "scaleTo": keyframe.get("scaleTo", 1.0),
+            "focusTarget": keyframe.get("focusTarget") or cut.get("speaker"),
+            "reason": reason, "priority": EVENT_PRIORITY.get(event.get("type"), 20),
+            "confidence": event.get("confidence"), "subtitleSafeRegion": safe_region,
+        })
+    return {
+        "schema": 2,
+        "mode": resolved_mode,
+        "timeline": "clip_local",
+        "storyArc": [e.get("type") for e in events],
+        "storyboardBeats": storyboard_beats,
+        "scenes": scenes,
+    }
+
+
+class SmartEditDirector:
+    """Smart Edit Director V2 that generates a complete editPlan
+
+    driven by story events, speaker changes, and content profile.
+    """
+
+    def __init__(self, content_mode="auto"):
+        self.content_mode = str(content_mode or "auto").strip().lower()
+        self.profile = resolve_editing_profile(self.content_mode)
+        self.strategy = ContentModeRouter.get_strategy(self.content_mode)
+
+    def plan_edit(
+        self,
+        transcript=None,
+        speaker_timeline=None,
+        start=0.0,
+        end=0.0,
+        duration=None,
+        story_beats=None,
+        visual_detections=None,
+        source_dims=None,
+        face_analysis=None,
+        motion_intensity="balanced",
+    ):
+        start = max(0.0, float(start or 0.0))
+        end = max(start, float(end or start))
+        clip_duration = max(1.0, float(duration or (end - start) or 10.0))
+
+        # 1. Determine mode
+        mode = self.content_mode
+        if mode == "auto":
+            mode = self._auto_detect_mode(speaker_timeline, face_analysis, visual_detections)
+
+        # 2. Motion budget parameters (Section D & E)
+        punch_scale = 1.06 if motion_intensity == "balanced" else (1.04 if motion_intensity == "minimal" else 1.09)
+        min_motion_gap = 4.0 if motion_intensity == "balanced" else (6.0 if motion_intensity == "minimal" else 2.8)
+
+        cuts = []
+        keyframes = []
+        overlays = []
+        focus_events = []
+        safe_regions = []
+        transitions = []
+        layout = resolve_editing_profile(mode)
+
+        if mode == "landscape_blur":
+            layout = LANDSCAPE_BLUR
+            safe_regions.append({"type": "full_landscape", "preserve_ratio": True, "no_crop": True})
+            keyframes = self._plan_landscape_keyframes(story_beats, clip_duration, punch_scale, min_motion_gap)
+
+        elif mode == "gaming":
+            facecam_region, gameplay_region = self._detect_gaming_regions(visual_detections, face_analysis, source_dims)
+            if facecam_region is not None:
+                layout = GAMING_SPLIT
+                safe_regions.append({"type": "gameplay_hud", "region": gameplay_region})
+                safe_regions.append({"type": "facecam", "region": facecam_region})
+                # Add HUD protection bounds
+                safe_regions.extend([
+                    {"type": "hud_crosshair", "region": [0.45, 0.45, 0.10, 0.10]},
+                    {"type": "hud_minimap", "region": [0.02, 0.02, 0.22, 0.22]},
+                    {"type": "hud_health", "region": [0.02, 0.88, 0.30, 0.08]},
+                    {"type": "hud_killfeed", "region": [0.75, 0.02, 0.23, 0.25]},
+                ])
+                cuts, keyframes, focus_events = self._plan_gaming_events(
+                    story_beats, clip_duration, facecam_region, gameplay_region
+                )
+            else:
+                layout = LANDSCAPE_BLUR
+                safe_regions.append({"type": "full_landscape", "preserve_ratio": True, "no_crop": True})
+
+        elif mode == "podcast":
+            layout = PODCAST_DYNAMIC
+            if self._should_preserve_multisubject_frame(speaker_timeline, face_analysis):
+                layout = LANDSCAPE_BLUR
+                cuts = [{
+                    "start": 0.0,
+                    "end": clip_duration,
+                    "focus_x": 0.5,
+                    "focus_y": 0.45,
+                    "shot": "wide",
+                    "reason": "two_person_preserve_no_speaker_grounding",
+                }]
+                safe_regions.append({"type": "two_person_wide", "preserve_ratio": True, "no_crop": True})
+                keyframes = self._plan_podcast_keyframes(story_beats, cuts, clip_duration, min(1.04, punch_scale), min_motion_gap)
+            else:
+                cuts, focus_events = self._plan_podcast_cuts(speaker_timeline, face_analysis, clip_duration)
+                keyframes = self._plan_podcast_keyframes(story_beats, cuts, clip_duration, punch_scale, min_motion_gap)
+            safe_regions.append({"type": "speaker_headroom", "top_margin": 0.15})
+
+        elif mode == "summary":
+            layout = SUMMARY_COMPOSED
+            cuts, focus_events = self._plan_podcast_cuts(speaker_timeline, face_analysis, clip_duration)
+            keyframes = self._plan_review_product_keyframes(story_beats, cuts, clip_duration, punch_scale, min_motion_gap)
+            safe_regions.append({"type": "narrative_focus", "preserve_clarity": True})
+
+        else:  # auto / general
+            layout = AUTO_EDIT
+            cuts, focus_events = self._plan_podcast_cuts(speaker_timeline, face_analysis, clip_duration)
+            keyframes = self._plan_podcast_keyframes(story_beats, cuts, clip_duration, punch_scale, min_motion_gap)
+
+        # Subtitle safe region across all modes
+        safe_regions.append({
+            "type": "subtitle_safe",
+            "region": [0.05, 0.78, 0.90, 0.18],
+            "description": "Protects lower subtitle bounds and ensures contrast against background.",
+        })
+
+        overlays = self._plan_overlays(transcript, visual_detections, clip_duration, story_beats=story_beats)
+
+        story_events = []
+        for beat in (story_beats or []):
+            if isinstance(beat, dict):
+                story_events.append({
+                    "time": round(float(beat.get("time", 0.0)), 3),
+                    "type": str(beat.get("type") or "EVENT"),
+                    "reason": str(beat.get("reason") or ""),
+                })
+
+        story_type = self._infer_story_type(story_beats, mode)
+        reaction_count = sum(1 for k in keyframes if k.get("type") in {KEYFRAME_REACTION_FOCUS, "REACTION_FOCUS"})
+        speaker_switches = max(0, len(cuts) - 1)
+
+        raw_plan = {
+            "schema": 3,
+            "contentMode": self.content_mode,
+            "resolvedMode": mode,
+            "editingProfile": resolve_editing_profile(mode),
+            "layout": layout,
+            "duration": round(clip_duration, 2),
+            "storyEvents": story_events,
+            "cameraEvents": cuts,
+            "keyframes": keyframes,
+            "cuts": cuts,
+            "overlays": overlays,
+            "focusEvents": focus_events,
+            "safeRegions": safe_regions,
+            "transitions": transitions,
+            "fallbackUsed": False,
+            "qa": {
+                "valid": True,
+                "mode": mode,
+                "storyType": story_type,
+                "layout": layout,
+                "cutCount": len(cuts),
+                "keyframeCount": len(keyframes),
+                "speakerSwitches": speaker_switches,
+                "reactions": reaction_count,
+                "overlayCount": len(overlays),
+                "fallback": False,
+                "fallbackUsed": False,
+                "motionBudgetCompliant": True,
+            },
+        }
+        plan = validate_edit_plan(raw_plan, clip_duration)
+        plan["storyboard"] = build_visual_storyboard(plan)
+        return plan
+
+    def _infer_story_type(self, story_beats, mode):
+        types = [str(b.get("type") or "").upper() for b in (story_beats or []) if isinstance(b, dict)]
+        if mode == "podcast":
+            if "QUESTION" in types and ("ANSWER" in types or "PAYOFF" in types):
+                return "question_answer"
+            return "podcast_discussion"
+        if mode == "gaming":
+            if any(t in types for t in ["CLIMAX", "KILL", "ACTION"]):
+                return "gameplay_climax"
+            return "gaming_match"
+        if mode == "summary":
+            return "product_review"
+        if mode == "landscape_blur":
+            return "landscape_story"
+        return "general_narrative"
+
+    def _auto_detect_mode(self, speaker_timeline, face_analysis, visual_detections):
+        """Use detected content evidence; summary composition requires explicit selection."""
+        for detection in visual_detections or []:
+            if not isinstance(detection, dict) or float(detection.get("confidence", 0.0)) < 0.75:
+                continue
+            kind = str(detection.get("type") or "").upper()
+            if kind in {"GAMEPLAY", "FACECAM"}:
+                return "gaming"
+            if kind in {"SCREEN", "SCREEN_CAPTURE", "LANDSCAPE", "PRODUCT_DEMO"}:
+                return "landscape_blur"
+        if isinstance(face_analysis, dict):
+            content_type = str(face_analysis.get("content_type") or "").lower()
+            if content_type in {"gaming", "gameplay"}:
+                return "gaming"
+            if content_type in {"podcast", "interview"}:
+                return "podcast"
+            if content_type in {"screen", "screencast", "landscape", "presentation"}:
+                return "landscape_blur"
+            if int(face_analysis.get("person_count") or face_analysis.get("face_count") or 0) >= 2:
+                return "podcast"
+
+        turns = (speaker_timeline or {}).get("turns") or []
+        distinct_speakers = {t.get("speaker") for t in turns if isinstance(t, dict) and t.get("speaker")}
+        if len(distinct_speakers) >= 2:
+            return "podcast"
+
+        return "auto"
+
+    @staticmethod
+    def _should_preserve_multisubject_frame(speaker_timeline, face_analysis):
+        """Keep the full conversation frame when multiple people are visible but speaker grounding is absent."""
+        analysis = face_analysis or {}
+        turns = (speaker_timeline or {}).get("turns") or []
+        distinct_speakers = {
+            str(turn.get("speaker") or "")
+            for turn in turns
+            if isinstance(turn, dict) and turn.get("speaker")
+        }
+        speaker_grounded = bool(
+            (speaker_timeline or {}).get("speaker_evidence")
+            or (speaker_timeline or {}).get("speaker_visual_mapping")
+            or len(distinct_speakers) >= 2
+        )
+        visible_people = max(
+            int(analysis.get("person_count") or 0),
+            int(analysis.get("face_count") or 0),
+            int((analysis.get("editor_plan") or {}).get("qa", {}).get("rawSubjectCount") or 0),
+        )
+        validated_subjects = len(analysis.get("subject_tracks") or [])
+        average_faces = float(analysis.get("average_faces") or 0.0)
+        if speaker_grounded:
+            return False
+        return visible_people >= 2 and (validated_subjects < 2 or average_faces < 1.5)
+
+    def _plan_landscape_keyframes(self, story_beats, clip_duration, punch_scale, min_motion_gap):
+        """Landscape blur keeps full composition; allows subtle punch-in on peak payoffs."""
+        keyframes = []
+        last_motion = -10.0
+        beats = story_beats or []
+        for beat in beats:
+            if not isinstance(beat, dict):
+                continue
+            b_type = str(beat.get("type") or "").upper()
+            b_time = float(beat.get("time") or 0.0)
+            if b_type in {EVENT_PAYOFF, EVENT_IMPORTANT_POINT, "REVEAL", "PUNCHLINE"} and (b_time - last_motion) >= min_motion_gap:
+                hold_end = min(clip_duration - 0.2, b_time + 1.8)
+                if hold_end > b_time + 0.5:
+                    keyframes.append(
+                        create_keyframe(
+                            start_time=b_time,
+                            end_time=hold_end,
+                            event_type=KEYFRAME_PUNCH_IN,
+                            start_scale=1.00,
+                            end_scale=min(1.06, punch_scale),
+                            start_x=0.5,
+                            start_y=0.5,
+                            end_x=0.5,
+                            end_y=0.5,
+                            reason="landscape_story_emphasis",
+                        )
+                    )
+                    last_motion = hold_end
+        return keyframes
+
+    def _detect_gaming_regions(self, visual_detections, face_analysis, source_dims):
+        """Detect streamer facecam and gameplay regions safely without hallucinating."""
+        analysis = face_analysis if isinstance(face_analysis, dict) else {}
+        gameplay_region = [0.0, 0.0, 1.0, 1.0]
+        # Only explicit panel detections or measured corner-face bounds may supply a crop.
+        region = normalized_visual_region(analysis.get("facecamRegion") or analysis.get("facecam_region"))
+        if region:
+            return region, gameplay_region
+        for detection in visual_detections or []:
+            if not isinstance(detection, dict):
+                continue
+            if str(detection.get("type") or "").upper() != "FACECAM":
+                continue
+            if float(detection.get("confidence", 0.0)) < 0.75:
+                continue
+            region = normalized_visual_region(detection.get("region"))
+            if region:
+                return region, gameplay_region
+        tracks = analysis.get("subject_tracks") or []
+        for track in tracks:
+            if not isinstance(track, dict):
+                continue
+            kind = track.get("kind")
+            if kind is not None and str(kind).lower() not in {"face", "person", "streamer"}:
+                continue
+            fx = float(track.get("focus_x", 0.5))
+            fy = float(track.get("focus_y", 0.5))
+            conf = float(track.get("confidence", 0.0))
+            is_corner = (fx > 0.60 or fx < 0.40) and (fy > 0.50 or fy < 0.40)
+            if not is_corner:
+                continue
+            region = normalized_visual_region(track.get("detected_region"))
+            if not region and (conf >= 0.55 or is_corner):
+                box_w = 0.28
+                box_h = 0.28
+                region = [
+                    round(max(0.0, min(1.0 - box_w, fx - box_w / 2)), 4),
+                    round(max(0.0, min(1.0 - box_h, fy - box_h / 2)), 4),
+                    box_w,
+                    box_h,
+                ]
+            if region and (conf >= 0.55 or is_corner):
+                return region, gameplay_region
+        return None, gameplay_region
+
+    def _plan_gaming_events(self, story_beats, clip_duration, facecam_region, gameplay_region):
+        cuts = []
+        keyframes = []
+        focus_events = []
+        cuts.append({
+            "start": 0.0,
+            "end": clip_duration,
+            "shot": "gaming_split",
+            "gameplay_ratio": 0.65,
+            "reason": "gaming_split_layout",
+        })
+
+        last_motion_start = -10.0
+        for beat in story_beats or []:
+            if not isinstance(beat, dict):
+                continue
+            b_time = float(beat.get("time") or 0.0)
+            b_type = str(beat.get("type") or "").upper()
+            if b_time - last_motion_start < 2.8:
+                continue
+
+            hold_end = min(clip_duration, b_time + 2.0)
+            if hold_end <= b_time + 0.5:
+                continue
+
+            if b_type in {EVENT_GAME_CLIMAX, "EVENT_GAMEPLAY_CLIMAX", "CLIMAX", "ACTION", "KILL", "GAMEPLAY_CLIMAX"}:
+                keyframes.append(
+                    create_keyframe(
+                        start_time=b_time,
+                        end_time=hold_end,
+                        event_type=KEYFRAME_GAMEPLAY_FOCUS,
+                        start_scale=1.00,
+                        end_scale=1.08,
+                        focus_target="gameplay",
+                        reason="gameplay_climax_focus",
+                    )
+                )
+                last_motion_start = b_time
+            elif b_type in {EVENT_STREAMER_REACTION, "STREAMER_REACTION"}:
+                keyframes.append(
+                    create_keyframe(
+                        start_time=b_time,
+                        end_time=hold_end,
+                        event_type=KEYFRAME_FACECAM_FOCUS,
+                        start_scale=1.00,
+                        end_scale=1.07,
+                        focus_target="facecam",
+                        reason="streamer_reaction_enlarge",
+                    )
+                )
+                last_motion_start = b_time
+            elif b_type in {EVENT_REACTION, "REACTION", "LAUGH"}:
+                keyframes.append(
+                    create_keyframe(
+                        start_time=b_time,
+                        end_time=hold_end,
+                        event_type=KEYFRAME_REACTION_FOCUS,
+                        start_scale=1.00,
+                        end_scale=1.06,
+                        focus_target="facecam",
+                        reason="streamer_reaction_emphasis",
+                    )
+                )
+                last_motion_start = b_time
+        return cuts, keyframes, focus_events
+
+    def _plan_review_product_keyframes(self, story_beats, cuts, clip_duration, punch_scale, min_motion_gap):
+        """Mode 4 Review / Rangkum: Choreographed presenter -> PRODUCT_FOCUS -> hold -> return presenter, plus verdict punch."""
+        keyframes = []
+        last_motion = -10.0
+        cut_times = [float(c["start"]) for c in cuts if isinstance(c, dict) and "start" in c]
+
+        for beat in (story_beats or []):
+            if not isinstance(beat, dict):
+                continue
+            b_time = float(beat.get("time") or 0.0)
+            b_type = str(beat.get("type") or "").upper()
+
+            # Anti-overedit: avoid keyframe within 0.8s of a cut
+            if any(abs(b_time - ct) < 0.8 for ct in cut_times):
+                continue
+            if b_time - last_motion < min_motion_gap:
+                continue
+
+            hold_end = min(clip_duration - 0.2, b_time + 2.0)
+            if hold_end <= b_time + 0.6:
+                continue
+
+            if b_type in {EVENT_PRODUCT_SHOW, EVENT_PRODUCT_DEMO, EVENT_PRODUCT_DETAIL, "PRODUCT_SHOW", "PRODUCT_DEMO", "DEMO"}:
+                # 1. Product focus: Presenter -> Product detail
+                keyframes.append(
+                    create_keyframe(
+                        start_time=b_time,
+                        end_time=hold_end,
+                        event_type=KEYFRAME_PRODUCT_FOCUS,
+                        start_scale=1.00,
+                        end_scale=min(1.08, punch_scale + 0.02),
+                        focus_target="product",
+                        reason="product_focus_detail",
+                    )
+                )
+                # 2. Return to presenter after hold if time permits
+                return_start = hold_end
+                return_end = min(clip_duration - 0.1, return_start + 0.8)
+                if return_end > return_start + 0.3 and (clip_duration - return_end) >= 1.0:
+                    keyframes.append(
+                        create_keyframe(
+                            start_time=return_start,
+                            end_time=return_end,
+                            event_type=KEYFRAME_WIDE_RETURN,
+                            start_scale=min(1.08, punch_scale + 0.02),
+                            end_scale=1.00,
+                            focus_target="presenter",
+                            reason="return_to_presenter",
+                        )
+                    )
+                    last_motion = return_end
+                else:
+                    last_motion = hold_end
+
+            elif b_type in {EVENT_VERDICT, "VERDICT", "CONCLUSION"}:
+                keyframes.append(
+                    create_keyframe(
+                        start_time=b_time,
+                        end_time=hold_end,
+                        event_type=KEYFRAME_PUNCH_IN,
+                        start_scale=1.00,
+                        end_scale=min(1.05, punch_scale),
+                        focus_target="presenter",
+                        reason="verdict_punch",
+                    )
+                )
+                last_motion = hold_end
+
+            elif b_type in {EVENT_SCREEN_REFERENCE, "SCREEN_REFERENCE", "SCREEN_DEMO"}:
+                keyframes.append(
+                    create_keyframe(
+                        start_time=b_time,
+                        end_time=hold_end,
+                        event_type=KEYFRAME_SCREEN_FOCUS,
+                        start_scale=1.00,
+                        end_scale=1.06,
+                        focus_target="screen",
+                        reason="screen_demonstration",
+                    )
+                )
+                last_motion = hold_end
+
+            elif b_type in {EVENT_IMPORTANT_POINT, "IMPORTANT_POINT", EVENT_PAYOFF, "BENEFIT"}:
+                keyframes.append(
+                    create_keyframe(
+                        start_time=b_time,
+                        end_time=hold_end,
+                        event_type=KEYFRAME_PUNCH_IN,
+                        start_scale=1.00,
+                        end_scale=punch_scale,
+                        focus_target="presenter",
+                        reason="important_point_emphasis",
+                    )
+                )
+                last_motion = hold_end
+
+            elif b_type in {EVENT_REACTION, "REACTION", "LAUGH"}:
+                keyframes.append(
+                    create_keyframe(
+                        start_time=b_time,
+                        end_time=hold_end,
+                        event_type=KEYFRAME_REACTION_FOCUS,
+                        start_scale=1.00,
+                        end_scale=min(1.05, punch_scale),
+                        focus_target="presenter",
+                        reason="reaction_hold",
+                    )
+                )
+                last_motion = hold_end
+
+        return keyframes
+
+    def _plan_subtle_action_keyframes(self, story_beats, clip_duration, punch_scale, min_motion_gap):
+        keyframes = []
+        last_motion = -10.0
+        for beat in story_beats or []:
+            if not isinstance(beat, dict):
+                continue
+            b_time = float(beat.get("time") or 0.0)
+            if b_time - last_motion >= min_motion_gap:
+                hold_end = min(clip_duration - 0.2, b_time + 1.8)
+                if hold_end > b_time + 0.5:
+                    keyframes.append(
+                        create_keyframe(
+                            start_time=b_time,
+                            end_time=hold_end,
+                            event_type=KEYFRAME_PUNCH_IN,
+                            start_scale=1.00,
+                            end_scale=punch_scale,
+                            reason="gameplay_action_punch",
+                        )
+                    )
+                    last_motion = hold_end
+        return keyframes
+
+    def _plan_podcast_cuts(self, speaker_timeline, face_analysis, clip_duration):
+        """Plan cuts with speaker hysteresis: minimum hold ~1.2s, short interjections ignored."""
+        cuts = []
+        focus_events = []
+        turns = (speaker_timeline or {}).get("turns") or []
+        subjects = (face_analysis or {}).get("subject_tracks") or []
+        subject_by_speaker = {}
+        for track in subjects:
+            if isinstance(track, dict) and track.get("speaker"):
+                subject_by_speaker[str(track["speaker"])] = track
+
+        default_focus_x = float((face_analysis or {}).get("focus_x", 0.5))
+        MIN_HOLD = 1.8
+        INTERJECTION_MAX = 0.85
+        IGNORABLE_WORDS = {"iya", "oh", "hah", "betul", "oke", "siap", "hmm", "ya", "ah"}
+
+        filtered_turns = []
+        for turn in turns:
+            if not isinstance(turn, dict):
+                continue
+            t_start = float(turn.get("start") or 0.0)
+            t_end = float(turn.get("end") or t_start + 1.0)
+            t_dur = t_end - t_start
+            text = str(turn.get("text") or "").strip().lower().strip(".,!?;:")
+            # Suppress very brief backchannels
+            if t_dur < INTERJECTION_MAX and text in IGNORABLE_WORDS:
+                continue
+            filtered_turns.append(turn)
+
+        if not filtered_turns:
+            cuts.append({
+                "start": 0.0,
+                "end": clip_duration,
+                "focus_x": default_focus_x,
+                "focus_y": 0.45,
+                "shot": "medium",
+                "reason": "stable_talking_head",
+            })
+            return cuts, focus_events
+
+        current_cut_start = 0.0
+        current_speaker = filtered_turns[0].get("speaker") or "speaker_1"
+        sub0 = subject_by_speaker.get(current_speaker)
+        current_focus_x = float(sub0["focus_x"]) if sub0 and sub0.get("focus_x") is not None else default_focus_x
+
+        for turn in filtered_turns[1:]:
+            t_start = max(0.0, min(clip_duration, float(turn.get("start") or 0.0)))
+            speaker = turn.get("speaker") or "speaker_1"
+            if speaker != current_speaker and (t_start - current_cut_start) >= MIN_HOLD:
+                cuts.append({
+                    "start": round(current_cut_start, 3),
+                    "end": round(t_start, 3),
+                    "speaker": current_speaker,
+                    "focus_x": current_focus_x,
+                    "focus_y": 0.45,
+                    "shot": "medium",
+                    "reason": "speaker_handoff",
+                })
+                current_cut_start = t_start
+                current_speaker = speaker
+                sub = subject_by_speaker.get(speaker)
+                current_focus_x = float(sub["focus_x"]) if sub and sub.get("focus_x") is not None else default_focus_x
+
+        cuts.append({
+            "start": round(current_cut_start, 3),
+            "end": round(clip_duration, 3),
+            "speaker": current_speaker,
+            "focus_x": current_focus_x,
+            "focus_y": 0.45,
+            "shot": "medium",
+            "reason": "final_speaker_hold",
+        })
+        return cuts, focus_events
+
+    def _plan_podcast_keyframes(self, story_beats, cuts, clip_duration, punch_scale, min_motion_gap):
+        """Plan event-driven punch-in and reaction holds without random timer zoom."""
+        keyframes = []
+        last_motion = -10.0
+        cut_times = [c["start"] for c in cuts if isinstance(c, dict)]
+
+        for beat in story_beats or []:
+            if not isinstance(beat, dict):
+                continue
+            b_time = float(beat.get("time") or 0.0)
+            b_type = str(beat.get("type") or "").upper()
+            # Anti-overedit: do not punch-in if a cut occurred within 0.8s or last motion was too recent
+            if any(abs(b_time - ct) < 0.8 for ct in cut_times):
+                continue
+            if b_time - last_motion < min_motion_gap:
+                continue
+
+            hold_end = min(clip_duration - 0.2, b_time + 2.0)
+            if hold_end <= b_time + 0.6:
+                continue
+
+            if b_type in {EVENT_IMPORTANT_POINT, EVENT_QUESTION, EVENT_PAYOFF, "PUNCH_IN", "EMPHASIS", "INSIGHT", "KEY_POINT"}:
+                is_insight = (b_type == "INSIGHT") or ("insight" in str(beat.get("reason", "")).lower())
+                keyframes.append(
+                    create_keyframe(
+                        start_time=b_time,
+                        end_time=hold_end,
+                        event_type=KEYFRAME_PUNCH_IN,
+                        start_scale=1.00,
+                        end_scale=punch_scale,
+                        reason="insight_punch_in" if is_insight else "important_point_emphasis",
+                    )
+                )
+                last_motion = hold_end
+            elif b_type in {EVENT_REACTION, "REACTION", "LAUGH"}:
+                keyframes.append(
+                    create_keyframe(
+                        start_time=b_time,
+                        end_time=hold_end,
+                        event_type=KEYFRAME_REACTION_FOCUS,
+                        start_scale=1.00,
+                        end_scale=min(1.05, punch_scale),
+                        reason="reaction_hold",
+                    )
+                )
+                last_motion = hold_end
+        return keyframes
+
+    def _plan_overlays(self, transcript, visual_detections, clip_duration, story_beats=None):
+        """Source-based overlay foundation for chart, screen, product, or demonstration (Phase H)."""
+        overlays = []
+        # 1. Checks if visual detection mentions a screen, chart, slide, or product
+        detections = visual_detections or []
+        for det in detections:
+            if not isinstance(det, dict):
+                continue
+            det_type = str(det.get("type") or "").upper()
+            d_time = float(det.get("time") or 0.0)
+            d_dur = float(det.get("duration") or 2.5)
+            if det_type in {"SCREEN_SHARE", "CHART", "SLIDE"}:
+                overlays.append(
+                    create_overlay_event(
+                        start_time=d_time,
+                        end_time=min(clip_duration, d_time + d_dur),
+                        overlay_type=OVERLAY_SCREEN_FOCUS,
+                        placement="center",
+                        region=det.get("region") or [0.1, 0.1, 0.8, 0.8],
+                        reason="visual_chart_reference",
+                    )
+                )
+            elif det_type in {"PRODUCT", "PRODUCT_CLOSEUP"}:
+                overlays.append(
+                    create_overlay_event(
+                        start_time=d_time,
+                        end_time=min(clip_duration, d_time + d_dur),
+                        overlay_type=OVERLAY_PRODUCT_CROP,
+                        placement="center",
+                        region=det.get("region") or [0.15, 0.15, 0.70, 0.70],
+                        reason="product_footage_overlay",
+                    )
+                )
+
+        # 2. Checks story_beats for source-based screen, b-roll, or visual references
+        for beat in (story_beats or []):
+            if not isinstance(beat, dict):
+                continue
+            b_time = float(beat.get("time") or 0.0)
+            b_type = str(beat.get("type") or "").upper()
+            if b_time >= clip_duration - 0.5:
+                continue
+            if b_type in {EVENT_SCREEN_REFERENCE, "SCREEN_REFERENCE"}:
+                overlays.append(
+                    create_overlay_event(
+                        start_time=b_time,
+                        end_time=min(clip_duration, b_time + 2.5),
+                        overlay_type=OVERLAY_SCREEN_FOCUS,
+                        placement="center",
+                        region=[0.1, 0.1, 0.8, 0.8],
+                        reason="source_screen_overlay",
+                    )
+                )
+            elif b_type in {EVENT_BROLL_OPPORTUNITY, "BROLL_OPPORTUNITY", EVENT_VISUAL_REFERENCE, "VISUAL_REFERENCE"}:
+                overlays.append(
+                    create_overlay_event(
+                        start_time=b_time,
+                        end_time=min(clip_duration, b_time + 2.5),
+                        overlay_type=OVERLAY_SOURCE_REGION,
+                        placement="top",
+                        region=[0.05, 0.05, 0.90, 0.50],
+                        reason="source_broll_overlay",
+                    )
+                )
+        return overlays
+
+
+class BaseEditStrategy:
+    def __init__(self, mode="auto", profile=AUTO_EDIT):
+        self.mode = mode
+        self.profile = profile
+
+    def configure_render_plan(self, clip_candidate, base_options=None):
+        options = dict(base_options or {})
+        options["contentMode"] = self.mode
+        options["editingProfile"] = self.profile
+        return options
+
+
+class AutoEditStrategy(BaseEditStrategy):
+    def __init__(self):
+        super().__init__("auto", AUTO_EDIT)
+
+
+class PodcastEditStrategy(BaseEditStrategy):
+    def __init__(self):
+        super().__init__("podcast", PODCAST_DYNAMIC)
+
+
+class GamingEditStrategy(BaseEditStrategy):
+    def __init__(self):
+        super().__init__("gaming", GAMING_SPLIT)
+
+
+class SummaryEditStrategy(BaseEditStrategy):
+    def __init__(self):
+        super().__init__("summary", SUMMARY_COMPOSED)
+
+
+class LandscapeBlurEditStrategy(BaseEditStrategy):
+    def __init__(self):
+        super().__init__("landscape_blur", LANDSCAPE_BLUR)
+
+    def configure_render_plan(self, clip_candidate, base_options=None):
+        options = super().configure_render_plan(clip_candidate, base_options)
+        options["smartCrop"] = False
+        options["landscapeBlur"] = True
+        return options
+
+
+class ContentModeRouter:
+    _STRATEGIES = {
+        "auto": AutoEditStrategy,
+        "podcast": PodcastEditStrategy,
+        "gaming": GamingEditStrategy,
+        "summary": SummaryEditStrategy,
+        "landscape_blur": LandscapeBlurEditStrategy,
+    }
+
+    @classmethod
+    def get_strategy(cls, mode="auto"):
+        normalized = str(mode or "auto").strip().lower()
+        strategy_cls = cls._STRATEGIES.get(normalized, AutoEditStrategy)
+        return strategy_cls()
+
 
 # Speaker hysteresis to prevent rapid camera switching
 # Minimum duration (in seconds) a speaker must be active before camera switches

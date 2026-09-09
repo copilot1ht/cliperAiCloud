@@ -3,8 +3,7 @@
 
 The runner disables cloud providers and source URLs. It exercises the same
 discovery, story-boundary, scoring, and diversity pipeline as the desktop
-worker, then writes a concise report. Fewer than ten results may be valid:
-quality gates must not invent weak clips to fill a quota.
+worker, including the recommended and manual-review shortlist tiers.
 """
 
 from __future__ import annotations
@@ -70,6 +69,14 @@ def as_score(value: Any) -> int | None:
     return round(max(0.0, min(100.0, numeric)))
 
 
+def as_public_score(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(max(0.0, min(10.0, numeric)), 1)
+
+
 def moment_report(moment: dict[str, Any]) -> dict[str, Any]:
     metrics = moment.get("metrics") if isinstance(moment.get("metrics"), dict) else {}
     scorecard = metrics.get("scorecard") if isinstance(metrics.get("scorecard"), dict) else {}
@@ -82,7 +89,7 @@ def moment_report(moment: dict[str, Any]) -> dict[str, Any]:
         "end": round(float(moment.get("end") or 0), 2),
         "duration": round(float(moment.get("duration") or 0), 2),
         "score": as_score(moment.get("score")),
-        "publicScore": as_score(moment.get("public_score")),
+        "publicScore": as_public_score(moment.get("public_score")),
         "hook": as_score(metrics.get("hook")),
         "story": as_score(metrics.get("story_complete") or metrics.get("flow")),
         "payoff": as_score(metrics.get("payoff") or arc.get("payoff")),
@@ -185,12 +192,19 @@ def run_case(
             failures.append(f"Kandidat {item['id']} tidak memiliki score evidence lengkap.")
         if item["boundary"]["danglingStart"] or item["boundary"]["danglingEnd"]:
             failures.append(f"Kandidat {item['id']} masih memiliki boundary menggantung.")
-        if item["score"] is not None and item["score"] < 65:
-            failures.append(f"Kandidat {item['id']} berada di bawah quality gate 65.")
-        if item["publicScore"] is None or not 7 <= item["publicScore"] <= 10:
-            failures.append(f"Kandidat {item['id']} tidak memiliki public score 7-10 yang valid.")
-        if item["evidenceGate"] is not True:
-            failures.append(f"Kandidat {item['id']} tidak lolos evidence gate.")
+        tier = str(item.get("qualityTier") or "").lower()
+        if tier in {"strong", "good"}:
+            if item["score"] is not None and item["score"] < 65:
+                failures.append(f"Kandidat rekomendasi {item['id']} berada di bawah gate 65.")
+            if item["evidenceGate"] is not True:
+                failures.append(f"Kandidat rekomendasi {item['id']} tidak lolos evidence gate.")
+        elif tier == "review":
+            if item["score"] is not None and item["score"] < 40:
+                failures.append(f"Kandidat review {item['id']} berada di bawah safety floor 40.")
+        else:
+            failures.append(f"Kandidat {item['id']} memiliki quality tier tidak valid: {tier or '-'}.")
+        if item["publicScore"] is None or not 6 <= item["publicScore"] <= 10:
+            failures.append(f"Kandidat {item['id']} tidak memiliki public score 6-10 yang valid.")
     if len(reported) > target_count + quality_margin:
         failures.append(
             f"Jumlah kandidat {len(reported)} melewati batas adaptif {target_count + quality_margin}."
@@ -214,6 +228,8 @@ def run_case(
         failures.append(
             "Prediksi retention jenuh di plafon; sinyal kandidat tidak terkalibrasi."
         )
+    recommended_count = sum(item.get("qualityTier") in {"strong", "good"} for item in reported)
+    review_count = sum(item.get("qualityTier") == "review" for item in reported)
     return {
         "case": name,
         "targetCount": target_count,
@@ -223,6 +239,8 @@ def run_case(
         "elapsedSeconds": elapsed,
         "candidateCount": len(reported),
         "available": len(reported),
+        "recommendedCount": recommended_count,
+        "reviewWorthyCount": review_count,
         "durations": durations,
         "scores": scores,
         "retentionScores": retention_scores,
@@ -288,6 +306,7 @@ def main() -> int:
     for item in results:
         print(
             f"{item['case']} target={item['targetCount']}: {item['status']} | {item['candidateCount']} kandidat | "
+            f"recommended={item['recommendedCount']} review={item['reviewWorthyCount']} | "
             f"{item['elapsedSeconds']:.2f}s | duration={item['durations']} | score={item['scores']}"
         )
         for failure in item["failures"]:

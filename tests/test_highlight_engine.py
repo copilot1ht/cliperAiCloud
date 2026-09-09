@@ -38,11 +38,14 @@ def test_story_and_payoff_penalties_are_continuous_not_threshold_cliffs():
 
 
 def test_public_score_uses_deterministic_rounding_and_keeps_ten_rare():
-    assert public_score_out_of_ten(65) == 7
-    assert public_score_out_of_ten(75) == 8
-    assert public_score_out_of_ten(85) == 9
-    assert public_score_out_of_ten(93) == 9
-    assert public_score_out_of_ten(94) == 10
+    assert public_score_out_of_ten(55) == 6.5
+    assert public_score_out_of_ten(64) == 7.2
+    assert public_score_out_of_ten(65) == 7.3
+    assert public_score_out_of_ten(75) == 8.2
+    assert public_score_out_of_ten(85) == 9.0
+    assert public_score_out_of_ten(93) == 9.5
+    assert public_score_out_of_ten(94) == 9.6
+    assert public_score_out_of_ten(100) == 10.0
 
 
 def test_candidate_generation_is_repeatable_without_fake_99_scores():

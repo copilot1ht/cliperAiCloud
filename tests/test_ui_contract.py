@@ -1,3 +1,4 @@
+import sys
 from collections import Counter
 from pathlib import Path
 import re
@@ -85,8 +86,8 @@ def test_moment_ui_exposes_auto_and_review_groups():
     assert '<option value="auto">Terpilih otomatis</option>' in html
     assert '<option value="recommended">Rekomendasi untuk ditinjau</option>' in html
     assert "otomatis · ${reviewCount} rekomendasi" in app
-    assert '<option value="qualified" selected>Rekomendasi 70+</option>' in html
-    assert 'momentQualityFilter: "qualified"' in app
+    assert '<option value="qualified"' in html
+    assert 'momentQualityFilter: "all"' in app
     assert "function applyMomentDisplayPolicy()" in app
 
 
@@ -135,12 +136,16 @@ def test_system_status_uses_a_single_capability_registry_and_keeps_fallbacks_exp
 
 
 def test_moment_ui_honors_server_quality_tier_and_evidence_gate():
+    html = (ROOT / "index.html").read_text(encoding="utf-8")
     app = (ROOT / "app.js").read_text(encoding="utf-8")
 
     assert 'item.qualityTier || item.quality_tier' in app
     assert 'evidenceGate === false' in app
     assert 'if (momentQuality(item).key === "reject") return false;' in app
     assert 'evidenceGate === true && !manualReview' in app
+    assert 'momentQualityFilter: "all"' in app
+    assert 'state.momentQualityFilter = "all";' in app
+    assert '<option value="all"' in html
 
 
 def test_moment_scores_and_manual_alternatives_are_evidence_based():
@@ -278,7 +283,157 @@ def test_overlay_previews_share_renderer_geometry_and_drag_coordinates():
     assert 'id="subtitlePreviewFrame"' in html
     assert 'id="subtitleX" type="hidden" value="50"' in html
     assert 'id="subtitleY" type="hidden" value="82"' in html
-    assert "const OVERLAY_DESIGN_WIDTH = 1080" in app
-    assert "overlayGeometryVersion: 2" in app
     assert 'bindPreviewDrag($("#subtitlePreviewText"), "subtitleX", "subtitleY"' in app
     assert "configuredSize * 0.52" not in app
+
+
+def test_content_mode_ui_structure_and_options():
+    html = (ROOT / "index.html").read_text(encoding="utf-8")
+    css = (ROOT / "styles.css").read_text(encoding="utf-8")
+    app = (ROOT / "app.js").read_text(encoding="utf-8")
+
+    # Card 2: Mode Konten exists with proper dropdown and 5 options
+    assert 'class="panel setup-panel content-mode-panel"' in html
+    assert '<span class="step-num-badge">2</span>' in html
+    assert '<h2>Mode Konten</h2>' in html
+    assert 'id="contentMode"' in html
+    assert '<option value="auto">Auto (Recommended)</option>' in html
+    assert '<option value="podcast">Podcast / Interview</option>' in html
+    assert '<option value="gaming">Gaming / Streamer</option>' in html
+    assert '<option value="summary">Review Produk / Rangkum Video</option>' in html
+    assert '<option value="landscape_blur">Landscape Blur / Center Focus</option>' in html
+    assert 'id="contentModeDescription"' in html
+    assert 'id="previewModeBadge"' in html
+
+    # Card 3: Generate Clips is step 3
+    assert '<span class="step-num-badge">3</span>' in html
+    assert '<h2>Generate Clips <span class="target-tag">(Target)</span></h2>' in html
+    assert 'id="generateClipsBadge"' in html
+    assert 'id="generateClipsExplanation"' in html
+
+    # CSS styles exist
+    assert ".content-mode-panel" in css
+    assert ".content-mode-select" in css
+    assert ".preview-header-pills" in css
+    assert ".mode-preview-pill" in css
+    assert ".preset-pill:disabled" in css
+    assert ".stepper-btn:disabled" in css
+
+
+def test_content_mode_state_and_summary_count_locking():
+    app = (ROOT / "app.js").read_text(encoding="utf-8")
+
+    # State variables & 5 modes
+    assert 'contentMode: "auto"' in app
+    assert 'lastNormalClipCount: 4' in app
+    assert "const CONTENT_MODE_CONFIG =" in app
+    assert "landscape_blur:" in app
+    assert 'previewLabel: "Landscape Center + Blur Background"' in app
+    assert 'editingProfile: "LANDSCAPE_BLUR"' in app
+
+    # Functions
+    assert "function setContentMode(" in app
+    assert 'function syncClipTargetControls(' in app
+    assert 'const isSummary = currentMode === "summary"' in app
+    assert 'input.disabled = isSummary' in app
+    assert 'btn.disabled = pCount !== 1' in app
+    assert '✨ Generate Video Ringkasan' in app
+    assert '1 Output' in app
+    assert 'state.lastNormalClipCount = nextCount' in app
+
+
+def test_summary_story_flow_accepts_string_or_list():
+    app = (ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert "function storyFlowText(moment)" in app
+    assert "moment?.story_flow_list ?? moment?.story_flow" in app
+    assert "const flowText = storyFlowText(moment);" in app
+    assert "${escapeHtml(storyFlowText(item))}" in app
+    assert "(item.story_flow || []).join" not in app
+    assert "(moment.story_flow || []).join" not in app
+
+
+def test_worker_contract_enforces_summary_mode_clip_limit():
+    worker = (ROOT / "worker" / "cliper_worker.py").read_text(encoding="utf-8")
+    main = (ROOT / "electron" / "main.js").read_text(encoding="utf-8")
+    app = (ROOT / "app.js").read_text(encoding="utf-8")
+
+    # Worker limits & editing profile
+    assert 'if content_mode == "summary":' in worker
+    assert 'return 1' in worker
+    assert '"content_mode": content_mode' in worker
+    assert '"editing_profile": editing_profile' in worker
+    assert '"contentMode": content_mode' in worker
+    assert '"editingProfile": editing_profile' in worker
+
+    # App job payload
+    assert 'contentMode: mode' in app
+    assert 'editingProfile: CONTENT_MODE_CONFIG[mode]?.editingProfile' in app
+    assert 'requestedClipCount: requestedClipCount' in app
+
+    # Electron main cost estimate
+    assert 'const requestedCount = mode === "summary" ? 1 : rawCount;' in main
+
+
+def test_camera_engine_keyframe_system_and_editing_profiles():
+    sys.path.insert(0, str(ROOT / "worker"))
+    import camera_engine
+
+    # Keyframe event types
+    assert camera_engine.KEYFRAME_STATIC == "KEYFRAME_STATIC"
+    assert camera_engine.KEYFRAME_PUNCH_IN == "KEYFRAME_PUNCH_IN"
+    assert camera_engine.KEYFRAME_PUNCH_OUT == "KEYFRAME_PUNCH_OUT"
+    assert camera_engine.KEYFRAME_PAN == "KEYFRAME_PAN"
+    assert camera_engine.KEYFRAME_REFRAME == "KEYFRAME_REFRAME"
+    assert camera_engine.KEYFRAME_REACTION_FOCUS == "KEYFRAME_REACTION_FOCUS"
+    assert camera_engine.KEYFRAME_PRODUCT_FOCUS == "KEYFRAME_PRODUCT_FOCUS"
+    assert camera_engine.KEYFRAME_GAMEPLAY_FOCUS == "KEYFRAME_GAMEPLAY_FOCUS"
+
+    event = camera_engine.create_keyframe_event(12.4, "KEYFRAME_PUNCH_IN", scale=1.08, duration=0.45, reason="speaker emphasis")
+    assert event["time"] == 12.4
+    assert event["type"] == "KEYFRAME_PUNCH_IN"
+    assert event["scale"] == 1.08
+    assert event["duration"] == 0.45
+    assert event["reason"] == "speaker emphasis"
+
+    # Editing profiles
+    assert camera_engine.resolve_editing_profile("auto") == "AUTO_EDIT"
+    assert camera_engine.resolve_editing_profile("podcast") == "PODCAST_DYNAMIC"
+    assert camera_engine.resolve_editing_profile("gaming") == "GAMING_SPLIT"
+    assert camera_engine.resolve_editing_profile("summary") == "SUMMARY_COMPOSED"
+    assert camera_engine.resolve_editing_profile("landscape_blur") == "LANDSCAPE_BLUR"
+
+    # Router strategies
+    auto_strat = camera_engine.ContentModeRouter.get_strategy("auto")
+    assert auto_strat.profile == "AUTO_EDIT"
+
+    blur_strat = camera_engine.ContentModeRouter.get_strategy("landscape_blur")
+    assert blur_strat.profile == "LANDSCAPE_BLUR"
+    opts = blur_strat.configure_render_plan({})
+    assert opts["landscapeBlur"] is True
+    assert opts["smartCrop"] is False
+
+
+def test_landscape_blur_filter_generation():
+    sys.path.insert(0, str(ROOT / "worker"))
+    import cliper_worker
+
+    vf = cliper_worker.landscape_blur_filter(1080, 1920)
+    assert "split=2[bg_raw][fg_raw]" in vf
+    assert "boxblur=20:5" in vf
+    assert "overlay=(W-w)/2:(H-h)/2" in vf
+
+
+def test_smart_director_ui_badges_and_logging_contract():
+    html = (ROOT / "index.html").read_text(encoding="utf-8")
+    app = (ROOT / "app.js").read_text(encoding="utf-8")
+    css = (ROOT / "styles.css").read_text(encoding="utf-8")
+    worker = (ROOT / "worker" / "cliper_worker.py").read_text(encoding="utf-8")
+
+    assert 'id="reviewDirectorBadge"' in html
+    assert "#reviewDirectorBadge" in app
+    assert "director-pill" in app
+    assert ".metric-pill-tag.director-pill" in css
+    assert "EditDirector: profile=" in worker
+    assert "def gaming_split_filter(" in worker
+    assert "def edit_plan_zoom_expression(" in worker

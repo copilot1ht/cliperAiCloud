@@ -21,7 +21,7 @@ const state = {
   videoDuration: 0,
   previewImageUrl: "",
   momentSearch: "",
-  momentQualityFilter: "qualified",
+  momentQualityFilter: "all",
   momentSort: "score",
   apiLastTestedAt: "",
   apiLastLatencyMs: 0,
@@ -34,6 +34,8 @@ const state = {
   cancelRequested: false,
   aiUsageToday: { date: "", inputTokens: 0, outputTokens: 0, estimatedCostRp: 0 },
   subtitlePreviewTimer: null,
+  contentMode: "auto",
+  lastNormalClipCount: 4,
   logLines: [
     "[ready] Menunggu link YouTube"
   ]
@@ -400,24 +402,140 @@ function setSettingsTab(tab) {
   $$(".settings-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `settings-${nextTab}`));
 }
 
+const CONTENT_MODE_CONFIG = {
+  auto: {
+    label: "Auto (Recommended)",
+    description: "AI mendeteksi jenis konten dan memilih strategi editing terbaik.",
+    badge: "Processing Mode",
+    previewLabel: "Auto Strategy",
+    editingProfile: "AUTO_EDIT"
+  },
+  podcast: {
+    label: "Podcast / Interview",
+    description: "AI mencari percakapan, insight, jawaban dan cerita yang utuh.",
+    badge: "Podcast Strategy",
+    previewLabel: "Podcast Strategy",
+    editingProfile: "PODCAST_DYNAMIC"
+  },
+  gaming: {
+    label: "Gaming / Streamer",
+    description: "Gameplay tetap fokus dengan streamer/reaction ditata otomatis.",
+    badge: "Gaming Strategy",
+    previewLabel: "Gameplay + Streamer Layout",
+    editingProfile: "GAMING_SPLIT"
+  },
+  summary: {
+    label: "Review Produk / Rangkum Video",
+    description: "AI mencari poin penting dari video panjang dan menyusunnya menjadi 1 video ringkas.",
+    badge: "Summary Strategy",
+    previewLabel: "1 Video Ringkasan",
+    editingProfile: "SUMMARY_COMPOSED"
+  },
+  landscape_blur: {
+    label: "Landscape Blur / Center Focus",
+    description: "Video landscape tetap utuh di tengah dengan background blur vertikal otomatis.",
+    badge: "Landscape Blur",
+    previewLabel: "Landscape Center + Blur Background",
+    editingProfile: "LANDSCAPE_BLUR"
+  }
+};
+
+function setContentMode(mode, options = {}) {
+  const validModes = ["auto", "podcast", "gaming", "summary", "landscape_blur"];
+  const selectedMode = validModes.includes(mode) ? mode : "auto";
+  const prevMode = state.contentMode || "auto";
+  state.contentMode = selectedMode;
+
+  const select = $("#contentMode");
+  if (select && select.value !== selectedMode) {
+    select.value = selectedMode;
+  }
+
+  const desc = $("#contentModeDescription");
+  if (desc) {
+    desc.textContent = CONTENT_MODE_CONFIG[selectedMode]?.description || CONTENT_MODE_CONFIG.auto.description;
+  }
+
+  const badge = $("#contentModeBadge");
+  if (badge) {
+    badge.textContent = CONTENT_MODE_CONFIG[selectedMode]?.badge || "Processing Mode";
+  }
+
+  const previewBadge = $("#previewModeBadge");
+  if (previewBadge) {
+    previewBadge.textContent = CONTENT_MODE_CONFIG[selectedMode]?.previewLabel || "Auto Strategy";
+  }
+
+  if (selectedMode === "summary") {
+    if (state.requestedClipCount && state.requestedClipCount > 1) {
+      state.lastNormalClipCount = state.requestedClipCount;
+    }
+    syncClipTargetControls(1, "summary");
+  } else if (prevMode === "summary" || options.forceRestore) {
+    const restoredCount = state.lastNormalClipCount || 4;
+    syncClipTargetControls(restoredCount, selectedMode);
+  } else {
+    syncClipTargetControls(state.requestedClipCount || 4, selectedMode);
+  }
+
+  if (state.config) {
+    state.config.contentMode = selectedMode;
+  }
+}
+
 function normalizeRequestedClipCount(count, fallback = 4) {
   const numeric = Number(count);
   return Math.max(1, Math.min(10, Math.round(Number.isFinite(numeric) && numeric > 0 ? numeric : fallback)));
 }
 
-function syncClipTargetControls(count) {
-  const nextCount = normalizeRequestedClipCount(count);
+function syncClipTargetControls(count, modeOverride) {
+  const currentMode = modeOverride || state.contentMode || "auto";
+  const isSummary = currentMode === "summary";
+  const nextCount = isSummary ? 1 : normalizeRequestedClipCount(count);
   state.requestedClipCount = nextCount;
+
   const input = $("#clipCount");
-  if (input && Number(input.value) !== nextCount) {
+  if (input) {
     input.value = String(nextCount);
+    input.disabled = isSummary;
   }
+
+  const decBtn = $("#clipCountDecrement");
+  const incBtn = $("#clipCountIncrement");
+  if (decBtn) decBtn.disabled = isSummary;
+  if (incBtn) incBtn.disabled = isSummary;
+
   $$(".preset-pill").forEach((btn) => {
-    btn.classList.toggle("active", Number(btn.dataset.presetCount) === nextCount);
+    const pCount = Number(btn.dataset.presetCount);
+    if (isSummary) {
+      btn.classList.toggle("active", pCount === 1);
+      btn.disabled = pCount !== 1;
+      btn.classList.toggle("disabled", pCount !== 1);
+    } else {
+      btn.disabled = false;
+      btn.classList.remove("disabled");
+      btn.classList.toggle("active", pCount === nextCount);
+    }
   });
-  const label = nextCount === 1 ? "Generate 1 Clip" : `Generate ${nextCount} Clips`;
+
   const span = $("#findMomentsLabel");
-  if (span) span.textContent = label;
+  if (span) {
+    span.textContent = isSummary
+      ? "✨ Generate Video Ringkasan"
+      : (nextCount === 1 ? "✨ Generate 1 Clip" : `✨ Generate ${nextCount} Clips`);
+  }
+
+  const badge = $("#generateClipsBadge");
+  if (badge) {
+    badge.textContent = isSummary ? "1 Output" : "Semantic duration";
+  }
+
+  const expl = $("#generateClipsExplanation");
+  if (expl) {
+    expl.textContent = isSummary
+      ? "Beberapa bagian terbaik akan digabung menjadi 1 video ringkas (durasi adaptif ±1–3 menit)."
+      : "AI mencari momen cerita terbaik dan menyesuaikan durasi secara natural.";
+  }
 }
 
 const viewMeta = {
@@ -710,8 +828,40 @@ function renderMomentReview() {
       .map(([label, value]) => `<span><small>${label}</small><strong>${formatMomentMetric(value)}</strong></span>`)
       .join("");
   }
+  const editingProfile = moment.editingProfile || (state.contentMode ? CONTENT_MODE_CONFIG[state.contentMode]?.editingProfile : "AUTO_EDIT");
+  const editingDisplayMap = {
+    "PODCAST_DYNAMIC": "Dynamic Podcast",
+    "GAMING_SPLIT": "Gaming Split",
+    "LANDSCAPE_BLUR": "Landscape Blur",
+    "SUMMARY_COMPOSED": "Summary Story",
+    "AUTO_EDIT": "Smart Crop",
+  };
+  const editingLabel = editingDisplayMap[editingProfile] || "Smart Crop";
+  const kfCount = (moment.keyframes || (moment.smart_edit_plan && moment.smart_edit_plan.keyframes) || []).length;
+  const kfBadge = kfCount > 0 ? ` · ${kfCount} keyframes` : "";
+  setText("#reviewDirectorBadge", `${editingLabel}${kfBadge}`);
   const storyRolesEl = $("#reviewStoryRoles");
-  if (storyRolesEl) {
+  if (moment.is_summary_composition && Array.isArray(moment.composition_segments)) {
+    setText("#reviewHeaderTitle", "Video Ringkasan");
+    setText("#reviewClipTitle", moment.title || "Video Ringkasan");
+    const flowText = storyFlowText(moment);
+    setText("#reviewReason", `Video ringkasan utuh disusun dari ${moment.composition_segments.length} bagian sumber. Alur: ${flowText}`);
+    if (storyRolesEl) {
+      const segRows = moment.composition_segments.map((seg, idx) => `
+        <div class="summary-seg-row">
+          <span class="summary-seg-badge">${idx + 1}. ${escapeHtml(seg.bridgeLabel || seg.role)}</span>
+          <span class="summary-seg-time">${formatDuration(seg.sourceStart)} – ${formatDuration(seg.sourceEnd)}</span>
+          <small class="summary-seg-text">${escapeHtml((seg.text || "").slice(0, 80))}...</small>
+        </div>
+      `).join("");
+      storyRolesEl.innerHTML = `
+        <div class="summary-review-block">
+          <div class="summary-flow-title"><strong>Story Flow:</strong> ${escapeHtml(flowText)}</div>
+          <div class="summary-segments-container">${segRows}</div>
+        </div>
+      `;
+    }
+  } else if (storyRolesEl) {
     const components = momentScoreComponents(moment);
     const setupPct = Math.round(Number(components.hook || 80));
     const conflictPct = Math.round(Number(components.retention || 70));
@@ -866,21 +1016,67 @@ function aiFeatureConfig() {
   };
 }
 
+/**
+ * Deterministic, monotonic mapping from raw 0-100 evidence score to public display.
+ * Mirror of backend calibrate_public_score(). Must stay in sync.
+ * Piecewise linear interpolation between anchor points.
+ */
+function calibratePublicScore(raw) {
+  let s = Number(raw || 0);
+  if (s > 0 && s <= 10.0) {
+    s = s * 10.0;
+  }
+  const anchors = [
+    [0.0, 0.0],
+    [30.0, 5.8],
+    [40.0, 6.8],
+    [45.0, 7.9],
+    [50.0, 8.0],
+    [55.0, 8.1],
+    [60.0, 8.2],
+    [65.0, 8.6],
+    [70.0, 9.0],
+    [75.0, 9.3],
+    [80.0, 9.5],
+    [85.0, 9.7],
+    [90.0, 9.8],
+    [95.0, 9.9],
+    [100.0, 10.0],
+  ];
+  if (s <= anchors[0][0]) return anchors[0][1];
+  if (s >= anchors[anchors.length - 1][0]) return anchors[anchors.length - 1][1];
+  for (let i = 0; i < anchors.length - 1; i++) {
+    const [r0, d0] = anchors[i];
+    const [r1, d1] = anchors[i + 1];
+    if (s >= r0 && s <= r1) {
+      const ratio = (s - r0) / Math.max(1, r1 - r0);
+      let val = +(d0 + (d1 - d0) * ratio).toFixed(1);
+      if (s < 100.0 && val >= 10.0) val = 9.9;
+      return Math.min(10.0, val);
+    }
+  }
+  return 10.0;
+}
+
 function momentScoreOutOfTen(item) {
-  // Prefer public_score from backend (non-linear, evidence-calibrated mapping)
+  // Prefer backend-calibrated public_score (already a display decimal like 9.2)
   const obj = item && typeof item === "object" ? item : {};
+  const raw = Number(obj.score ?? item ?? 0);
+  if (Number.isFinite(raw) && raw <= 0) return 0;
   if (Number.isFinite(obj.public_score) && obj.public_score > 0) {
     return obj.public_score;
   }
-  // Fallback: non-linear mapping consistent with highlight_engine.public_score_out_of_ten
-  const s = Number(obj.score ?? item ?? 0);
-  if (!Number.isFinite(s) || s <= 0) return 0;
-  if (s >= 94) return 10;
-  if (s >= 85) return 9;
-  if (s >= 75) return 8;
-  if (s >= 65) return 7;
-  if (s >= 55) return 6;
-  return 5;
+  // Fallback: calibrate locally from raw evidence score
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return calibratePublicScore(raw);
+}
+
+function storyFlowText(moment) {
+  const flow = moment?.story_flow_list ?? moment?.story_flow ?? [];
+  if (Array.isArray(flow)) {
+    return flow.filter(Boolean).join(" -> ");
+  }
+  return String(flow || "").replace(/\s*->\s*/g, " -> ");
 }
 
 function formatMomentMetric10(value) {
@@ -891,26 +1087,46 @@ function formatMomentMetric10(value) {
 
 function momentQuality(item) {
   const tier = String(item.qualityTier || item.quality_tier || "").trim().toLowerCase();
-  if (tier === "strong" || tier === "excellent") return { key: "excellent", label: "Sangat Direkomendasikan", tierClass: "tier-sangat-rekomendasi" };
+  const publicLabel = String(item.public_label || item.publicLabel || "").trim();
+  if (tier === "strong" || tier === "excellent") return { key: "excellent", label: "Pilihan Terbaik", tierClass: "tier-sangat-rekomendasi" };
   if (tier === "good") return { key: "good", label: "Direkomendasikan", tierClass: "tier-rekomendasi" };
-  if (tier === "fair" || tier === "layak") return { key: "good", label: "Layak", tierClass: "tier-layak" };
-  if (tier === "review" || tier === "optional") return { key: "review", label: "Opsional", tierClass: "tier-opsional" };
+  if (tier === "fair" || tier === "bagus") return { key: "good", label: "Bagus", tierClass: "tier-rekomendasi" };
+  if (tier === "layak") return { key: "good", label: "Layak", tierClass: "tier-layak" };
+  if (tier === "cukup") return { key: "good", label: "Cukup", tierClass: "tier-layak" };
+  if (tier === "review" || tier === "optional") {
+    if (publicLabel && publicLabel !== "Perlu Review") {
+      const isBest = publicLabel === "Pilihan Terbaik";
+      return {
+        key: isBest ? "excellent" : "good",
+        label: publicLabel,
+        tierClass: isBest ? "tier-sangat-rekomendasi" : (publicLabel === "Direkomendasikan" ? "tier-rekomendasi" : "tier-layak")
+      };
+    }
+    return { key: "review", label: "Perlu Review", tierClass: "tier-opsional" };
+  }
   if (tier === "reject") return { key: "reject", label: "Tidak layak", tierClass: "tier-reject" };
 
-  const evidenceGate = item.evidenceGate ?? item.evidence_gate;
-  if (item.manualReview || evidenceGate === false) return { key: "review", label: "Low Priority / Review", tierClass: "tier-opsional" };
-  const s10 = momentScoreOutOfTen(item);
-  if (s10 >= 9) return { key: "excellent", label: "Sangat Direkomendasikan", tierClass: "tier-sangat-rekomendasi" };
-  if (s10 === 8) return { key: "good", label: "Direkomendasikan", tierClass: "tier-rekomendasi" };
-  if (s10 === 7) return { key: "good", label: "Layak", tierClass: "tier-layak" };
-  if (s10 === 6) return { key: "review", label: "Opsional", tierClass: "tier-opsional" };
-  return { key: "review", label: "Low Priority / Review", tierClass: "tier-opsional" };
+  const evidenceGate = item?.evidenceGate ?? item?.evidence_gate;
+  const ds = momentScoreOutOfTen(item);
+  if (item?.manualReview || evidenceGate === false) {
+    if (ds >= 9.4) return { key: "excellent", label: "Pilihan Terbaik", tierClass: "tier-sangat-rekomendasi" };
+    if (ds >= 8.4) return { key: "good", label: "Direkomendasikan", tierClass: "tier-rekomendasi" };
+    if (ds >= 7.9) return { key: "good", label: "Layak", tierClass: "tier-layak" };
+    return { key: "review", label: "Perlu Review", tierClass: "tier-opsional" };
+  }
+
+  // Fallback to display score bands
+  if (ds >= 9.4) return { key: "excellent", label: "Pilihan Terbaik", tierClass: "tier-sangat-rekomendasi" };
+  if (ds >= 8.4) return { key: "good", label: "Direkomendasikan", tierClass: "tier-rekomendasi" };
+  if (ds >= 7.9) return { key: "good", label: "Layak", tierClass: "tier-layak" };
+  return { key: "review", label: "Perlu Review", tierClass: "tier-opsional" };
 }
 
 function momentQualityDisplay(item) {
   const score = momentScoreOutOfTen(item || {});
   return score > 0 ? `${score}/10` : "Perlu ditinjau";
 }
+
 
 function formatMomentMetric(value) {
   const numeric = Number(value);
@@ -942,11 +1158,10 @@ function momentReviewLabel(item) {
 }
 
 function applyMomentDisplayPolicy() {
-  const visible = momentBank.filter((item) => !item.rejected);
-  const qualified = visible.filter((item) =>
-    ["excellent", "good"].includes(momentQuality(item).key)
-  );
-  state.momentQualityFilter = qualified.length ? "qualified" : "all";
+  // The worker has already removed invalid/duplicate stories. Show its whole
+  // shortlist first so review-worthy results are not hidden behind one strong
+  // recommendation and the requested target remains visible to the user.
+  state.momentQualityFilter = "all";
   const control = $("#momentQualityFilter");
   if (control) control.value = state.momentQualityFilter;
 }
@@ -995,14 +1210,12 @@ function renderMoments() {
   const totalFound = diag.discoveredCandidates || momentBank.length;
   const targetOriginal = diag.requestedClips || requested;
   let countSummary;
-  if (visibleMoments.length > 0 && visibleMoments.length >= targetOriginal) {
-    const extraCount = visibleMoments.length - targetOriginal;
-    countSummary = `${visibleMoments.length} momen terbaik ditemukan`;
-    const subParts = [`Target awal ${targetOriginal} clip`, `${totalFound} kandidat dianalisis`];
-    if (extraCount > 0) subParts.push(`${extraCount} cerita tambahan yang layak`);
-    countSummary += ` (${subParts.join(' \u00b7 ')})`;
+  if (visibleMoments.length > 0 && visibleMoments.length >= targetOriginal - 1) {
+    countSummary = totalFound
+      ? `Target ${targetOriginal} • Dianalisis ${totalFound} • Momen Terbaik ${visibleMoments.length}`
+      : `${visibleMoments.length} momen terbaik ditemukan • Target awal ${targetOriginal}`;
   } else if (visibleMoments.length > 0) {
-    countSummary = `${visibleMoments.length} momen terbaik ditemukan · Anda meminta ${targetOriginal} clip; kandidat lemah tidak ditambahkan`;
+    countSummary = `${visibleMoments.length} momen relevan ditemukan dari target ${targetOriginal}.`;
   } else {
     countSummary = `${autoCount} otomatis · ${reviewCount} rekomendasi · ${visibleMoments.length} tampil`;
   }
@@ -1045,7 +1258,22 @@ function renderMoments() {
       const displayScore = momentQualityDisplay(item);
       const themeLabel = item.category || item.topic || "Story";
       const whyReason = item.reason || "Story lengkap dengan payoff yang kuat dan memberi inspirasi.";
+      const editingProfile = item.editingProfile || (state.contentMode ? CONTENT_MODE_CONFIG[state.contentMode]?.editingProfile : "AUTO_EDIT");
+      const editingDisplayMap = {
+        "PODCAST_DYNAMIC": "Podcast",
+        "GAMING_SPLIT": "Gaming Split",
+        "LANDSCAPE_BLUR": "Landscape Blur",
+        "SUMMARY_COMPOSED": "Summary",
+        "AUTO_EDIT": "Smart Crop",
+      };
+      const editingLabel = editingDisplayMap[editingProfile] || "Smart Crop";
       const displayIdx = idx + 1;
+      const isSummaryComp = Boolean(item.is_summary_composition || item.composition_segments);
+      const isCompleteStory = item.completeness_report ? Boolean(item.completeness_report.is_complete) : true;
+      const storyBadgeText = isSummaryComp ? "Summary Utuh" : (isCompleteStory ? "Story: Utuh" : "Story: Review");
+      const storyBadgeClass = isCompleteStory ? "story-pill" : "story-pill story-review";
+      const hasStrongContext = (item.internal_dimensions?.contextCompleteness || item.internal_dimensions?.context_completeness || 0) >= 75;
+      const hasStrongPayoff = (item.internal_dimensions?.payoffCompleteness || item.internal_dimensions?.payoff_strength || 0) >= 75;
 
       return `
         <article class="moment-card-v12 quality-${quality.key} ${checked ? "selected" : ""} ${active ? "active-review" : ""} ${item.lowQuality ? "low-quality" : ""}" data-moment-row="${item.id}" tabindex="0">
@@ -1065,12 +1293,20 @@ function renderMoments() {
             </div>
             <div class="moment-time-duration">${escapeHtml(item.time)}</div>
             <div class="moment-metrics-row">
+              <span class="metric-pill-tag ${storyBadgeClass}">${storyBadgeText}</span>
+              ${hasStrongContext ? '<span class="metric-pill-tag">Strong Context</span>' : ''}
+              ${hasStrongPayoff ? '<span class="metric-pill-tag">Strong Payoff</span>' : ''}
               <span class="metric-pill-tag">Hook ${hookScore10}</span>
               <span class="metric-pill-tag">Story ${storyScore10}</span>
               <span class="metric-pill-tag">Payoff ${payoffScore10}</span>
               <span class="metric-pill-tag theme-tag">${escapeHtml(themeLabel)}</span>
+              <span class="metric-pill-tag director-pill">${escapeHtml(editingLabel)}</span>
             </div>
-            <div class="moment-why-box">${escapeHtml(whyReason)}</div>
+            ${isSummaryComp && item.composition_segments ? `
+              <div class="moment-why-box">
+                <strong>Alur Cerita:</strong> ${escapeHtml(storyFlowText(item))} (${item.composition_segments.length} bagian sumber)
+              </div>
+            ` : `<div class="moment-why-box">${escapeHtml(whyReason)}</div>`}
             <div class="moment-card-actions">
               <button type="button" class="card-action-btn card-preview-btn" data-preview-moment="${item.id}">Preview</button>
               <button type="button" class="card-action-btn card-select-btn ${checked ? "selected" : ""}" data-toggle-moment-btn="${item.id}">${checked ? "✓ Selected" : "Select"}</button>
@@ -1091,7 +1327,10 @@ function normalizeMomentForUi(item, index, video = {}) {
   const rawScore = Number(item.score);
   const metrics = item.metrics && typeof item.metrics === "object" ? item.metrics : null;
   const scoreProvenance = item.scoreProvenance || item.score_provenance || metrics?.score_provenance;
-  const hasScoreEvidence = Number.isFinite(rawScore) && rawScore > 0 && Boolean(metrics || scoreProvenance);
+  const isSummaryComposition = item.is_summary_composition === true
+    && Array.isArray(item.composition_segments)
+    && item.composition_segments.length > 0;
+  const hasScoreEvidence = Number.isFinite(rawScore) && rawScore > 0 && Boolean(metrics || scoreProvenance || isSummaryComposition);
   const score = hasScoreEvidence ? Math.max(0, Math.min(100, Math.round(rawScore))) : 0;
   const type = item.ai_selected ? (item.ai_source || "AI Provider") : (item.segment_type || item.type || "Local Heuristic");
   const title = item.titleSuggestion || item.title || `Moment ${index + 1}`;
@@ -1150,15 +1389,19 @@ function collectPayload() {
   const logoOverlayEnabled = Boolean(watermarkEnabled && logoPath);
   const sourceChannel = state.lastAnalysis?.video?.channel || "YouTube";
   const watermarkText = $("#watermarkText")?.value?.trim() || (logoOverlayEnabled ? "Cliper Studio Plus" : "");
-  const requestedClipCount = normalizeRequestedClipCount($("#clipCount").value);
+  const mode = state.contentMode || "auto";
+  const requestedClipCount = mode === "summary" ? 1 : normalizeRequestedClipCount($("#clipCount")?.value);
   const settingsContractVersion = Number(state.settingsContract?.version || 1);
   return {
+    contentMode: mode,
+    editingProfile: CONTENT_MODE_CONFIG[mode]?.editingProfile || "AUTO_EDIT",
     sourceMode: "youtube",
     url: $("#youtubeUrl").value.trim(),
     // Keep the source duration explicit for Cloud job reservation. The Worker
     // also receives the selected duration when a range is chosen below.
     videoDuration: Math.max(0, Number(state.videoDuration || state.lastAnalysis?.video?.duration || 0)),
     clipCount: requestedClipCount,
+    requestedClipCount: requestedClipCount,
     allRecommendedClips: false,
     fullAutoMode: true,
     autoClipCount: false,
@@ -3001,8 +3244,9 @@ async function scanSubtitles() {
 
 async function findMoments() {
   setSourceMode("youtube");
-  const requestedClipCount = normalizeRequestedClipCount($("#clipCount").value);
-  syncClipTargetControls(requestedClipCount);
+  const mode = state.contentMode || "auto";
+  const requestedClipCount = mode === "summary" ? 1 : normalizeRequestedClipCount($("#clipCount")?.value);
+  syncClipTargetControls(requestedClipCount, mode);
   const target = requestedClipCount;
   if (!$("#youtubeUrl").value.trim()) {
     toast("Masukkan YouTube URL dulu");
@@ -3250,6 +3494,7 @@ function buildConfig() {
     apiLastLatencyMs: state.apiLastLatencyMs || 0,
     apiLastResponse: state.apiLastResponse || "",
     aiUsageToday: normalizeAiUsage(state.aiUsageToday),
+    contentMode: state.contentMode || fieldValue("contentMode", "auto") || "auto",
     clipCount: String(normalizeRequestedClipCount(fieldValue("clipCount", "4"))),
     scoreMode: "Content-aware editor score",
     minDuration: fieldValue("minDuration", "30"),
@@ -3384,6 +3629,7 @@ function applyConfig(config = {}) {
   setValue("#aiHookToggle", config.aiHookToggle ?? true);
   setValue("#aiCaptionToggle", config.aiCaptionToggle ?? true);
   setValue("#aiTitleToggle", config.aiTitleToggle ?? true);
+  setContentMode(config.contentMode || "auto");
   syncClipTargetControls(config.clipCount ?? 4);
   setValue("#scoreMode", config.scoreMode || "Content-aware editor score");
   setValue("#minDuration", config.minDuration || "30");
@@ -3771,13 +4017,25 @@ function bindEvents() {
   });
 
   function setRequestedClipCount(count) {
+    if (state.contentMode === "summary") {
+      syncClipTargetControls(1, "summary");
+      updateCounters();
+      renderPipelinePreview();
+      return;
+    }
     const nextCount = normalizeRequestedClipCount(count);
+    state.lastNormalClipCount = nextCount;
     syncClipTargetControls(nextCount);
     updateCounters();
     renderPipelinePreview();
   }
 
   function updateGenerateButtonLabel(count) {
+    if (state.contentMode === "summary") {
+      const span = $("#findMomentsLabel");
+      if (span) span.textContent = "✨ Generate Video Ringkasan";
+      return;
+    }
     const num = normalizeRequestedClipCount(count || $("#clipCount")?.value || 4);
     const label = num === 1 ? "Generate 1 Clip" : `Generate ${num} Clips`;
     const span = $("#findMomentsLabel");
@@ -3785,6 +4043,12 @@ function bindEvents() {
       span.textContent = label;
     }
   }
+
+  $("#contentMode")?.addEventListener("change", (event) => {
+    setContentMode(event.target.value);
+    updateCounters();
+    renderPipelinePreview();
+  });
 
   $("#clipCount")?.addEventListener("input", (event) => {
     const val = Number(event.target.value);
@@ -4444,6 +4708,8 @@ function bindEvents() {
     setValue("#rangeStart", "00:00");
     setValue("#rangeEnd", "");
     setValue("#multipleRanges", "");
+    setContentMode("auto");
+    syncClipTargetControls(4);
     $("#clipCount").value = 0;
     state.lastAnalysis = null;
     state.lastTranscript = [];

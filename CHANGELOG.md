@@ -1,5 +1,67 @@
 # Cliper Studio Plus Changelog
 
+## v1.13.0 - 5 Editing Intelligence Modes, Smart Camera & Event-Driven Keyframe Director
+
+Features & Improvements:
+
+* **5 Editing Intelligence Modes**:
+  - **Auto**: Multi-modal detection routing to podcast, gaming, or general narrative without guessing summary.
+  - **Podcast / Interview**: `SpeakerAttentionMap` combining diarization, speaking activity, and face tracking. Debounces short interjections (< 0.85s) and holds listener reactions.
+  - **Gaming / Streamer**: Adaptive 9:16 layout (55–68% gameplay, 32–45% streamer facecam). Multi-corner facecam detection, HUD protection, gameplay climax focus, and streamer reaction enlargement.
+  - **Review / Rangkum Video**: Composition mode assembling multiple source segments into 1 cohesive 1–3 minute story. Presenter -> Product focus -> Detail -> Return presenter -> Verdict punch.
+  - **Landscape Blur / Center Focus**: Preserves original 16:9 sharp in the center with blurred and darkened cover background without edge clipping or stretch.
+* **Event-Driven Keyframe Director & Motion Budget**:
+  - Keyframes are triggered strictly by narrative and visual events, never periodic timers.
+  - Priority-based motion budget suppresses low priority zooms near high priority events.
+* **Story Engine V2 & Summary Composer**:
+  - 18 observable semantic narrative roles.
+  - Context recovery (backward setup expansion and forward payoff snapping).
+  - 00:00 timeline rebasing and subtitle synchronization for multi-segment summaries.
+
+## v1.12.6 - Smart Target Tolerance & Public Score Revision
+
+Features & Improvements:
+
+* **Smart Target Tolerance**: Moment AI follows user requested clip count with intelligent tolerance:
+  - Target 1: 1–2
+  - Target 2: 1–3
+  - Target 4: 3–5 (up to 6 if exceptional)
+  - Target 6: 5–7 (up to 8 if exceptional)
+  - Target 8: 7–9 (up to 10 if exceptional)
+  - Target 10: 9–10
+  - Priority: Target -> ±1 -> optional +2 only when a genuinely strong story candidate exists.
+* **3-Tier Shortlist & Adaptive Recovery**:
+  - Recommended -> Viable/Review-Worthy -> Reject.
+  - Quality gate ranks and labels candidates without dropping viable moments.
+  - Hard reject ONLY: broken/incomplete story, invalid boundary, duplicate/overlap, irrelevant, meaningless.
+  - Adaptive recovery checks pool and relaxes soft evidence gate when results < target - 1. Never outputs 0 when viable candidates exist.
+* **Lower Minimum Display & Public Score Calibration**:
+  - Deterministic monotonic display score mapping from raw evidence score:
+    - raw 4.5 -> public 6.0 (minimum display floor for viable candidates)
+    - raw 5.0 -> public 6.4
+    - raw 5.5 -> public 6.8
+    - raw 6.0 -> public 7.2
+    - raw 6.5 -> public 7.6
+    - raw 7.0 -> public 8.0
+    - raw 7.5 -> public 8.3
+    - raw 8.0 -> public 8.6
+    - raw 8.5 -> public 8.9
+    - raw 9.0 -> public 9.3
+    - raw 9.5 -> public 9.6
+    - raw 10.0 -> public 10.0
+  - Internal raw score preserved untouched for ranking, audit, and quality evidence.
+  - Labels: 6.0–6.7 = "Cukup", 6.8–7.4 = "Layak", 7.5–8.4 = "Bagus", 8.5–9.3 = "Direkomendasikan", 9.4–10.0 = "Pilihan Terbaik".
+* **UI Summary**:
+  - Displays `"${visibleMoments.length} momen terbaik ditemukan • Target awal ${targetOriginal}"` when within target tolerance.
+  - Displays `"${visibleMoments.length} momen relevan ditemukan dari target ${targetOriginal}."` when fewer viable stories exist.
+  - Default quality filter set to "Semua Kualitas".
+
+Validation:
+
+* 268 automated tests pass across desktop UI contracts, moment fallback, highlight engine, and target fulfillment.
+* Real video QA across multiple durations confirms target tolerances and public score distributions.
+* Wallet, billing, payment, and media integrity unchanged.
+
 ## v1.12.5 - Critical Highlight Reliability Hotfix
 
 Fixed:

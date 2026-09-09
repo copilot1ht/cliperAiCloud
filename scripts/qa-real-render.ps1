@@ -6,6 +6,9 @@ param(
   [double]$EndSeconds = -1,
   [ValidateSet("720p", "1080p")]
   [string]$Resolution = "720p",
+  [ValidateSet("auto", "podcast", "gaming", "summary", "landscape_blur")]
+  [string]$ContentMode = "auto",
+  [string]$FacecamRegion = "",
   [switch]$Hook,
   [switch]$CpuSafe,
   [switch]$RequireTwoPersonDirector
@@ -112,6 +115,7 @@ if ($clipDuration -lt 4) {
   throw "Durasi benchmark terlalu pendek: $clipDuration detik."
 }
 
+$allSegments = @()
 $segments = @()
 if (Test-Path -LiteralPath $transcriptPath) {
   $transcriptDocument = Get-Content -LiteralPath $transcriptPath -Raw | ConvertFrom-Json
@@ -136,6 +140,59 @@ if (Test-Path -LiteralPath $profilePath) {
   $profile = Get-Content -LiteralPath $profilePath -Raw | ConvertFrom-Json
 }
 
+$summarySegments = @()
+$summaryRebasedSubtitles = @()
+if ($ContentMode -eq "summary") {
+  $sourceDuration = 0.0
+  if ($sourceManifest -and $sourceManifest.duration) {
+    $sourceDuration = [double]$sourceManifest.duration
+  } elseif ($profile -and $profile.duration) {
+    $sourceDuration = [double]$profile.duration
+  } else {
+    $sourceDuration = [math]::Max($clipEnd, 90.0)
+  }
+  $anchors = @(0.12, 0.45, 0.78)
+  $cursor = 0.0
+  foreach ($anchor in $anchors) {
+    $target = [math]::Max(0.0, [math]::Min($sourceDuration - 8.0, $sourceDuration * $anchor))
+    $sourceSeg = @(
+      $allSegments |
+        Where-Object { [double]$_.start -ge $target -and ([string]$_.text).Trim().Length -ge 20 } |
+        Select-Object -First 1
+    )[0]
+    if ($sourceSeg) {
+      $s = [double]$sourceSeg.start
+      $e = [math]::Min($s + 7.0, [double]$sourceSeg.end)
+      if ($e -le $s + 1.5) {
+        $e = [math]::Min($s + 7.0, $sourceDuration)
+      }
+      if ($e -gt $s + 1.5) {
+        $outEnd = $cursor + ($e - $s)
+        $summarySegments += [pscustomobject]@{
+          sourceStart = $s
+          sourceEnd = $e
+          outputStart = $cursor
+          outputEnd = $outEnd
+          purpose = "summary_point"
+        }
+        $summaryRebasedSubtitles += [pscustomobject]@{
+          start = $cursor
+          end = $outEnd
+          text = [string]$sourceSeg.text
+        }
+        $cursor = $outEnd
+      }
+    }
+  }
+  if (@($summarySegments).Count -lt 2) {
+    throw "Summary QA membutuhkan minimal 2 segmen transcript nyata."
+  }
+  $clipStart = [double]$summarySegments[0].sourceStart
+  $clipEnd = [double]$summarySegments[-1].sourceEnd
+  $clipDuration = $cursor
+  $segments = $summaryRebasedSubtitles
+}
+
 $moment = [ordered]@{
   id = if ($chosen.id) { $chosen.id } else { 1 }
   start = $clipStart
@@ -151,6 +208,35 @@ $moment = [ordered]@{
   auto_render = $true
   render_eligible = $true
   content_profile = $profile
+}
+if ($ContentMode -eq "summary") {
+  $moment["is_summary_composition"] = $true
+  $moment["composition_segments"] = @($summarySegments)
+  $moment["summary_segments"] = @($summarySegments)
+  $moment["rebased_subtitles"] = @($summaryRebasedSubtitles)
+  $moment["summary_rebased_subtitles"] = @($summaryRebasedSubtitles)
+  $moment["transcript"] = (($summaryRebasedSubtitles | ForEach-Object { $_.text }) -join " ")
+  $moment["text"] = $moment["transcript"]
+  $moment["title"] = "Smart Summary visual QA"
+  $moment["titleSuggestion"] = "Smart Summary visual QA"
+}
+if ($FacecamRegion.Trim()) {
+  $parts = @($FacecamRegion.Split(",") | ForEach-Object { [double]$_.Trim() })
+  if ($parts.Count -ne 4) {
+    throw "FacecamRegion harus format x,y,w,h dalam skala 0..1."
+  }
+  $moment["visual_detections"] = @(
+    [pscustomobject]@{
+      type = "FACECAM"
+      confidence = 0.95
+      region = @($parts[0], $parts[1], $parts[2], $parts[3])
+    },
+    [pscustomobject]@{
+      type = "GAMEPLAY"
+      confidence = 0.95
+      region = @(0.0, 0.0, 1.0, 1.0)
+    }
+  )
 }
 
 $payload = [ordered]@{
@@ -173,6 +259,7 @@ $payload = [ordered]@{
   audioEnhance = $false
   autoVideoEnhancement = -not $CpuSafe
   colorEnhance = -not $CpuSafe
+  contentMode = $ContentMode
   renderMode = $renderMode
   outputQualityProfile = "balanced"
   addCaptions = $true
@@ -213,6 +300,7 @@ Write-Host "Benchmark source : $source"
 Write-Host "Benchmark range  : $([math]::Round($clipStart, 2)) - $([math]::Round($clipEnd, 2)) ($([math]::Round($clipDuration, 2))s)"
 Write-Host "Benchmark title  : $($moment.title)"
 Write-Host "Render mode      : $renderMode"
+Write-Host "Content mode     : $ContentMode"
 
 $previousErrorAction = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
@@ -273,7 +361,15 @@ if ($RequireTwoPersonDirector) {
   if (-not $faceAnalysis) {
     throw "Quality gate dua pembicara tidak menemukan faceAnalysis di manifest."
   }
-  if ([double]$faceAnalysis.average_faces -lt 1.5) {
+  $directorQa = $faceAnalysis.editor_plan.qa
+  $editPlan = $faceAnalysis.smart_edit_plan
+  $preservedTwoPersonWide = (
+    [int]$faceAnalysis.person_count -ge 2 -and
+    $editPlan -and
+    [string]$editPlan.layout -eq "LANDSCAPE_BLUR" -and
+    @($editPlan.safeRegions | Where-Object { $_.type -eq "two_person_wide" }).Count -gt 0
+  )
+  if ([double]$faceAnalysis.average_faces -lt 1.5 -and -not $preservedTwoPersonWide) {
     throw "Quality gate membutuhkan rata-rata sedikitnya 1.5 wajah terukur; aktual $($faceAnalysis.average_faces)."
   }
   $cameraEvents = @($faceAnalysis.camera_director)
@@ -282,10 +378,9 @@ if ($RequireTwoPersonDirector) {
       Where-Object { $_.subject_id } |
       Select-Object -ExpandProperty subject_id -Unique
   )
-  if ($cameraSubjects.Count -lt 2) {
+  if ($cameraSubjects.Count -lt 2 -and -not $preservedTwoPersonWide) {
     throw "Director tidak berpindah di antara sedikitnya dua subjek terukur."
   }
-  $directorQa = $faceAnalysis.editor_plan.qa
   if (-not $directorQa -or -not [bool]$directorQa.valid) {
     throw "Editor Director QA tidak valid."
   }

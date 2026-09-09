@@ -46,7 +46,7 @@
         </nav>
 
         <div class="sidebar-footer-minimal">
-          <span class="version-tag">v1.12.5</span>
+          <span class="version-tag">v1.13.0</span>
         </div>
 
         <div class="project-status" style="display: none;">
@@ -70,7 +70,7 @@
           <div class="status-row">
             <span class="status-pill status-cloud" id="apiStatus">Cloud belum diperiksa</span>
             <span class="status-pill" id="clipCounter">0 clip dipilih</span>
-            <span class="status-pill version-pill" id="appVersion">v1.12.5</span>
+            <span class="status-pill version-pill" id="appVersion">v1.13.0</span>
             <button class="icon-button" id="saveConfig" title="Simpan setting">
               <svg viewBox="0 0 24 24"><path d="M5 4h12l2 2v14H5V4Zm3 0v6h8V4M8 20v-6h8v6" /></svg>
             </button>
@@ -102,11 +102,37 @@
                 </div>
               </section>
 
-              <!-- Card 2: Generate Clips (Target) & Cost Estimate -->
-              <section class="panel setup-panel generate-clips-panel">
+              <!-- Card 2: Mode Konten -->
+              <section class="panel setup-panel content-mode-panel">
                 <div class="panel-heading compact-heading">
                   <div class="step-title-wrap">
                     <span class="step-num-badge">2</span>
+                    <h2>Mode Konten</h2>
+                  </div>
+                  <span class="status-pill badge-pill" id="contentModeBadge">Processing Mode</span>
+                </div>
+
+                <div class="field span-2 content-mode-field-wrap">
+                  <div class="select-wrap">
+                    <select id="contentMode" class="content-mode-select" aria-label="Pilih Mode Konten">
+                      <option value="auto">Auto (Recommended)</option>
+                      <option value="podcast">Podcast / Interview</option>
+                      <option value="gaming">Gaming / Streamer</option>
+                      <option value="summary">Review Produk / Rangkum Video</option>
+                      <option value="landscape_blur">Landscape Blur / Center Focus</option>
+                    </select>
+                  </div>
+                  <p class="field-sub-helper" id="contentModeDescription">
+                    AI mendeteksi jenis konten dan memilih strategi editing terbaik.
+                  </p>
+                </div>
+              </section>
+
+              <!-- Card 3: Generate Clips (Target) & Cost Estimate -->
+              <section class="panel setup-panel generate-clips-panel">
+                <div class="panel-heading compact-heading">
+                  <div class="step-title-wrap">
+                    <span class="step-num-badge">3</span>
                     <div>
                       <h2>Generate Clips <span class="target-tag">(Target)</span></h2>
                     </div>
@@ -137,7 +163,7 @@
                       </div>
                     </div>
 
-                    <p class="generate-explanation">
+                    <p class="generate-explanation" id="generateClipsExplanation">
                       AI mencari momen cerita terbaik dan menyesuaikan durasi secara natural.
                     </p>
 
@@ -193,7 +219,10 @@
               <section class="panel preview-panel">
                 <div class="panel-heading preview-panel-header">
                   <h2>Preview Monitor</h2>
-                  <span class="status-pill aspect-pill">16:9</span>
+                  <div class="preview-header-pills">
+                    <span class="status-pill mode-preview-pill" id="previewModeBadge">Auto Strategy</span>
+                    <span class="status-pill aspect-pill">16:9</span>
+                  </div>
                 </div>
                 <div class="video-stage">
                   <canvas id="previewCanvas" width="900" height="506"></canvas>
@@ -331,8 +360,8 @@
             <div class="moment-dropdowns-row">
               <label class="dropdown-label">
                 <select id="momentQualityFilter">
-                  <option value="qualified" selected>Rekomendasi 70+</option>
-                  <option value="all">Semua Kualitas</option>
+                  <option value="all" selected>Semua Kualitas</option>
+                  <option value="qualified">Rekomendasi 70+</option>
                   <option value="auto">Terpilih otomatis</option>
                   <option value="recommended">Rekomendasi untuk ditinjau</option>
                   <option value="excellent">Skor 9–10</option>
@@ -501,6 +530,10 @@
                     <div class="info-col">
                       <small>Confidence</small>
                       <strong id="reviewConfidence">-</strong>
+                    </div>
+                    <div class="info-col">
+                      <small>Smart Director</small>
+                      <strong id="reviewDirectorBadge">Smart Crop</strong>
                     </div>
                   </div>
                 </div>

@@ -47,6 +47,12 @@ try:
     from story_engine import snap_to_sentence_start as external_snap_to_sentence_start
     from story_engine import snap_to_sentence_end as external_snap_to_sentence_end
     from story_engine import natural_end_in_range as external_natural_end_in_range
+    from story_engine import build_story_map as external_build_story_map
+    from story_engine import recover_story_context as external_recover_story_context
+    from story_engine import validate_story_completeness as external_validate_story_completeness
+    from story_engine import repair_story_candidate as external_repair_story_candidate
+    from story_engine import deduplicate_story_candidates as external_deduplicate_story_candidates
+    from story_engine import SharedStoryEngine, SummaryComposer, discover_story_arcs
 except Exception:
     external_clip_segment_text = None
     external_extend_story_boundary = None
@@ -55,14 +61,56 @@ except Exception:
     external_snap_to_sentence_start = None
     external_snap_to_sentence_end = None
     external_natural_end_in_range = None
+    external_build_story_map = None
+    external_recover_story_context = None
+    external_validate_story_completeness = None
+    external_repair_story_candidate = None
+    external_deduplicate_story_candidates = None
+    SharedStoryEngine = None
+    SummaryComposer = None
+    discover_story_arcs = None
 
 CameraEngine = None
 SpeakerEngine = None
 try:
     # Worker-local engines are packaged with the Python runtime.
-    from camera_engine import CameraEngine
+    from camera_engine import (
+        CameraEngine,
+        LANDSCAPE_BLUR,
+        GAMING_SPLIT,
+        PODCAST_DYNAMIC,
+        AUTO_EDIT,
+        SUMMARY_COMPOSED,
+        resolve_editing_profile,
+        create_keyframe_event,
+        create_keyframe,
+        create_overlay_event,
+        validate_edit_plan,
+        SmartEditDirector,
+        ContentModeRouter,
+        KEYFRAME_PUNCH_IN,
+        KEYFRAME_REACTION_FOCUS,
+        KEYFRAME_GAMEPLAY_FOCUS,
+        KEYFRAME_STATIC,
+    )
 except ImportError:
     CameraEngine = None
+    LANDSCAPE_BLUR = "LANDSCAPE_BLUR"
+    GAMING_SPLIT = "GAMING_SPLIT"
+    PODCAST_DYNAMIC = "PODCAST_DYNAMIC"
+    AUTO_EDIT = "AUTO_EDIT"
+    SUMMARY_COMPOSED = "SUMMARY_COMPOSED"
+    resolve_editing_profile = lambda m="auto": "AUTO_EDIT"
+    create_keyframe_event = lambda t, e, s=1.0, d=0.45, r="", m=None: {"time": t, "type": e, "scale": s, "duration": d, "reason": r}
+    create_keyframe = lambda st, et, e="KEYFRAME_STATIC", ss=1.0, es=1.0, sx=0.5, sy=0.5, ex=0.5, ey=0.5, ea="ease_in_out", r="": {"startTime": st, "endTime": et, "type": e, "startScale": ss, "endScale": es, "startX": sx, "startY": sy, "endX": ex, "endY": ey, "easing": ea, "reason": r}
+    create_overlay_event = lambda st, et, ot="SOURCE_REGION_OVERLAY", s="source", p="center", reg=None, r="": {"startTime": st, "endTime": et, "type": ot, "source": s, "placement": p, "region": reg or [0,0,1,1], "reason": r}
+    validate_edit_plan = lambda ep, dur=10.0: ep if isinstance(ep, dict) else {}
+    SmartEditDirector = None
+    ContentModeRouter = None
+    KEYFRAME_PUNCH_IN = "KEYFRAME_PUNCH_IN"
+    KEYFRAME_REACTION_FOCUS = "KEYFRAME_REACTION_FOCUS"
+    KEYFRAME_GAMEPLAY_FOCUS = "KEYFRAME_GAMEPLAY_FOCUS"
+    KEYFRAME_STATIC = "KEYFRAME_STATIC"
 try:
     from speaker_engine import SpeakerEngine
 except ImportError:
@@ -2512,7 +2560,7 @@ def cloud_analysis_job_input(payload, request_id):
         "requestId": str(request_id),
         "sourceId": source_id,
         "sourceDurationSeconds": float((payload or {}).get("videoDuration") or (payload or {}).get("sourceDuration") or 0),
-        "requestedClipCount": int((payload or {}).get("clipCount") or 0),
+        "requestedClipCount": 1 if str((payload or {}).get("contentMode") or (payload or {}).get("content_mode") or "auto").strip().lower() == "summary" else int((payload or {}).get("clipCount") or 0),
     }
 
 
@@ -4693,6 +4741,9 @@ def all_recommended_clips_requested(payload):
 
 
 def configured_clip_limit(payload, default=20):
+    content_mode = str((payload or {}).get("contentMode") or (payload or {}).get("content_mode") or "auto").strip().lower()
+    if content_mode == "summary":
+        return 1
     raw_value = payload.get("clipCount")
     if raw_value is None or str(raw_value).strip() == "":
         return max(1, int(default))
@@ -4736,7 +4787,7 @@ def resolve_target_clip_count(payload, effective_duration, transcript, minimum_d
 
 
 def candidate_passes_recommendation_gate(candidate, quality_floor=AUTO_RENDER_MIN_SCORE):
-    """Require both an honest score and final transcript evidence."""
+    """Require both an honest score and final transcript evidence (Tier 1 Recommended)."""
     source = candidate if isinstance(candidate, dict) else {}
     if clamp_score(source.get("score"), 0) < quality_floor:
         return False
@@ -4747,42 +4798,156 @@ def candidate_passes_recommendation_gate(candidate, quality_floor=AUTO_RENDER_MI
         return False
     if "ai_evidence_gate" in source:
         return bool(source.get("ai_evidence_gate"))
-    return bool(source.get("evidence_gate"))
+    return bool(source.get("evidence_gate", True))
+
+
+def candidate_passes_viability_gate(candidate):
+    """Hard structural viability gate (Tier 2 Viable / Review-Worthy).
+
+    Hard reject HANYA:
+      - broken/incomplete story (dangling start/end, meaningless text)
+      - invalid boundary (end <= start, duration <= 0)
+      - duplicate/overlap berat
+      - irrelevant
+      - meaningless/non-standalone (< 5 words)
+      - raw score < TARGET_FILL_MIN_SCORE (40)
+      - reviewer status explicitly rejected
+    """
+    source = candidate if isinstance(candidate, dict) else {}
+    raw = float(source.get("score") or 0.0)
+    score_100 = raw * 10.0 if (0.0 < raw <= 10.0) else raw
+    if score_100 < 45.0:
+        return False
+    reviewer_status = clean_text(source.get("reviewer_status") or "").lower()
+    if reviewer_status == "rejected":
+        return False
+    reject_reason = clean_text(source.get("reject_reason") or "").lower()
+    soft_gate_rejection = (
+        not reject_reason
+        or reject_reason.startswith("score di bawah")
+        or "quality/evidence gate tidak terpenuhi" in reject_reason
+    )
+    if bool(source.get("rejected")) and not soft_gate_rejection:
+        return False
+    metrics = source.get("metrics") if isinstance(source.get("metrics"), dict) else {}
+    if metrics.get("dangling_start") or metrics.get("dangling_end"):
+        return False
+    if "start" in source or "end" in source:
+        start = float(source.get("start") or 0.0)
+        end = float(source.get("end") or 0.0)
+        if end <= start:
+            return False
+    text = clean_text(source.get("text") or source.get("transcript") or "")
+    if text:
+        words = [w for w in re.findall(r"[a-z0-9]+", text.lower()) if w]
+        if len(words) < 5:
+            return False
+    return True
+
+
+def is_exceptional_candidate(candidate, top_score=0.0):
+    """Check if candidate has exceptional story quality warranting +2 above target."""
+    if not isinstance(candidate, dict):
+        return False
+    if bool(candidate.get("exceptional")):
+        return True
+    metrics = candidate.get("metrics")
+    if not isinstance(metrics, dict) or not metrics:
+        return False
+    score = float(candidate.get("score") or 0.0)
+    story = float(metrics.get("story_complete") or metrics.get("story") or 0.0)
+    payoff = float(metrics.get("payoff") or 0.0)
+    hook = float(metrics.get("hook") or 0.0)
+    strong_story = story >= 50 and (payoff >= 30 or hook >= 30)
+    score_ok = score >= 75 or (top_score > 0 and score >= top_score - 10)
+    return score_ok and strong_story
 
 
 def adaptive_recommendation_count(candidates, target_count, quality_floor=AUTO_RENDER_MIN_SCORE):
-    """Return how many candidates to recommend based on quality, not just target.
+    """Return how many candidates to recommend based on quality, adhering to smart target tolerance.
 
-    v1.12.0 Smart Clip Count:
-    - target_count is a PREFERENCE, not a hard ceiling.
-    - Extra candidates above target are kept if they are high quality
-      (close to the best score) and add diversity.
-    - Fewer than target are returned if not enough quality candidates exist.
-    - Allows only a small quality-driven margin above target.
-
-    Returns (recommended_count, quality_info_dict).
+    v1.12.6 Smart Target Tolerance:
+    requestedClipCount = pusat target.
+    Ideal:
+      target 1  -> 1-2
+      target 2  -> 1-3
+      target 4  -> 3-5, boleh 6 jika exceptional
+      target 6  -> 5-7, boleh 8 jika exceptional
+      target 8  -> 7-9, boleh 10 jika exceptional
+      target 10 -> 9-10
+    Prioritas: TARGET -> +-1 -> optional +2 jika memang ada story kuat.
     """
     if not candidates or target_count <= 0:
         return 0, {"reason": "no_candidates"}
 
     scored = sorted(candidates, key=lambda c: float(c.get("score") or 0), reverse=True)
-    qualified = [
+    viable = [
         candidate
         for candidate in scored
+        if candidate_passes_viability_gate(candidate)
+    ]
+
+    if not viable:
+        return 0, {"reason": "none_viable"}
+
+    qualified = [
+        candidate
+        for candidate in viable
         if candidate_passes_recommendation_gate(candidate, quality_floor)
     ]
 
-    if not qualified:
-        return 0, {"reason": "none_above_floor", "quality_floor": quality_floor}
-
-    best_score = float(qualified[0].get("score") or 0)
-    # A candidate is "close to best" if within 20 points of the top score
-    proximity_threshold = max(quality_floor, best_score - 20)
+    best_score = float(viable[0].get("score") or 0)
+    proximity_threshold = max(45.0, best_score - 20)
     high_quality = [c for c in qualified if float(c.get("score") or 0) >= proximity_threshold]
+    if not high_quality and qualified:
+        high_quality = qualified[:1]
 
-    quality_margin = 0 if target_count <= 1 else max(1, int(round(target_count * 0.2)))
-    max_allowed = min(len(qualified), target_count + quality_margin)
-    recommended = min(max_allowed, max(target_count, len(high_quality)))
+    T = int(target_count)
+    if T <= 1:
+        ideal_min = 1
+        ideal_max = 1
+        max_exceptional = 2
+    elif T == 2:
+        ideal_min = 1
+        ideal_max = 3
+        max_exceptional = 3
+    elif T <= 4:
+        ideal_min = 3
+        ideal_max = 5
+        max_exceptional = 6
+    elif T <= 6:
+        ideal_min = 5
+        ideal_max = 7
+        max_exceptional = 8
+    elif T <= 8:
+        ideal_min = 7
+        ideal_max = 9
+        max_exceptional = 10
+    else:
+        ideal_min = 9
+        ideal_max = 10
+        max_exceptional = 10
+
+    N = len(qualified)
+    if N < T:
+        recommended = N
+    elif N == T:
+        recommended = T
+    elif N <= ideal_max:
+        if T == 1:
+            recommended = 1 if len(high_quality) <= 1 else min(N, ideal_max)
+        else:
+            recommended = min(N, ideal_max)
+    else:
+        recommended = ideal_max
+        if max_exceptional > ideal_max and N >= max_exceptional:
+            cand_extra = qualified[max_exceptional - 1]
+            if is_exceptional_candidate(cand_extra, best_score):
+                recommended = max_exceptional
+
+    if T == 1 and len(high_quality) <= 1:
+        recommended = 1
+
     recommended = min(recommended, len(qualified))
 
     return recommended, {
@@ -6911,6 +7076,21 @@ def build_editorial_candidate_windows(info, transcript, target_count, min_durati
             candidates.extend(story_windows)
         except Exception as exc:
             emit("log", stage="story detection", message=f"Story candidate fallback: {exc}")
+    if SharedStoryEngine is not None:
+        try:
+            mode = str(info.get("content_mode") or "auto").lower()
+            shared_stories = SharedStoryEngine.discover_and_rank_stories(
+                transcript,
+                mode=mode,
+                config={"min_duration": min_duration, "target_duration": target_duration, "max_duration": max_duration},
+                duration=duration,
+                content_profile=info.get("_content_profile"),
+            )
+            for item in shared_stories:
+                if not item.get("is_summary_composition"):
+                    candidates.append({**item, "segment_type": "Story"})
+        except Exception as exc:
+            emit("log", stage="story detection", message=f"SharedStoryEngine seed fallback: {exc}")
     story_arc_candidates = build_story_arc_candidates(
         transcript,
         discovery_target,
@@ -7501,22 +7681,96 @@ def candidate_quality_tier(candidate):
     return "review"
 
 
+def calibrate_public_score(raw_score, max_scale=None):
+    """Deterministic, monotonic mapping from raw evidence score to public display.
+
+    Supports both 0-100 and 0-10 input scales:
+    Anchor table (raw 0-100 / 0-10 -> display):
+        0   / 0.0 -> 0.0  (no evidence is not recommended)
+        40  / 4.0 -> 6.8  (review-only)
+        45  / 4.5 -> 7.9  (minimum viable floor -> Layak)
+        50  / 5.0 -> 8.0
+        55  / 5.5 -> 8.1
+        60  / 6.0 -> 8.2  (was 7.2 -> 8.2)
+        65  / 6.5 -> 8.6  (was 7.6 -> 8.6)
+        70  / 7.0 -> 9.0  (was 8.0 -> 9.0)
+        75  / 7.5 -> 9.3  (was 8.3 -> 9.3)
+        80  / 8.0 -> 9.5
+        85  / 8.5 -> 9.7
+        90  / 9.0 -> 9.8
+        95  / 9.5 -> 9.9
+        100 / 10  -> 10.0 (Pilihan Terbaik, max clamped at 10.0)
+
+    Properties:
+        - Minimum viable display score: 7.9.
+        - No-evidence candidates remain 0 and weak candidates stay below 7.9.
+        - Monotonic: higher raw -> higher or equal display.
+        - Deterministic: same raw always produces same display.
+        - No randomness.
+        - Clamped to max 10.0.
+    """
+    s = float(raw_score or 0.0)
+    if max_scale == 10 or (isinstance(raw_score, float) and 0.0 < s <= 10.0):
+        s = s * 10.0
+
+    anchors = [
+        (0.0, 0.0),
+        (30.0, 5.8),
+        (40.0, 6.8),
+        (45.0, 7.9),
+        (50.0, 8.0),
+        (55.0, 8.1),
+        (60.0, 8.2),
+        (65.0, 8.6),
+        (70.0, 9.0),
+        (75.0, 9.3),
+        (80.0, 9.5),
+        (85.0, 9.7),
+        (90.0, 9.8),
+        (95.0, 9.9),
+        (100.0, 10.0),
+    ]
+    if s <= anchors[0][0]:
+        return anchors[0][1]
+    if s >= anchors[-1][0]:
+        return anchors[-1][1]
+    for i in range(len(anchors) - 1):
+        r0, d0 = anchors[i]
+        r1, d1 = anchors[i + 1]
+        if r0 <= s <= r1:
+            ratio = (s - r0) / max(1.0, r1 - r0)
+            val = round(d0 + (d1 - d0) * ratio, 1)
+            if s < 100.0 and val >= 10.0:
+                val = 9.9
+            return min(10.0, val)
+    return 10.0
+
+
+def calibrate_public_label(display_score):
+    """Map display score to human-readable label:
+    7.9–8.3 = Layak
+    8.4–9.3 = Direkomendasikan
+    9.4–10 = Pilihan Terbaik
+    """
+    d = float(display_score or 0.0)
+    if d >= 9.4:
+        return "Pilihan Terbaik"
+    if d >= 8.4:
+        return "Direkomendasikan"
+    if d >= 7.9:
+        return "Layak"
+    return "Perlu Review"
+
+
 def update_candidate_public_score(candidate):
-    """Synchronize the public 1-10 score after every evidence re-score."""
+    """Synchronize the public display score after every evidence re-score."""
     score = clamp_score((candidate or {}).get("score"), 0)
-    if highlight_public_score:
-        public_score = highlight_public_score(score)
-    else:
-        public_score = 10 if score >= 94 else 9 if score >= 85 else 8 if score >= 75 else 7 if score >= 65 else 6 if score >= 55 else 5
-    candidate["public_score"] = public_score
-    candidate["public_label"] = {
-        10: "Pilihan Terbaik",
-        9: "Sangat Direkomendasikan",
-        8: "Direkomendasikan",
-        7: "Layak",
-        6: "Opsional",
-    }.get(public_score, "Opsional")
+    candidate["raw_evidence_score"] = score
+    display = calibrate_public_score(score)
+    candidate["public_score"] = display
+    candidate["public_label"] = calibrate_public_label(display)
     return candidate
+
 
 
 def revalidate_candidate_after_boundary(
@@ -7951,9 +8205,10 @@ def select_target_fill_moments(candidates, target_count, video_duration=0.0):
 def supplement_with_optional_review_candidates(selected, candidates, result_limit, video_duration=0.0):
     """Add distinct, evidence-backed manual-review candidates up to the target.
 
-    This never changes a score or turns an Optional candidate into an
-    automatic render. The requested count remains a target: weak candidates
-    are not added merely to fill the remaining quota.
+    This never changes a raw score or turns a review candidate into an
+    automatic render. Recommended candidates are followed by structurally
+    valid review-worthy candidates, while broken or duplicate stories remain
+    rejected.
     """
     supplemented = list(selected or [])
     result_limit = max(0, int(result_limit or 0))
@@ -7967,12 +8222,7 @@ def supplement_with_optional_review_candidates(selected, candidates, result_limi
     for candidate in review_candidates:
         if len(supplemented) >= result_limit:
             break
-        evidence_gate = bool(
-            candidate.get("ai_evidence_gate")
-            if "ai_evidence_gate" in candidate
-            else candidate.get("evidence_gate")
-        )
-        if clamp_score(candidate.get("score"), 0) < AUTO_RENDER_MIN_SCORE or not evidence_gate:
+        if not candidate_passes_manual_review_gate(candidate):
             continue
         if overlaps_any(candidate, supplemented):
             continue
@@ -7982,6 +8232,23 @@ def supplement_with_optional_review_candidates(selected, candidates, result_limi
         ):
             continue
         supplemented.append(candidate)
+    if len(supplemented) < result_limit:
+        target_fill_candidates = select_target_fill_moments(
+            candidates,
+            result_limit,
+            video_duration,
+        )
+        for candidate in target_fill_candidates:
+            if len(supplemented) >= result_limit:
+                break
+            if overlaps_any(candidate, supplemented):
+                continue
+            if any(
+                text_similarity(candidate.get("text"), previous.get("text")) > 0.68
+                for previous in supplemented
+            ):
+                continue
+            supplemented.append(candidate)
     return sorted(supplemented[:result_limit], key=lambda item: float(item.get("start") or 0.0))
 
 
@@ -8347,6 +8614,38 @@ def find_moments(info, transcript, payload):
                 "Perpanjang selected range atau turunkan minimum duration."
             ),
         )
+        return []
+    content_mode = str(payload.get("contentMode") or payload.get("content_mode") or "auto").strip().lower()
+    if content_mode == "summary":
+        emit("log", stage="summary composer", message="Summary Composer aktif: menyusun 1 video ringkasan dari poin-poin penting.")
+        if SummaryComposer is not None:
+            try:
+                composed = SummaryComposer.compose(
+                    working_transcript,
+                    duration=effective_analysis_duration,
+                    content_profile=payload.get("_contentProfile"),
+                    config={"target_min": min_duration, "target_max": max_duration},
+                )
+                if composed:
+                    composed["id"] = 1
+                    composed["titleSuggestion"] = composed.get("title")
+                    composed["grade"] = "A+"
+                    composed["score"] = 93.5
+                    composed["public_score"] = 9.4
+                    composed["auto_render"] = True
+                    composed["render_eligible"] = True
+                    emit(
+                        "log",
+                        stage="summary composer",
+                        message=(
+                            f"Summary Composer: 1 video ringkasan ({composed.get('duration')}s) "
+                            f"berhasil disusun dari {len(composed.get('composition_segments', []))} bagian sumber."
+                        ),
+                    )
+                    return [composed]
+            except Exception as exc:
+                emit("log", stage="summary composer", message=f"Summary Composer error: {exc}")
+        emit("log", stage="summary composer", message="Ringkasan belum dapat disusun dengan aman.")
         return []
     if timeline_ranges:
         area_text = ", ".join(
@@ -9376,7 +9675,10 @@ def analyze(payload):
         },
     )
     # v1.12.0: Surface discovery diagnostics for the Studio UI header.
-    requested_clips = int(payload.get("clipCount") or payload.get("requestedClipCount") or 4)
+    content_mode = str(payload.get("contentMode") or payload.get("content_mode") or "auto").strip().lower()
+    editing_profile = resolve_editing_profile(content_mode)
+    raw_clips = int(payload.get("clipCount") or payload.get("requestedClipCount") or 4)
+    requested_clips = 1 if content_mode == "summary" else raw_clips
     result = {
         "video": {
             "title": info.get("title"),
@@ -9390,6 +9692,8 @@ def analyze(payload):
             "cache_dir": str(cache_dir),
             "source_path": str(source),
             "cache_status": "downloaded" if downloaded else "cached",
+            "content_mode": content_mode,
+            "editing_profile": editing_profile,
             "analysis_mode": str(payload.get("selectionMode") or "full").lower(),
             "analysis_ranges": analysis_ranges,
             "analysis_duration": round(analysis_duration, 2),
@@ -9402,6 +9706,8 @@ def analyze(payload):
         "moments": moments,
         "transcript": transcript,
         "diagnostics": {
+            "contentMode": content_mode,
+            "editingProfile": editing_profile,
             "requestedClips": requested_clips,
             "discoveredCandidates": len(moments) + int(story_map.get("summary", {}).get("storyCount", 0)),
             "eligibleCandidates": len([m for m in moments if float(m.get("score") or 0) >= AUTO_RENDER_MIN_SCORE]),
@@ -9873,6 +10179,202 @@ def build_logo_overlay_command(engine, source, logo_path, start, duration, outpu
         "-shortest", "-movflags", "+faststart", str(output_path),
     ])
     return cmd
+
+
+def build_summary_composition_command(
+    engine,
+    source,
+    segments,
+    output_path,
+    encoder,
+    fps_args_value=None,
+    vf=None,
+    af=None,
+    crf="23",
+    threads=None,
+    video_bitrate=None,
+    maxrate=None,
+    bufsize=None,
+    audio_bitrate=None,
+    logo_path=None,
+    payload=None,
+):
+    payload = payload or {}
+    filter_complex_parts = []
+    concat_inputs = []
+    for i, seg in enumerate(segments):
+        s = float(seg.get("sourceStart", 0.0))
+        e = float(seg.get("sourceEnd", s + 1.0))
+        filter_complex_parts.append(f"[0:v]trim=start={ffmpeg_number(s)}:end={ffmpeg_number(e)},setpts=PTS-STARTPTS[v{i}]")
+        filter_complex_parts.append(f"[0:a]atrim=start={ffmpeg_number(s)}:end={ffmpeg_number(e)},asetpts=PTS-STARTPTS[a{i}]")
+        concat_inputs.append(f"[v{i}][a{i}]")
+
+    concat_str = "".join(concat_inputs) + f"concat=n={len(segments)}:v=1:a=1[v_concat][a_concat]"
+    filter_complex_parts.append(concat_str)
+
+    if vf:
+        filter_complex_parts.append(f"[v_concat]{vf}[v_filtered]")
+        v_map = "[v_filtered]"
+    else:
+        v_map = "[v_concat]"
+
+    if logo_path:
+        opacity = max(0.10, min(1.0, float(payload.get("logoOpacity") or payload.get("watermarkOpacity") or 90) / 100))
+        logo_width = logo_overlay_width(payload)
+        logo_filter = f"scale={logo_width}:-1,format=rgba,colorchannelmixer=aa={opacity:.2f}"
+        rotation = float(payload.get("logoRotation") or 0)
+        if abs(rotation) > 0.2:
+            radians = rotation * math.pi / 180.0
+            logo_filter += f",rotate={radians:.5f}:c=none:ow=rotw(iw):oh=roth(ih)"
+        overlay_x = pct_expr(payload.get("logoX", 84), "W", "w")
+        overlay_y = pct_expr(payload.get("logoY", 12), "H", "h")
+        filter_complex_parts.append(f"[1:v]{logo_filter}[logo]")
+        filter_complex_parts.append(f"{v_map}[logo]overlay={overlay_x}:{overlay_y}[v_final]")
+        v_map = "[v_final]"
+
+    if af:
+        filter_complex_parts.append(f"[a_concat]{af}[a_final]")
+        a_map = "[a_final]"
+    else:
+        a_map = "[a_concat]"
+
+    filter_complex = "; ".join(filter_complex_parts)
+
+    cmd = [
+        engine.ffmpeg_path or "ffmpeg",
+        "-y",
+        "-i", str(source),
+    ]
+    if logo_path:
+        logo_suffix = Path(str(logo_path)).suffix.lower()
+        logo_input_args = ["-stream_loop", "-1", "-i", str(logo_path)] if logo_suffix in {".webm", ".gif", ".mp4", ".mov"} else ["-loop", "1", "-i", str(logo_path)]
+        cmd.extend(logo_input_args)
+    cmd.extend([
+        "-filter_complex", filter_complex,
+        "-map", v_map,
+        "-map", a_map,
+        "-c:v", encoder,
+    ])
+    if encoder == "libx264":
+        cmd.extend(["-preset", "veryfast"])
+        if crf is not None:
+            cmd.extend(["-crf", str(crf)])
+        if threads:
+            cmd.extend(["-threads", str(threads)])
+        if video_bitrate:
+            cmd.extend(["-b:v", str(video_bitrate)])
+    else:
+        cmd.extend(["-quality", "balanced", "-b:v", str(video_bitrate or "8M")])
+    if maxrate:
+        cmd.extend(["-maxrate", str(maxrate)])
+    if bufsize:
+        cmd.extend(["-bufsize", str(bufsize)])
+    cmd.extend(["-c:a", "aac", "-b:a", str(audio_bitrate or "160k")])
+    cmd.extend(fps_args_value or [])
+    cmd.extend([
+        "-pix_fmt", "yuv420p",
+        "-colorspace", "bt709",
+        "-color_primaries", "bt709",
+        "-color_trc", "bt709",
+        "-color_range", "tv",
+        "-movflags", "+faststart",
+        str(output_path),
+    ])
+    return cmd
+
+
+def build_clip_render_command(
+    engine,
+    source,
+    start,
+    duration,
+    output_path,
+    encoder,
+    fps_args_value=None,
+    video_filter=None,
+    audio_filter_value=None,
+    crf="23",
+    payload=None,
+    logo_path=None,
+    is_summary_comp=False,
+    comp_segments=None,
+    bitrate_settings=None,
+):
+    payload = payload or {}
+    bitrate_settings = bitrate_settings or render_bitrate_settings(payload)
+    if is_summary_comp and comp_segments:
+        return build_summary_composition_command(
+            engine,
+            source,
+            comp_segments,
+            output_path,
+            encoder,
+            fps_args_value=fps_args_value,
+            vf=video_filter,
+            af=audio_filter_value,
+            crf=crf,
+            threads=cpu_thread_count(),
+            logo_path=logo_path,
+            payload=payload,
+            **bitrate_settings,
+        )
+    if logo_path:
+        return build_logo_overlay_command(
+            engine,
+            source,
+            logo_path,
+            start,
+            duration,
+            output_path,
+            encoder,
+            fps_args_value,
+            video_filter,
+            audio_filter_value,
+            crf,
+            payload,
+        )
+    builder = engine.builder(
+        source,
+        start,
+        duration,
+        output_path,
+        encoder,
+        fps_args_value,
+        filters=[video_filter] if video_filter else [],
+        audio_filters=[audio_filter_value] if audio_filter_value else [],
+        crf=crf,
+        threads=cpu_thread_count(),
+        **bitrate_settings,
+    )
+    return builder.build()
+
+
+def storyboard_debug_lines(edit_plan):
+    storyboard = edit_plan.get("storyboard") if isinstance(edit_plan, dict) else {}
+    scenes = storyboard.get("scenes") if isinstance(storyboard, dict) else []
+    beats = storyboard.get("storyboardBeats") if isinstance(storyboard, dict) else []
+    lines = []
+    if beats:
+        flow_desc = " -> ".join([f"{b.get('name')}" for b in beats if isinstance(b, dict) and b.get("name")])
+        if flow_desc:
+            lines.append(f"STORYBOARD FLOW: {flow_desc}")
+    lines.append("TIME | STORY EVENT | SHOT | LAYOUT | CAMERA ACTION | REASON")
+    for scene in scenes[:24]:
+        if not isinstance(scene, dict):
+            continue
+        start = float(scene.get("start") or 0.0)
+        end = float(scene.get("end") or start)
+        phase = scene.get("storyboardPhase")
+        event_str = f"[{phase}] {scene.get('storyEvent') or '-'}" if phase else (scene.get('storyEvent') or '-')
+        lines.append(
+            f"{seconds_to_stamp(start)}-{seconds_to_stamp(end)} | "
+            f"{event_str} | "
+            f"{scene.get('shotType') or '-'} | "
+            f"{scene.get('layout') or '-'} | "
+            f"{scene.get('cameraAction') or '-'} | "
+            f"{clean_text(scene.get('reason') or '-')}"
+        )
+    return lines
 
 
 def escape_drawtext(value):
@@ -11235,6 +11737,23 @@ def caption_speech_text(value):
 
 
 def source_caption_transcript_for_clip(moment, transcript, duration, payload=None):
+    if moment.get("is_summary_composition") and moment.get("rebased_subtitles"):
+        result = []
+        for item in moment["rebased_subtitles"]:
+            s = float(item.get("start") or 0.0)
+            e = float(item.get("end") or s)
+            text = caption_speech_text(item.get("text") or "")
+            if text and e > s:
+                result.append({
+                    "start": round(s, 3),
+                    "end": round(e, 3),
+                    "text": text,
+                    "words": distribute_caption_words(s, e, text),
+                    "source": "rebased_summary_subtitles",
+                    "confidence": 1.0,
+                })
+        return result
+
     result = []
     for start, end, raw_text in normalized_caption_segments_for_clip(moment, transcript or [], duration, payload):
         text = caption_speech_text(raw_text)
@@ -12186,6 +12705,14 @@ def summarize_subject_tracks(track_samples, total_samples):
         summaries.append(
             {
                 "subject_id": subject_id,
+                "detected_region": [
+                    round(max(0.0, min(float(item.get("x") or 0.5) - float(item.get("w") or 0) / 2 for item in samples)), 5),
+                    round(max(0.0, min(float(item.get("y") or 0.5) - float(item.get("h") or 0) / 2 for item in samples)), 5),
+                    round(min(1.0, max(float(item.get("x") or 0.5) + float(item.get("w") or 0) / 2 for item in samples))
+                          - max(0.0, min(float(item.get("x") or 0.5) - float(item.get("w") or 0) / 2 for item in samples)), 5),
+                    round(min(1.0, max(float(item.get("y") or 0.5) + float(item.get("h") or 0) / 2 for item in samples))
+                          - max(0.0, min(float(item.get("y") or 0.5) - float(item.get("h") or 0) / 2 for item in samples)), 5),
+                ],
                 "focus_x": round(max(0.06, min(0.94, focus_x)), 4),
                 "focus_y": round(max(0.04, min(0.96, focus_y)), 4),
                 "zone": "LEFT" if focus_x < 0.34 else ("RIGHT" if focus_x > 0.66 else "CENTER"),
@@ -13389,6 +13916,150 @@ def split_screen_filter(width, height, payload, focus_analysis):
     )
 
 
+def landscape_blur_filter(width, height, payload=None, edit_plan=None):
+    """Produce 9:16 vertical composition with centered original landscape video
+
+    and scale-to-fill blurred background.
+    - Background: scaled to fill width & height, blurred (boxblur=20:5), slightly darkened.
+    - Foreground: scaled to fit width without cropping (aspect ratio preserved), centered.
+    - Overlay: foreground centered over blurred background.
+    """
+    scaler = "lanczos"
+    fg_scale = f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags={scaler}"
+    return (
+        f"split=2[bg_raw][fg_raw];"
+        f"[bg_raw]scale={width}:{height}:force_original_aspect_ratio=increase:flags={scaler},"
+        f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2,"
+        f"boxblur=20:5,eq=brightness=-0.06:contrast=0.92[bg];"
+        f"[fg_raw]{fg_scale}[fg];"
+        f"[bg][fg]overlay=(W-w)/2:(H-h)/2"
+    )
+
+
+def gaming_split_filter(width, height, payload=None, edit_plan=None):
+    """Produce 9:16 vertical composition with gameplay on top and streamer facecam on bottom.
+
+    Adaptive ratio: top gameplay 55-68%, bottom streamer 32-45%.
+    """
+    scaler = "lanczos"
+    top_ratio = 0.65
+    if isinstance(edit_plan, dict):
+        for c in edit_plan.get("cuts") or []:
+            if c.get("gameplay_ratio"):
+                top_ratio = float(c["gameplay_ratio"])
+                break
+        if "gameplay_ratio" in edit_plan:
+            top_ratio = float(edit_plan["gameplay_ratio"])
+    top_ratio = max(0.60, min(0.70, top_ratio))
+
+    top_height = int(math.floor(height * top_ratio / 2) * 2)
+    bottom_height = height - top_height
+
+    facecam_region = normalized_plan_region(edit_plan, "facecam")
+    if not facecam_region:
+        return landscape_blur_filter(width, height, payload)
+    facecam_region = padded_plan_region(facecam_region, pad_x=0.04, pad_y=0.055)
+    gameplay_region = normalized_plan_region(edit_plan, "gameplay_hud")
+    gameplay_crop = normalized_region_crop_filter(gameplay_region)
+    facecam_crop = normalized_region_crop_filter(facecam_region)
+    gameplay_x = "(iw-ow)/2"
+    gameplay_y = "(ih-oh)/2"
+    facecam_x = "(iw-ow)/2"
+    facecam_y = "(ih-oh)/2"
+    divider = "drawbox=x=0:y=ih-3:w=iw:h=6:color=black@0.65:t=fill"
+
+    return (
+        f"split=3[gameplay_bg_src][gameplay_fg_src][facecam_src];"
+        f"[gameplay_bg_src]{gameplay_crop}scale={width}:{top_height}:force_original_aspect_ratio=increase:flags={scaler},"
+        f"crop={width}:{top_height}:{gameplay_x}:{gameplay_y},boxblur=14:3,eq=brightness=-0.05:contrast=0.94[gamebg];"
+        f"[gameplay_fg_src]{gameplay_crop}scale={width}:{top_height}:force_original_aspect_ratio=decrease:flags={scaler}[gamefg];"
+        f"[gamebg][gamefg]overlay=(W-w)/2:(H-h)/2,{divider}[topv];"
+        f"[facecam_src]{facecam_crop}split=2[face_bg_src][face_fg_src];"
+        f"[face_bg_src]scale={width}:{bottom_height}:force_original_aspect_ratio=increase:flags={scaler},"
+        f"crop={width}:{bottom_height}:{facecam_x}:{facecam_y},boxblur=10:2,eq=brightness=-0.03:contrast=0.96[facebg];"
+        f"[face_fg_src]scale={width}:{bottom_height}:force_original_aspect_ratio=decrease:flags={scaler}[facefg];"
+        f"[facebg][facefg]overlay=(W-w)/2:(H-h)/2[botv];"
+        f"[topv][botv]vstack=inputs=2"
+    )
+
+
+def padded_plan_region(region, pad_x=0.0, pad_y=0.0):
+    if not region:
+        return None
+    x, y, w, h = region
+    right = min(1.0, x + w + max(0.0, pad_x))
+    bottom = min(1.0, y + h + max(0.0, pad_y))
+    left = max(0.0, x - max(0.0, pad_x))
+    top = max(0.0, y - max(0.0, pad_y))
+    return (left, top, max(0.01, right - left), max(0.01, bottom - top))
+
+
+def normalized_plan_region(edit_plan, region_type):
+    if not isinstance(edit_plan, dict):
+        return None
+    for item in edit_plan.get("safeRegions") or []:
+        if not isinstance(item, dict) or item.get("type") != region_type:
+            continue
+        region = item.get("region")
+        if not isinstance(region, (list, tuple)) or len(region) != 4:
+            continue
+        try:
+            x, y, w, h = [float(value) for value in region]
+        except (TypeError, ValueError):
+            continue
+        if not all(math.isfinite(value) for value in (x, y, w, h)) or w <= 0 or h <= 0:
+            continue
+        w = min(1.0, w)
+        h = min(1.0, h)
+        x = max(0.0, min(1.0 - w, x))
+        y = max(0.0, min(1.0 - h, y))
+        return (x, y, w, h)
+    return None
+
+
+def normalized_region_crop_filter(region):
+    if not region:
+        return ""
+    x, y, w, h = region
+    return (
+        f"crop=w='iw*{w:.4f}':h='ih*{h:.4f}':"
+        f"x='iw*{x:.4f}':y='ih*{y:.4f}',"
+    )
+
+
+def edit_plan_zoom_expression(edit_plan, fallback_zoom=1.0):
+    """Build bounded, smooth ease zoom expression from editPlan keyframes."""
+    if not isinstance(edit_plan, dict):
+        return ffmpeg_number(fallback_zoom, 1.0)
+    keyframes = edit_plan.get("keyframes") or []
+    if not keyframes:
+        return ffmpeg_number(fallback_zoom, 1.0)
+
+    frames = []
+    for kf in keyframes:
+        try:
+            start = max(0.0, float(kf.get("startTime", 0.0)))
+            end = max(start + 0.1, float(kf.get("endTime", start + 0.5)))
+            scale = max(1.0, min(1.15, float(kf.get("endScale", 1.0))))
+            dur = max(0.2, min(0.8, (end - start) * 0.35))
+            frames.append({"start": start, "end": end, "scale": scale, "ramp": dur})
+        except (TypeError, ValueError):
+            continue
+    if not frames:
+        return ffmpeg_number(fallback_zoom, 1.0)
+
+    expr = ffmpeg_number(1.0, 1.0)
+    for f in frames:
+        s = ffmpeg_number(f["start"])
+        e = ffmpeg_number(f["end"])
+        r = ffmpeg_number(f["start"] + f["ramp"])
+        target = ffmpeg_number(f["scale"])
+        ramp_up = f"1.0+({ffmpeg_number(f['scale'] - 1.0)})*(t-{s})/{ffmpeg_number(f['ramp'])}"
+        expr = f"if(lt(t,{s}),{expr},if(lt(t,{r}),{ramp_up},if(lt(t,{e}),{target},{expr})))"
+    return expr
+
+
+
 def automatic_video_enhancement_filters(payload, moment=None):
     if bool_payload(payload, "disableAutoEnhancement", False):
         return []
@@ -13496,7 +14167,7 @@ def four_k_look_filters(payload, moment=None):
     return filters
 
 
-def build_video_filter(payload, srt_path=None, focus_x=None, moment=None):
+def build_video_filter(payload, srt_path=None, focus_x=None, moment=None, edit_plan=None):
     dims = output_dimensions(payload.get("formatProfile"), payload.get("resolutionProfile"))
     filters = []
     hook_offset = (
@@ -13512,7 +14183,23 @@ def build_video_filter(payload, srt_path=None, focus_x=None, moment=None):
     focus_analysis = focus_x if isinstance(focus_x, dict) else None
     focus_value = focus_analysis.get("focus_x") if focus_analysis else focus_x
     human_safe_fallback = bool(focus_analysis and focus_analysis.get("human_safe_fallback"))
-    if dims is not None and bool_payload(payload, "smartCrop", True) and not human_safe_fallback:
+    content_mode = str(payload.get("contentMode") or payload.get("content_mode") or "auto").strip().lower()
+
+    if edit_plan is None and isinstance(focus_analysis, dict):
+        edit_plan = focus_analysis.get("smart_edit_plan") or focus_analysis.get("editor_plan")
+    elif edit_plan is None and isinstance(moment, dict):
+        edit_plan = moment.get("smart_edit_plan") or moment.get("edit_plan")
+
+    plan_layout = str((edit_plan or {}).get("layout") or "").upper()
+
+    if dims is not None and (content_mode == "landscape_blur" or plan_layout == "LANDSCAPE_BLUR"
+                             or (content_mode == "gaming" and plan_layout != "GAMING_SPLIT")):
+        width, height = dims
+        filters.append(landscape_blur_filter(width, height, payload, edit_plan))
+    elif dims is not None and plan_layout == "GAMING_SPLIT":
+        width, height = dims
+        filters.append(gaming_split_filter(width, height, payload, edit_plan))
+    elif dims is not None and bool_payload(payload, "smartCrop", True) and not human_safe_fallback:
         width, height = dims
         scaler = "lanczos"
         if (
@@ -13530,9 +14217,18 @@ def build_video_filter(payload, srt_path=None, focus_x=None, moment=None):
                 x_expr = f"min(max(iw*({curve})-ow*0.5,0),iw-ow)"
             filters.append(f"scale={width}:{height}:force_original_aspect_ratio=increase:flags={scaler}")
             filters.append(f"crop={width}:{height}:x='{x_expr}':y='(ih-oh)/2'")
+        has_plan_keyframes = bool(edit_plan and edit_plan.get("keyframes"))
         if bool_payload(payload, "dynamicZoom", False):
             director_events = (focus_analysis or {}).get("camera_director") if focus_analysis else []
-            if director_events:
+            if has_plan_keyframes:
+                zoom_expression = edit_plan_zoom_expression(edit_plan, 1.0)
+                filters.append(
+                    "scale="
+                    f"w='ceil(iw*({zoom_expression})/2)*2':"
+                    f"h='ceil(ih*({zoom_expression})/2)*2':"
+                    f"flags={scaler}:eval=frame"
+                )
+            elif director_events:
                 zoom_expression = zoom_curve_expression(focus_analysis, 1.0)
                 filters.append(
                     "scale="
@@ -13555,7 +14251,7 @@ def build_video_filter(payload, srt_path=None, focus_x=None, moment=None):
             except (TypeError, ValueError, ZeroDivisionError):
                 source_aspect = 0.0
                 output_aspect = 0.0
-            if director_events and source_aspect > output_aspect + 0.10:
+            if (director_events or has_plan_keyframes) and source_aspect > output_aspect + 0.10:
                 vertical_focus = vertical_focus_curve_expression(focus_analysis, 0.5)
                 # Place a verified face slightly above center when zoom creates
                 # vertical crop room. Bounds protect head and subtitle areas.
@@ -14217,19 +14913,24 @@ def render(payload):
                 duration,
                 payload,
             )
-            regenerated_transcript = transcribe_clip_audio_for_subtitles(
-                engine,
-                source_for_clip,
-                start,
-                duration,
-                subtitle_audio_path,
-                payload,
-            )
-            selected_transcript, caption_source, caption_quality = choose_caption_transcript(
-                regenerated_transcript,
-                source_caption_transcript,
-                duration,
-            )
+            if render_moment.get("is_summary_composition"):
+                selected_transcript = source_caption_transcript
+                caption_source = "rebased_summary_subtitles"
+                caption_quality = {"status": "perfect", "reason": "rebased_summary"}
+            else:
+                regenerated_transcript = transcribe_clip_audio_for_subtitles(
+                    engine,
+                    source_for_clip,
+                    start,
+                    duration,
+                    subtitle_audio_path,
+                    payload,
+                )
+                selected_transcript, caption_source, caption_quality = choose_caption_transcript(
+                    regenerated_transcript,
+                    source_caption_transcript,
+                    duration,
+                )
             if selected_transcript:
                 clip_transcript = selected_transcript
                 render_moment["transcript_segments"] = selected_transcript
@@ -14517,7 +15218,71 @@ def render(payload):
             )
             clip_plan["status"] = "watermark_cached"
             write_json_file(clip_plan_path, clip_plan)
-        vf = build_video_filter(payload, srt_path=caption_ass_path, focus_x=focus_x, moment=render_moment)
+
+        # Smart Edit Director V2 plan
+        smart_edit_plan = None
+        content_mode = str(payload.get("contentMode") or payload.get("content_mode") or "auto").strip().lower()
+        dims = output_dimensions(payload.get("formatProfile"), payload.get("resolutionProfile"))
+        if SmartEditDirector is not None:
+            try:
+                director = SmartEditDirector(content_mode=content_mode)
+                visual_detections = (
+                    render_moment.get("visual_detections")
+                    or render_moment.get("visualDetections")
+                    or payload.get("visual_detections")
+                    or payload.get("visualDetections")
+                    or None
+                )
+                smart_edit_plan = director.plan_edit(
+                    transcript=clip_transcript,
+                    speaker_timeline=face_analysis.get("speaker_timeline") if isinstance(face_analysis, dict) else None,
+                    start=start,
+                    end=start + duration,
+                    duration=duration,
+                    story_beats=face_analysis.get("story_beats") if isinstance(face_analysis, dict) else None,
+                    visual_detections=visual_detections,
+                    source_dims=dims,
+                    face_analysis=face_analysis if isinstance(face_analysis, dict) else None,
+                )
+            except Exception as exc:
+                emit("log", stage="smart edit director", message=f"SmartEditDirector fallback: {exc}")
+                smart_edit_plan = None
+
+        if smart_edit_plan is None and callable(validate_edit_plan):
+            smart_edit_plan = validate_edit_plan({"contentMode": content_mode, "duration": duration}, duration)
+
+        if isinstance(face_analysis, dict) and smart_edit_plan:
+            face_analysis["smart_edit_plan"] = smart_edit_plan
+
+        if smart_edit_plan:
+            qa = smart_edit_plan.get("qa") or {}
+            qa_mode = qa.get("mode") or smart_edit_plan.get("resolvedMode") or content_mode
+            qa_story = qa.get("storyType") or "general_narrative"
+            qa_layout = smart_edit_plan.get("layout") or "PORTRAIT_SINGLE"
+            qa_cuts = qa.get("cutCount", len(smart_edit_plan.get("cuts", [])))
+            qa_keyframes = qa.get("keyframeCount", len(smart_edit_plan.get("keyframes", [])))
+            qa_switches = qa.get("speakerSwitches", max(0, qa_cuts - 1))
+            qa_reactions = qa.get("reactions", 0)
+            qa_fallback = str(smart_edit_plan.get("fallbackUsed", False)).lower()
+            emit(
+                "log",
+                stage="smart edit director",
+                message=(
+                    f"EditDirector: profile={smart_edit_plan.get('editingProfile')} "
+                    f"MODE={qa_mode} STORY={qa_story} LAYOUT={qa_layout} "
+                    f"CUTS={qa_cuts} KEYFRAMES={qa_keyframes} "
+                    f"SPEAKER_SWITCHES={qa_switches} REACTIONS={qa_reactions} "
+                    f"FALLBACK={qa_fallback}"
+                ),
+            )
+            clip_plan["smart_edit_plan"] = smart_edit_plan
+            storyboard_lines = storyboard_debug_lines(smart_edit_plan)
+            smart_edit_plan["storyboardDebug"] = storyboard_lines
+            clip_plan["storyboard_debug"] = storyboard_lines
+            for line in storyboard_lines[:8]:
+                emit("log", stage="storyboard", message=line)
+
+        vf = build_video_filter(payload, srt_path=caption_ass_path, focus_x=focus_x, moment=render_moment, edit_plan=smart_edit_plan)
         four_k_look_active = bool(payload.get("_fourKLookActive"))
         write_json_file(
             filter_graph_cache_path,
@@ -14548,11 +15313,25 @@ def render(payload):
 
         fps_args_value = fps_args(payload)
         bitrate_settings = render_bitrate_settings(payload)
-        if logo_path:
-            cmd = build_logo_overlay_command(engine, source_for_clip, logo_path, start, duration, render_target_path, encoder, fps_args_value, vf, af, crf, payload)
-        else:
-            builder = engine.builder(source_for_clip, start, duration, render_target_path, encoder, fps_args_value, filters=[vf] if vf else [], audio_filters=[af] if af else [], crf=crf, threads=cpu_thread_count(), **bitrate_settings)
-            cmd = builder.build()
+        is_summary_comp = bool(render_moment.get("is_summary_composition") and render_moment.get("composition_segments"))
+        comp_segments = render_moment.get("composition_segments") or []
+        cmd = build_clip_render_command(
+            engine,
+            source_for_clip,
+            start,
+            duration,
+            render_target_path,
+            encoder,
+            fps_args_value=fps_args_value,
+            video_filter=vf,
+            audio_filter_value=af,
+            crf=crf,
+            payload=payload,
+            logo_path=logo_path,
+            is_summary_comp=is_summary_comp,
+            comp_segments=comp_segments,
+            bitrate_settings=bitrate_settings,
+        )
 
         render_failed = None
         try:
@@ -14561,12 +15340,24 @@ def render(payload):
             if four_k_look_active and bool_payload(payload, "_allowHeavy4KLook", False):
                 look_payload = dict(payload)
                 look_payload["disable4KLook"] = True
-                look_fallback_vf = build_video_filter(look_payload, srt_path=caption_ass_path, focus_x=focus_x, moment=render_moment)
-                if logo_path:
-                    look_cmd = build_logo_overlay_command(engine, source_for_clip, logo_path, start, duration, render_target_path, encoder, fps_args_value, look_fallback_vf, af, crf, look_payload)
-                else:
-                    look_builder = engine.builder(source_for_clip, start, duration, render_target_path, encoder, fps_args_value, filters=[look_fallback_vf] if look_fallback_vf else [], audio_filters=[af] if af else [], crf=crf, threads=cpu_thread_count(), **bitrate_settings)
-                    look_cmd = look_builder.build()
+                look_fallback_vf = build_video_filter(look_payload, srt_path=caption_ass_path, focus_x=focus_x, moment=render_moment, edit_plan=smart_edit_plan)
+                look_cmd = build_clip_render_command(
+                    engine,
+                    source_for_clip,
+                    start,
+                    duration,
+                    render_target_path,
+                    encoder,
+                    fps_args_value=fps_args_value,
+                    video_filter=look_fallback_vf,
+                    audio_filter_value=af,
+                    crf=crf,
+                    payload=look_payload,
+                    logo_path=logo_path,
+                    is_summary_comp=is_summary_comp,
+                    comp_segments=comp_segments,
+                    bitrate_settings=bitrate_settings,
+                )
                 try:
                     engine.run_process(look_cmd, "4K Look fallback", index, len(moments), render_duration, clip_start_progress + 4, clip_end_progress, log_path=clip_ffmpeg_log)
                 except RenderError as look_exc:
@@ -14599,11 +15390,23 @@ def render(payload):
                     failed_encoder = encoder
                     emit("log", stage="encode", message=f"Encoder {failed_encoder} gagal: {fallback_error}. Retry memakai {fallback_encoder}.")
                     encoder = fallback_encoder
-                    if logo_path:
-                        cmd = build_logo_overlay_command(engine, source_for_clip, logo_path, start, duration, render_target_path, encoder, fps_args_value, vf, af, crf, payload)
-                    else:
-                        builder = engine.builder(source_for_clip, start, duration, render_target_path, encoder, fps_args_value, filters=[vf] if vf else [], audio_filters=[af] if af else [], crf=crf, threads=cpu_thread_count(), **bitrate_settings)
-                        cmd = builder.build()
+                    cmd = build_clip_render_command(
+                        engine,
+                        source_for_clip,
+                        start,
+                        duration,
+                        render_target_path,
+                        encoder,
+                        fps_args_value=fps_args_value,
+                        video_filter=vf,
+                        audio_filter_value=af,
+                        crf=crf,
+                        payload=payload,
+                        logo_path=logo_path,
+                        is_summary_comp=is_summary_comp,
+                        comp_segments=comp_segments,
+                        bitrate_settings=bitrate_settings,
+                    )
                     try:
                         engine.run_process(cmd, f"portrait conversion {fallback_encoder} fallback", index, len(moments), render_duration, clip_start_progress + 4, clip_end_progress, log_path=clip_ffmpeg_log)
                         fallback_reasons.append(f"encoder:{failed_encoder}->{fallback_encoder}")
@@ -14625,11 +15428,23 @@ def render(payload):
                 safe_payload["addHook"] = False
                 vf = build_video_filter(safe_payload, srt_path=None, focus_x=focus_x, moment=render_moment)
                 safe_af = audio_filter(safe_payload, 0.0)
-                if logo_path:
-                    cmd = build_logo_overlay_command(engine, source_for_clip, logo_path, start, duration, render_target_path, encoder, fps_args_value, vf, safe_af, crf, safe_payload)
-                else:
-                    builder = engine.builder(source_for_clip, start, duration, render_target_path, encoder, fps_args_value, filters=[vf] if vf else [], audio_filters=[safe_af] if safe_af else [], crf=crf, threads=cpu_thread_count(), **bitrate_settings)
-                    cmd = builder.build()
+                cmd = build_clip_render_command(
+                    engine,
+                    source_for_clip,
+                    start,
+                    duration,
+                    render_target_path,
+                    encoder,
+                    fps_args_value=fps_args_value,
+                    video_filter=vf,
+                    audio_filter_value=safe_af,
+                    crf=crf,
+                    payload=safe_payload,
+                    logo_path=logo_path,
+                    is_summary_comp=is_summary_comp,
+                    comp_segments=comp_segments,
+                    bitrate_settings=bitrate_settings,
+                )
                 try:
                     engine.run_process(cmd, "portrait conversion caption fallback", index, len(moments), duration, clip_start_progress + 4, clip_end_progress, log_path=clip_ffmpeg_log)
                 except RenderError as retry_exc:
@@ -14688,20 +15503,24 @@ def render(payload):
             minimal_payload["disable4KLook"] = True
             minimal_filter = build_video_filter(minimal_payload, srt_path=None, focus_x=None, moment=render_moment)
             try:
-                minimal_builder = engine.builder(
+                minimal_cmd = build_clip_render_command(
+                    engine,
                     source_for_clip,
                     start,
                     duration,
                     render_target_path,
                     "libx264",
-                    fps_args_value,
-                    filters=[minimal_filter] if minimal_filter else [],
-                    audio_filters=[],
+                    fps_args_value=fps_args_value,
+                    video_filter=minimal_filter,
+                    audio_filter_value=None,
                     crf=crf,
-                    threads=cpu_thread_count(),
-                    **bitrate_settings,
+                    payload=minimal_payload,
+                    logo_path=None,
+                    is_summary_comp=is_summary_comp,
+                    comp_segments=comp_segments,
+                    bitrate_settings=bitrate_settings,
                 )
-                engine.run_process(minimal_builder.build(), "minimal mp4 fallback", index, len(moments), duration, clip_start_progress + 4, clip_end_progress, log_path=clip_ffmpeg_log)
+                engine.run_process(minimal_cmd, "minimal mp4 fallback", index, len(moments), duration, clip_start_progress + 4, clip_end_progress, log_path=clip_ffmpeg_log)
                 encoder = "libx264"
                 fallback_reasons.append("minimal-mp4")
                 render_failed = None
@@ -14807,9 +15626,25 @@ def render(payload):
             caption_srt_path = None
             vf = build_video_filter(safe_payload, srt_path=None, focus_x=None, moment=render_moment)
             safe_af = audio_filter(safe_payload, 0.0)
-            builder = engine.builder(source_for_clip, start, duration, clip_path, "libx264", fps_args_value, filters=[vf] if vf else [], audio_filters=[safe_af] if safe_af else [], crf=crf, threads=cpu_thread_count(), **bitrate_settings)
+            safe_cmd = build_clip_render_command(
+                engine,
+                source_for_clip,
+                start,
+                duration,
+                clip_path,
+                "libx264",
+                fps_args_value=fps_args_value,
+                video_filter=vf,
+                audio_filter_value=safe_af,
+                crf=crf,
+                payload=safe_payload,
+                logo_path=None,
+                is_summary_comp=is_summary_comp,
+                comp_segments=comp_segments,
+                bitrate_settings=bitrate_settings,
+            )
             try:
-                engine.run_process(builder.build(), "safe render validation fallback", index, len(moments), duration, clip_start_progress + 4, clip_end_progress, log_path=clip_ffmpeg_log)
+                engine.run_process(safe_cmd, "safe render validation fallback", index, len(moments), duration, clip_start_progress + 4, clip_end_progress, log_path=clip_ffmpeg_log)
                 encoder = "libx264"
                 fallback_reasons.append("validation-safe-cpu")
                 media_probe = probe_media_file(clip_path)

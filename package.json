@@ -1,6 +1,6 @@
 {
   "name": "cliper-studio-plus",
-  "version": "1.12.5",
+  "version": "1.13.0",
   "description": "Local-first AI video clipping studio for YouTube Shorts, TikTok, Reels, Facebook and Podcasts.",
   "author": "Cliper Studio Plus",
   "main": "electron/main.js",
@@ -72,7 +72,7 @@
     }
   },
   "devDependencies": {
-    "electron": "^42.5.0",
+    "electron": "^42.11.2",
     "electron-builder": "^26.15.3"
   }
 }

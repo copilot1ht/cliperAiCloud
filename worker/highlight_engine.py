@@ -40,30 +40,31 @@ def progressive_deficit_penalty(value, threshold, maximum, span):
         return float(maximum)
 
 
-def public_score_out_of_ten(raw_score) -> int:
-    """Convert internal 0-100 evidence score to honest 1-10 public display.
+def _public_score_band(value, source_min, source_max, public_min, public_max):
+    ratio = (value - source_min) / max(source_max - source_min, 1)
+    return round(public_min + (public_max - public_min) * ratio, 1)
 
-    Mapping non-linear agar score 8-9 dapat dicapai bila evidence kuat,
-    dan score 10 tetap langka (raw >= 94). Konsisten antara backend & frontend.
 
-    6/10  = Opsional                (raw 55-64)
-    7/10  = Layak                   (raw 65-74)
-    8/10  = Direkomendasikan        (raw 75-84)
-    9/10  = Sangat Direkomendasikan (raw 85-93)
-    10/10 = Pilihan Terbaik         (raw 94+)
+def public_score_out_of_ten(raw_score) -> float:
+    """Map the internal evidence score to a monotonic editorial score.
+
+    The raw 0-100 score remains the ranking and audit source of truth. This
+    display-only curve removes coarse one-point jumps while keeping 10 rare.
     """
-    s = float(raw_score or 0)
+    s = max(0.0, min(100.0, float(raw_score or 0)))
     if s >= 94:
-        return 10
+        return _public_score_band(s, 94, 100, 9.6, 10.0)
     if s >= 85:
-        return 9
+        return _public_score_band(s, 85, 93, 9.0, 9.5)
     if s >= 75:
-        return 8
+        return _public_score_band(s, 75, 84, 8.2, 8.9)
     if s >= 65:
-        return 7
+        return _public_score_band(s, 65, 74, 7.3, 8.1)
     if s >= 55:
-        return 6
-    return 5
+        return _public_score_band(s, 55, 64, 6.5, 7.2)
+    if s >= 40:
+        return _public_score_band(s, 40, 54, 6.0, 6.4)
+    return round(max(1.0, 5.0 + (s / 40.0)), 1)
 
 
 def filler_ratio(text):

@@ -214,7 +214,7 @@ def test_optional_supplement_fills_partial_results_without_score_or_auto_render_
     assert all(item["render_eligible"] is True for item in supplemented[1:])
 
 
-def test_manual_review_supplement_does_not_pad_below_quality_floor():
+def test_manual_review_supplement_keeps_structurally_valid_lower_tier_candidates():
     selected = [
         {
             "id": 1,
@@ -277,8 +277,8 @@ def test_manual_review_supplement_does_not_pad_below_quality_floor():
         video_duration=600,
     )
 
-    assert len(supplemented) == 2
-    assert [item["score"] for item in supplemented] == [78, 67]
+    assert len(supplemented) == 4
+    assert [item["score"] for item in supplemented] == [78, 67, 59, 56]
     assert supplemented[0].get("manual_review_candidate") is not True
     assert all(item["manual_review_candidate"] for item in supplemented[1:])
     assert all(item["auto_render"] is False for item in supplemented[1:])
@@ -308,7 +308,7 @@ def test_manual_review_fallback_rejects_repetitive_low_evidence_padding():
     assert cliper_worker.supplement_with_optional_review_candidates([], [candidate], 1, 300) == []
 
 
-def test_requested_count_does_not_pad_results_with_low_quality_candidates():
+def test_requested_count_does_not_pad_results_with_structurally_weak_candidates():
     topics = [
         "Perjalanan kereta terlambat membuat rombongan mengubah rute dan akhirnya tiba melalui jalur berbeda.",
         "Penjual pasar menjelaskan pilihan bahan segar lalu menunjukkan hasil masakan kepada pengunjung.",
@@ -345,10 +345,10 @@ def test_requested_count_does_not_pad_results_with_low_quality_candidates():
             "rejected": True,
             "reject_reason": "Score di bawah 65",
             "metrics": {
-                "story_complete": 38,
-                "retention_predictor": 48,
-                "payoff": 25,
-                "hook": 33,
+                "story_complete": 24,
+                "retention_predictor": 34,
+                "payoff": 18,
+                "hook": 24,
                 "filler_ratio": 0.08,
             },
         })
@@ -363,6 +363,54 @@ def test_requested_count_does_not_pad_results_with_low_quality_candidates():
     assert len(supplemented) == 1
     assert supplemented[0]["score"] == original_scores[1]
     assert not any(item.get("target_fill_fallback") for item in supplemented)
+
+
+def test_target_six_returns_six_when_eight_candidates_are_structurally_viable():
+    topics = [
+        "jadwal kereta api terlambat",
+        "pasar tradisional bahan segar",
+        "pengembangan model kecerdasan buatan",
+        "teknik budidaya tanaman hidroponik",
+        "eksplorasi peninggalan candi kuno",
+        "tips berenang jarak jauh",
+        "analisis grafik pasar modal",
+        "konsep rumah hemat energi",
+    ]
+    candidates = []
+    for index in range(8):
+        candidates.append({
+            "id": index + 1,
+            "start": float(index * 130),
+            "end": float(index * 130 + 72),
+            "text": (
+                f"Cerita mengenai {topics[index]} memberikan gambaran konteks yang menarik, "
+                "lalu membuktikan hasil akhir dengan data nyata."
+            ),
+            "score": 72 if index < 2 else 60 - index,
+            "evidence_gate": index < 2,
+            "metrics": {
+                "story_complete": 62 if index < 6 else 25,
+                "retention_predictor": 66 if index < 6 else 32,
+                "payoff": 46 if index < 6 else 16,
+                "hook": 48 if index < 6 else 22,
+                "filler_ratio": 0.06,
+            },
+            "rejected": index >= 2,
+            "reject_reason": "Quality/evidence gate tidak terpenuhi" if index >= 2 else "",
+        })
+
+    supplemented = cliper_worker.supplement_with_optional_review_candidates(
+        [dict(candidates[0]), dict(candidates[1])],
+        candidates,
+        result_limit=6,
+        video_duration=1200,
+    )
+
+    assert len(supplemented) == 6
+    assert [item["id"] for item in supplemented] == [1, 2, 3, 4, 5, 6]
+    assert all(item.get("manual_review_candidate") for item in supplemented[2:])
+    assert all(item.get("auto_render") is False for item in supplemented[2:])
+    assert not any(item["id"] in {7, 8} for item in supplemented)
 
 
 def test_find_moments_preserves_ai_candidates_after_title_revision(monkeypatch):

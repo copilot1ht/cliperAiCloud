@@ -709,7 +709,9 @@ async function verifyCliperCloud(payload = {}) {
 
 async function fetchCloudCostEstimate(payload = {}) {
   const ready = await ensureCliperCloudSession(payload, false);
-  const requestedCount = Math.max(1, Math.min(10, Number(payload.requestedClipCount || payload.clipCount || 4)));
+  const mode = String(payload.contentMode || payload.content_mode || "auto").toLowerCase();
+  const rawCount = Math.max(1, Math.min(10, Number(payload.requestedClipCount || payload.clipCount || 4)));
+  const requestedCount = mode === "summary" ? 1 : rawCount;
   const duration = Math.max(0, Number(payload.sourceDurationSeconds || 0));
   if (!ready.ok) {
     const aiMin = Math.round((0.008 + requestedCount * 0.0035) * 1000) / 1000;
