@@ -35,6 +35,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install FFmpeg for render smoke tests
+        shell: pwsh
+        run: |
+          choco install ffmpeg --yes --no-progress
+          ffmpeg -version | Select-Object -First 1
+
       - name: Validate release version
         shell: pwsh
         run: |
