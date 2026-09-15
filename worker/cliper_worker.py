@@ -2556,11 +2556,13 @@ def cloud_analysis_job_input(payload, request_id):
     """
     source_value = str((payload or {}).get("url") or (payload or {}).get("localVideoPath") or "")
     source_id = hashlib.sha256(source_value.encode("utf-8", errors="replace")).hexdigest()[:24] if source_value else str(request_id)
+    content_mode = str((payload or {}).get("contentMode") or (payload or {}).get("content_mode") or "auto").strip().lower()
     return {
         "requestId": str(request_id),
         "sourceId": source_id,
+        "contentMode": content_mode,
         "sourceDurationSeconds": float((payload or {}).get("videoDuration") or (payload or {}).get("sourceDuration") or 0),
-        "requestedClipCount": 1 if str((payload or {}).get("contentMode") or (payload or {}).get("content_mode") or "auto").strip().lower() == "summary" else int((payload or {}).get("clipCount") or 0),
+        "requestedClipCount": 1 if content_mode == "summary" else int((payload or {}).get("clipCount") or 0),
     }
 
 
