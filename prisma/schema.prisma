@@ -73,6 +73,14 @@ enum PaymentStatus {
   REFUNDED
 }
 
+enum BillingSource {
+  NO_CHARGE_LOCAL
+  FREE_PREMIUM_TRIAL
+  SUBSCRIPTION_INCLUDED
+  WALLET_FALLBACK
+  WALLET_STANDARD
+}
+
 enum InvoiceStatus {
   DRAFT
   OPEN
@@ -275,6 +283,7 @@ model Subscription {
   user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   planDefinition     Plan                 @relation(fields: [planCode], references: [code], onDelete: Restrict)
   creditEntries      CreditLedger[]
+  analysisJobs       AnalysisJob[]
   creditAccount      UserCreditAccount?
   payments           PaymentTransaction[]
   invoices           Invoice[]
@@ -566,10 +575,17 @@ model AnalysisJob {
   userId                String
   accountId             String
   apiKeyId              String?
+  subscriptionId        String?
   requestId             String
   sourceId              String?
+  contentMode           String?
   sourceDurationSeconds Int               @default(0)
   requestedClipCount    Int               @default(0)
+  billingSource         BillingSource     @default(WALLET_STANDARD)
+  proQuotaDayKey        String?
+  proQuotaMonthKey      String?
+  premiumTrialWeekKey   String?
+  premiumTrialSourceKey String?
   reservedCreditMicro   BigInt
   providerCostMicroUsd  BigInt            @default(0)
   providerCostIdr       Int               @default(0)
@@ -584,6 +600,7 @@ model AnalysisJob {
   user                  User              @relation(fields: [userId], references: [id], onDelete: Restrict)
   account               UserCreditAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
   apiKey                ApiKey?           @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  subscription          Subscription?     @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
   usages                AiUsage[]
   creditEntries         CreditLedger[]
   createdAt             DateTime          @default(now())
@@ -593,6 +610,12 @@ model AnalysisJob {
   @@unique([userId, requestId])
   @@index([accountId, status, createdAt])
   @@index([apiKeyId, createdAt])
+  @@index([subscriptionId, createdAt])
+  @@index([userId, billingSource, createdAt])
+  @@index([userId, proQuotaDayKey, billingSource])
+  @@index([userId, proQuotaMonthKey, billingSource])
+  @@index([userId, premiumTrialWeekKey, billingSource])
+  @@index([userId, premiumTrialSourceKey, premiumTrialWeekKey])
   @@map("analysis_jobs")
 }
 

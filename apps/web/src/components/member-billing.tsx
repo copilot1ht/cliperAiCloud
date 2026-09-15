@@ -7,6 +7,7 @@ import {
   Plus,
   RefreshCw,
   ShieldCheck,
+  Sparkles,
   Wallet,
   X,
 } from "lucide-react";
@@ -72,6 +73,27 @@ interface BillingPayload {
   };
 }
 
+interface FeaturePolicyPayload {
+  showUpgradeMenu: boolean;
+  subscription: {
+    active: boolean;
+    plan: "free" | "pro";
+    status: string;
+    currentPeriodEnd: string | null;
+  };
+  pro: {
+    dailyLimit: number;
+    dailyUsed: number;
+    monthlyLimit: number;
+    monthlyUsed: number;
+  };
+  wallet: {
+    currency: "USD";
+    spendableUsd: string;
+  };
+  nextBillingSource: "subscription" | "wallet_fallback" | "wallet_standard" | "blocked";
+}
+
 async function paymentFetch<T>(
   path: string,
   init: RequestInit = {},
@@ -107,6 +129,7 @@ export function MemberBilling({
   autoOpenTopup?: boolean;
 }) {
   const [data, setData] = useState<BillingPayload | null>(null);
+  const [featurePolicy, setFeaturePolicy] = useState<FeaturePolicyPayload | null>(null);
   const [selected, setSelected] = useState<Invoice | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -118,8 +141,12 @@ export function MemberBilling({
   const load = useCallback(async () => {
     setError("");
     try {
-      const next = await paymentFetch<BillingPayload>("/api/payments");
+      const [next, policy] = await Promise.all([
+        paymentFetch<BillingPayload>("/api/payments"),
+        paymentFetch<FeaturePolicyPayload>("/api/member/feature-policy").catch(() => null),
+      ]);
       setData(next);
+      setFeaturePolicy(policy);
       setSelected((current) => {
         const invoice = current
           ? next.invoices.find((item) => item.number === current.number) || null
@@ -294,6 +321,24 @@ export function MemberBilling({
         <div className="notice-line success-notice">
           <div><ShieldCheck size={17} /><span>{paymentNotice}</span></div>
         </div>
+      )}
+      {featurePolicy?.subscription.active && (
+        <section className="panel pro-status-panel">
+          <div className="panel-head">
+            <div>
+              <p className="section-kicker">Cliper Pro Aktif</p>
+              <h2>{featurePolicy.nextBillingSource === "subscription" ? "Kuota subscription tersedia" : "Saldo cadangan aktif"}</h2>
+              <p>Aktif hingga {featurePolicy.subscription.currentPeriodEnd ? formatDate(featurePolicy.subscription.currentPeriodEnd) : "tanpa batas periode"}</p>
+            </div>
+            <Sparkles size={20} />
+          </div>
+          <div className="invoice-breakdown" aria-label="Status Cliper Pro">
+            <span><small>AI hari ini</small><strong>{featurePolicy.pro.dailyUsed}/{featurePolicy.pro.dailyLimit}</strong></span>
+            <span><small>AI bulan ini</small><strong>{featurePolicy.pro.monthlyUsed}/{featurePolicy.pro.monthlyLimit}</strong></span>
+            <span><small>Saldo cadangan</small><strong>{formatUsdWallet(featurePolicy.wallet.spendableUsd)}</strong></span>
+            <span><small>Billing berikutnya</small><strong>{featurePolicy.nextBillingSource.replace(/_/g, " ")}</strong></span>
+          </div>
+        </section>
       )}
       <div className="stats-grid compact-stats">
         <div className="metric-block">

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   detectMidtransDashboardTestNotification,
+  invoiceDurationDays,
   paymentEnvironment,
   PaymentService,
   providerInvoiceExpiry,
@@ -13,6 +14,12 @@ describe("USD wallet helpers", () => {
     expect(usdToMicro("1")).toBe(1_000_000n);
     expect(usdToMicro("1.25")).toBe(1_250_000n);
     expect(microToUsd(1_000_000n)).toBe("1.000000");
+  });
+
+  it("keeps the duration snapshot of an older pending plan invoice", () => {
+    expect(invoiceDurationDays({ durationDays: 30 }, 365)).toBe(30);
+    expect(invoiceDurationDays({ durationDays: 0 }, 365)).toBe(365);
+    expect(invoiceDurationDays({}, 365)).toBe(365);
   });
 
   it("rejects floating point and malformed purchase values", () => {

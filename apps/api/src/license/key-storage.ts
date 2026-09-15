@@ -14,6 +14,19 @@ export interface LicenseKeyMetadata {
   reason?: string;
 }
 
+export interface LicenseDeviceMetadata {
+  id: string;
+  keyId?: string;
+  keyPrefix?: string;
+  name: string;
+  fingerprint: string;
+  platform?: string;
+  status: "active" | "revoked";
+  lastSeenAt?: string;
+  createdAt: string;
+  revokedAt?: string;
+}
+
 interface LicenseKeyRecord extends LicenseKeyMetadata {
   // Legacy database compatibility only. Wallet billing never exposes or uses a
   // customer plan to decide whether a key is connected or a job may run.
@@ -21,6 +34,7 @@ interface LicenseKeyRecord extends LicenseKeyMetadata {
   secretHash: string;
   deviceLimit: number;
   deviceFingerprints: string[];
+  revokedDevices: string[];
 }
 
 const KEY_PEPPER = String(process.env.LICENSE_KEY_PEPPER || process.env.PROVIDER_ENCRYPTION_KEY || "development-license-pepper-000000000000000000000");
@@ -52,6 +66,7 @@ export class LicenseKeyStore {
       secretHash: keyMaterial.secretHash,
       deviceLimit: input.deviceLimit ?? DEFAULT_DEVICE_LIMIT,
       deviceFingerprints: [],
+      revokedDevices: [],
     };
     this.keys.unshift(record);
     return { rawKey: keyMaterial.rawKey, key: this.toMetadata(record) };
@@ -70,7 +85,38 @@ export class LicenseKeyStore {
     if (!record) throw new Error("License key tidak ditemukan.");
     record.status = "revoked";
     record.reason = "Key dicabut oleh admin.";
+    record.revokedDevices = Array.from(new Set([...record.revokedDevices, ...record.deviceFingerprints]));
     return this.toMetadata(record);
+  }
+
+  listDevices(ownerId: string): LicenseDeviceMetadata[] {
+    return this.keys
+      .filter((item) => item.ownerId === ownerId)
+      .flatMap((item) => item.deviceFingerprints.map((fingerprint) => ({
+        id: `${item.id}:${fingerprint}`,
+        keyId: item.id,
+        keyPrefix: item.prefix,
+        name: "Cliper Desktop",
+        fingerprint,
+        status: item.status === "active" && !item.revokedDevices.includes(fingerprint) ? "active" as const : "revoked" as const,
+        lastSeenAt: item.lastUsedAt,
+        createdAt: item.createdAt,
+        revokedAt: item.revokedDevices.includes(fingerprint) ? new Date().toISOString() : undefined,
+      })));
+  }
+
+  revokeDevice(id: string, ownerId: string): LicenseDeviceMetadata {
+    const [keyId, fingerprint] = id.split(":");
+    const record = this.keys.find((item) => item.id === keyId && item.ownerId === ownerId);
+    if (!record || !fingerprint || !record.deviceFingerprints.includes(fingerprint)) throw new Error("Device tidak ditemukan.");
+    record.revokedDevices = Array.from(new Set([...record.revokedDevices, fingerprint]));
+    return this.listDevices(ownerId).find((item) => item.id === id)!;
+  }
+
+  renameDevice(id: string, ownerId: string, _name: string): LicenseDeviceMetadata {
+    const device = this.listDevices(ownerId).find((item) => item.id === id);
+    if (!device) throw new Error("Device tidak ditemukan.");
+    return device;
   }
 
   useDevice(rawKey: string, fingerprint: string): { ok: true } | { ok: false; reason: string } {
@@ -83,6 +129,9 @@ export class LicenseKeyStore {
     }
     if (!fingerprint) {
       return { ok: false, reason: "Device fingerprint wajib diisi." };
+    }
+    if (record.revokedDevices.includes(fingerprint)) {
+      return { ok: false, reason: "Device ini sudah dicabut." };
     }
     const existing = record.deviceFingerprints.includes(fingerprint);
     if (!existing && record.deviceFingerprints.length >= record.deviceLimit) {

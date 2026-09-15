@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BadgeDollarSign, BarChart3, Boxes, ChevronDown, Download, Home, Key, LogOut, Menu, Settings, ShieldCheck, X } from "lucide-react";
+import { BadgeDollarSign, BarChart3, Boxes, ChevronDown, Download, Home, Key, LogOut, Menu, Settings, ShieldCheck, Sparkles, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { apiBase } from "@/lib/api-base";
 import { adminMenu } from "@/lib/admin-menu";
@@ -11,10 +11,12 @@ import { adminMenu } from "@/lib/admin-menu";
 const mainNav = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
   { href: "/usage", label: "Usage", icon: BarChart3 },
-  { href: "/keys", label: "API Keys", icon: Key },
+  { href: "/keys", label: "Desktop Keys", icon: Key },
   { href: "/billing", label: "Wallet & Billing", icon: BadgeDollarSign },
   { href: "/downloads", label: "Download app", icon: Download },
 ];
+
+const upgradeNav = { href: "/plans", label: "Upgrade", icon: Sparkles };
 
 const adminNav = adminMenu;
 
@@ -35,14 +37,15 @@ export function AppShell({ children, title, eyebrow, actions, role = "member" }:
   const [open, setOpen] = useState(false);
   const [gatewayStatus, setGatewayStatus] = useState<"checking" | "ready" | "setup" | "offline">("checking");
   const [account, setAccount] = useState<AccountSession | null>(null);
-  const [deploymentLabel, setDeploymentLabel] = useState("Beta");
+  const [deploymentLabel, setDeploymentLabel] = useState("Live");
+  const [showUpgradeMenu, setShowUpgradeMenu] = useState(false);
 
   useEffect(() => {
     const hostname = window.location.hostname;
     setDeploymentLabel(
       hostname === "localhost" || hostname === "127.0.0.1"
-        ? "Local development"
-        : "Production beta",
+        ? "Local"
+        : "Live",
     );
   }, []);
 
@@ -64,7 +67,7 @@ export function AppShell({ children, title, eyebrow, actions, role = "member" }:
     if (href === "/admin/overview" || href === "/dashboard") return pathname === href;
     return pathname === href || pathname.startsWith(`${href}/`);
   };
-  const navigation = role === "admin" ? adminNav : mainNav;
+  const navigation = role === "admin" ? adminNav : showUpgradeMenu ? [...mainNav, upgradeNav] : mainNav;
 
   useEffect(() => {
     const apiUrl = apiBase();
@@ -99,6 +102,21 @@ export function AppShell({ children, title, eyebrow, actions, role = "member" }:
         sessionStorage.removeItem("cliper_role");
         sessionStorage.removeItem("cliper_user");
         window.location.replace("/login");
+      });
+    return () => controller.abort();
+  }, [role]);
+
+  useEffect(() => {
+    if (role !== "member") return;
+    const apiUrl = apiBase();
+    const controller = new AbortController();
+    fetch(`${apiUrl}/api/member/feature-policy`, { credentials: "include", cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const policy = await response.json().catch(() => ({}));
+        setShowUpgradeMenu(Boolean(response.ok && policy?.showUpgradeMenu));
+      })
+      .catch((reason) => {
+        if (reason?.name !== "AbortError") setShowUpgradeMenu(false);
       });
     return () => controller.abort();
   }, [role]);

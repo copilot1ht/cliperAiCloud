@@ -37,11 +37,11 @@ export default function KeysPage() {
     setError(undefined);
     setGeneratedKey(undefined);
     try {
-      const response = await fetch(`${apiUrl}/v1/keys`, {
+      const response = await fetch(`${apiUrl}/v1/keys/rotate`, {
         method: "POST",
         headers: getHeaders(),
         credentials: "include",
-        body: JSON.stringify({ deviceLimit: 2 }),
+        body: JSON.stringify({ label: "Cliper Desktop" }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.message || "Tidak dapat membuat key.");
@@ -78,7 +78,7 @@ export default function KeysPage() {
   }, []);
 
   return (
-    <AppShell eyebrow="API License" title="API Key Management" actions={<button className="button button-primary" onClick={handleGenerate} disabled={loading}><Plus size={16} /> Generate key</button>}>
+    <AppShell eyebrow="Desktop License" title="Desktop Key Management" actions={<button className="button button-primary" onClick={handleGenerate} disabled={loading}><Plus size={16} /> Rotate desktop key</button>}>
       {error && <section className="panel error-panel"><p>{error}</p></section>}
       <KeyManager keys={keys} generatedKey={generatedKey} onGenerate={handleGenerate} onRevoke={handleRevoke} loading={loading} error={error} />
     </AppShell>

@@ -6,6 +6,7 @@ import { LicenseService } from "../license/license.service.js";
 import { SessionGuard, type SessionAuthenticatedRequest } from "../security/session.guard.js";
 import { UsageService } from "../usage/usage.service.js";
 import { microToUsd } from "../billing/wallet-payment-settings.service.js";
+import { ProEntitlementService } from "../billing/pro-entitlement.service.js";
 
 @Controller("api/member")
 @UseGuards(SessionGuard)
@@ -16,6 +17,7 @@ export class MemberController {
     @Inject(LicenseService) private readonly licenses: LicenseService,
     @Inject(UsageService) private readonly usage: UsageService,
     @Inject(DatabaseService) private readonly database: DatabaseService,
+    @Inject(ProEntitlementService) private readonly entitlements: ProEntitlementService,
   ) {}
 
   @Get("overview")
@@ -78,5 +80,42 @@ export class MemberController {
         })),
       },
     };
+  }
+
+  @Get("feature-policy")
+  async featurePolicy(@Req() request: SessionAuthenticatedRequest) {
+    const accountId = request.cliperSession?.userId || "";
+    if (!this.database.configured()) {
+      return {
+        ok: true,
+        hasSuccessfulTopup: false,
+        showUpgradeMenu: false,
+        walletFallbackDefault: true,
+        subscription: { active: false, plan: "free", status: "none", currentPeriodEnd: null },
+        pro: {
+          dailyLimit: 5,
+          dailyUsed: 0,
+          monthlyLimit: 60,
+          monthlyUsed: 0,
+          dayResetsAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+          monthResetsAt: new Date(Date.now() + 30 * 24 * 60 * 60_000).toISOString(),
+          weeklyPremiumUnlimited: true,
+          weeklyTrialLimit: 2,
+          weeklyTrialUsed: 0,
+          weekResetsAt: new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString(),
+          maxClipsPerJob: 10,
+          maxDevices: 2,
+          maxConcurrentAi: 1,
+        },
+        wallet: {
+          currency: "USD",
+          availableUsd: "0.000000",
+          reservedUsd: "0.000000",
+          spendableUsd: "0.000000",
+        },
+        nextBillingSource: "blocked",
+      };
+    }
+    return this.entitlements.featurePolicy(this.database.client(), accountId);
   }
 }

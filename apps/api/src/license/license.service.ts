@@ -4,7 +4,7 @@ import { generateCliperApiKey, hashCliperApiKey, isCliperApiKey } from "@cliper/
 import { CreditAccountService } from "../billing/credit-account.service.js";
 import { DatabaseService } from "../database/database.service.js";
 import { KeyStatus, PlanCode } from "../generated/prisma/client.js";
-import { LicenseKeyStore, type LicenseKeyMetadata } from "./key-storage.js";
+import { LicenseKeyStore, type LicenseDeviceMetadata, type LicenseKeyMetadata } from "./key-storage.js";
 
 const DEFAULT_DEVICE_LIMIT = 2;
 const DEFAULT_EXPIRE_DAYS = 365;
@@ -65,6 +65,10 @@ function planForDatabase(plan: string | undefined): PlanCode {
 
 function planLabel(plan: PlanCode): string {
   return String(plan).toLowerCase();
+}
+
+function deviceName(value: string | undefined): string {
+  return String(value || "Cliper Desktop").trim().slice(0, 80) || "Cliper Desktop";
 }
 
 @Injectable()
@@ -178,6 +182,110 @@ export class LicenseService {
         expiresAt: expiresAt.toISOString(),
       },
     };
+  }
+
+  async rotateDesktopKey(input: { ownerId: string; label?: string; deviceLimit?: number }) {
+    if (!this.usesPostgres()) {
+      const previous = this.store.listKeys(input.ownerId).filter((item) => item.status === "active");
+      const created = await this.createKey({ ...input, label: input.label || "Cliper Desktop" });
+      for (const key of previous) this.store.revokeKey(key.id, input.ownerId);
+      return created;
+    }
+
+    const client = this.database!.client();
+    const owner = await client.user.findUnique({
+      where: { id: input.ownerId },
+      select: { id: true, planCode: true, deviceLimit: true },
+    });
+    if (!owner) throw new NotFoundException("Pemilik API key tidak ditemukan.");
+
+    const material = generateCliperApiKey(keyPepper());
+    const expiresAt = addDays(DEFAULT_EXPIRE_DAYS);
+    const rotated = await client.$transaction(async (tx) => {
+      const previous = await tx.apiKey.findMany({
+        where: { userId: owner.id, status: KeyStatus.ACTIVE },
+        select: { id: true },
+      });
+      const previousIds = previous.map((key) => key.id);
+      const key = await tx.apiKey.create({
+        data: {
+          userId: owner.id,
+          name: deviceName(input.label),
+          prefix: material.prefix,
+          secretHash: material.secretHash,
+          plan: owner.planCode,
+          deviceLimit: Math.max(1, Math.min(50, Math.round(Number(input.deviceLimit || owner.deviceLimit || DEFAULT_DEVICE_LIMIT)))),
+          expiresAt,
+        },
+      });
+      if (previousIds.length) {
+        const now = new Date();
+        await tx.apiKey.updateMany({ where: { id: { in: previousIds } }, data: { status: KeyStatus.REVOKED } });
+        await tx.device.updateMany({ where: { apiKeyId: { in: previousIds }, revokedAt: null }, data: { revokedAt: now } });
+        await tx.desktopSession.updateMany({ where: { apiKeyId: { in: previousIds }, revokedAt: null }, data: { revokedAt: now } });
+      }
+      return key;
+    });
+
+    return {
+      rawKey: material.rawKey,
+      key: {
+        id: rotated.id,
+        ownerId: rotated.userId,
+        prefix: rotated.prefix,
+        label: rotated.name,
+        status: "active" as const,
+        deviceSlots: { used: 0, limit: rotated.deviceLimit },
+        createdAt: rotated.createdAt.toISOString(),
+        expiresAt: expiresAt.toISOString(),
+      },
+    };
+  }
+
+  async listDevices(ownerId: string): Promise<LicenseDeviceMetadata[]> {
+    if (!this.usesPostgres()) return this.store.listDevices(ownerId);
+    const devices = await this.database!.client().device.findMany({
+      where: { userId: ownerId },
+      include: { apiKey: { select: { id: true, prefix: true } } },
+      orderBy: { lastSeenAt: "desc" },
+    });
+    return devices.map((device) => ({
+      id: device.id,
+      keyId: device.apiKeyId || undefined,
+      keyPrefix: device.apiKey?.prefix,
+      name: device.name,
+      fingerprint: device.fingerprint,
+      platform: device.platform || undefined,
+      status: device.revokedAt ? "revoked" : "active",
+      lastSeenAt: device.lastSeenAt?.toISOString(),
+      createdAt: device.createdAt.toISOString(),
+      revokedAt: device.revokedAt?.toISOString(),
+    }));
+  }
+
+  async renameDevice(id: string, ownerId: string, name: string): Promise<LicenseDeviceMetadata> {
+    const safeName = deviceName(name);
+    if (!this.usesPostgres()) return this.store.renameDevice(id, ownerId, safeName);
+    const existing = await this.database!.client().device.findFirst({ where: { id, userId: ownerId } });
+    if (!existing) throw new NotFoundException("Device tidak ditemukan.");
+    await this.database!.client().device.update({ where: { id }, data: { name: safeName } });
+    const updated = await this.listDevices(ownerId);
+    return updated.find((device) => device.id === id)!;
+  }
+
+  async revokeDevice(id: string, ownerId: string): Promise<LicenseDeviceMetadata> {
+    if (!this.usesPostgres()) return this.store.revokeDevice(id, ownerId);
+    const existing = await this.database!.client().device.findFirst({ where: { id, userId: ownerId } });
+    if (!existing) throw new NotFoundException("Device tidak ditemukan.");
+    await this.database!.client().$transaction([
+      this.database!.client().device.update({ where: { id }, data: { revokedAt: new Date() } }),
+      this.database!.client().desktopSession.updateMany({
+        where: { userId: ownerId, deviceFingerprint: existing.fingerprint, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
+    ]);
+    const updated = await this.listDevices(ownerId);
+    return updated.find((device) => device.id === id)!;
   }
 
   async authenticateGatewayKey(rawKey: string): Promise<{ apiKeyId: string; accountId: string; plan: string } | undefined> {

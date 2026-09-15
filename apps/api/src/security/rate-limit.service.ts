@@ -12,6 +12,11 @@ interface LimitResult {
   resetAt: string;
 }
 
+interface MemoryLease {
+  count: number;
+  expiresAt: number;
+}
+
 const CONSUME_WINDOW = `
   local count = redis.call('INCR', KEYS[1])
   if count == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
@@ -45,7 +50,7 @@ function production(): boolean {
 @Injectable()
 export class RateLimitService {
   private readonly windows = new Map<string, RateWindow>();
-  private readonly leases = new Map<string, number>();
+  private readonly leases = new Map<string, MemoryLease>();
 
   constructor(private readonly redis: RedisService) {}
 
@@ -98,7 +103,7 @@ export class RateLimitService {
     const acquired = await this.acquireLease(key, limit);
     if (!acquired) {
       throw new HttpException(
-        { statusCode: 429, code: "AI_CONCURRENCY_LIMIT", message: "Terlalu banyak request AI aktif. Tunggu request sebelumnya selesai.", retryAfter: 5 },
+        { statusCode: 429, code: "BLOCKED_BUSY", message: "AI Generate sedang berjalan. Tunggu proses aktif selesai sebelum memulai job baru.", retryAfter: 5 },
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
@@ -206,9 +211,11 @@ export class RateLimitService {
     const distributed = await this.redis.eval(ACQUIRE_LEASE, [key], [String(limit), String(ttlMs)]);
     if (Array.isArray(distributed)) return Number(distributed[0]) === 1;
     if (production()) throw new ServiceUnavailableException("Redis concurrency guard tidak tersedia.");
-    const current = this.leases.get(key) || 0;
-    if (current >= limit) return false;
-    this.leases.set(key, current + 1);
+    const now = Date.now();
+    const current = this.leases.get(key);
+    const active = current && current.expiresAt > now ? current.count : 0;
+    if (active >= limit) return false;
+    this.leases.set(key, { count: active + 1, expiresAt: now + ttlMs });
     return true;
   }
 
@@ -216,9 +223,9 @@ export class RateLimitService {
     const distributed = await this.redis.eval(RELEASE_LEASE, [key], []);
     if (distributed !== undefined) return;
     if (!production()) {
-      const current = this.leases.get(key) || 0;
-      if (current <= 1) this.leases.delete(key);
-      else this.leases.set(key, current - 1);
+      const current = this.leases.get(key);
+      if (!current || current.count <= 1) this.leases.delete(key);
+      else this.leases.set(key, { ...current, count: current.count - 1 });
     }
   }
 
@@ -230,7 +237,7 @@ export class RateLimitService {
 
   private aiConcurrencyLimit(plan: string): number {
     const normalized = String(plan || "free").toUpperCase();
-    const defaults: Record<string, number> = { WALLET: 4, FREE: 1, STARTER: 2, PRO: 4, TEAM: 6, ENTERPRISE: 10 };
+    const defaults: Record<string, number> = { WALLET: 1, FREE: 1, STARTER: 1, PRO: 1, TEAM: 2, ENTERPRISE: 4 };
     return this.configuredLimit(`AI_CONCURRENCY_${normalized}`, defaults[normalized] || defaults.FREE!);
   }
 

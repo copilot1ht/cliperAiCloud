@@ -10,15 +10,17 @@ import { type JobPricingQuote } from "@cliper/billing";
 import { randomUUID } from "node:crypto";
 import type { AiModule, CliperChatRequest, CliperInternalChatResponse } from "@cliper/contracts";
 import { DatabaseService } from "../database/database.service.js";
-import { AnalysisJobStatus, LedgerType, Prisma } from "../generated/prisma/client.js";
-import { CreditAccountService, InsufficientBalanceException } from "./credit-account.service.js";
+import { AnalysisJobStatus, BillingSource, LedgerType, Prisma } from "../generated/prisma/client.js";
+import { CreditAccountService } from "./credit-account.service.js";
 import { PricingService } from "./pricing.service.js";
+import { ProEntitlementService } from "./pro-entitlement.service.js";
 
 export type AnalysisJobStatusValue = "active" | "completed" | "failed";
 
 export interface StartAnalysisJobInput {
   requestId?: string;
   sourceId?: string;
+  contentMode?: string;
   sourceDurationSeconds?: number;
   requestedClipCount?: number;
 }
@@ -150,6 +152,7 @@ export class AnalysisJobService {
     @Inject(PricingService) private readonly pricing: PricingService,
     @Inject(CreditAccountService) private readonly credits: CreditAccountService,
     @Optional() @Inject(DatabaseService) private readonly database?: DatabaseService,
+    @Optional() @Inject(ProEntitlementService) private readonly entitlements?: ProEntitlementService,
   ) {}
 
   async start(accountId: string, input: StartAnalysisJobInput, apiKeyId?: string) {
@@ -198,7 +201,13 @@ export class AnalysisJobService {
       : BigInt(job.reservedMicro);
     const unlimited = "pricingSnapshot" in job
       && objectValue(job.pricingSnapshot).unlimitedCredits === true;
-    if (!unlimited && (!projectedQuote.capSafe || projectedQuote.userChargeMicroUsd > reservedMicro)) {
+    const billingSource = "billingSource" in job
+      ? job.billingSource
+      : objectValue("pricingSnapshot" in job ? job.pricingSnapshot : {}).billingSource;
+    const walletReserved = billingSource !== BillingSource.NO_CHARGE_LOCAL
+      && billingSource !== BillingSource.FREE_PREMIUM_TRIAL
+      && billingSource !== BillingSource.SUBSCRIPTION_INCLUDED;
+    if (!projectedQuote.capSafe || (!unlimited && walletReserved && projectedQuote.userChargeMicroUsd > reservedMicro)) {
       throw new ServiceUnavailableException({
         code: "COST_LIMIT_REACHED",
         message: "Estimasi biaya berikutnya melewati reservation job. Fallback lokal akan digunakan.",
@@ -377,13 +386,10 @@ export class AnalysisJobService {
     const requestedClipCount = this.validatedClipCount(input.requestedClipCount);
     const client = this.database!.client();
     await this.recoverStalePersistentJobs(accountId);
-    const entitlement = await client.user.findUnique({ where: { id: accountId }, select: { unlimitedCredits: true } });
-    if (!entitlement) throw new NotFoundException("Akun analysis tidak ditemukan.");
     const estimate = this.pricing.estimateAnalysisJob({
       sourceDurationSeconds: input.sourceDurationSeconds,
       requestedClipCount,
     });
-    const reservedMicro = entitlement.unlimitedCredits ? 0n : estimate.reservationMicroUsd;
     const existing = await client.analysisJob.findUnique({
       where: { userId_requestId: { userId: accountId, requestId } },
       include: { account: { select: { balanceMicro: true, reservedMicro: true } } },
@@ -391,38 +397,57 @@ export class AnalysisJobService {
     if (existing) return this.publicPersistentJob(existing);
 
     const jobId = randomUUID();
-    await client.$transaction(async (tx) => {
+    await this.serializable(async (tx) => {
       const duplicate = await tx.analysisJob.findUnique({
         where: { userId_requestId: { userId: accountId, requestId } },
       });
       if (duplicate) return;
-      await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "user_credits" WHERE "userId" = ${accountId} FOR UPDATE`);
-      const account = await tx.userCreditAccount.findUnique({ where: { userId: accountId } });
-      const available = account ? account.balanceMicro - account.reservedMicro : 0n;
-      if (!account || (!entitlement.unlimitedCredits && available < reservedMicro)) {
-        throw new InsufficientBalanceException(Number(available), Number(reservedMicro), requestId);
-      }
+      const ensured = await tx.userCreditAccount.upsert({
+        where: { userId: accountId },
+        create: { userId: accountId },
+        update: {},
+      });
+      await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "user_credits" WHERE "id" = ${ensured.id} FOR UPDATE`);
+      const account = await tx.userCreditAccount.findUniqueOrThrow({ where: { id: ensured.id } });
+      const decision = await this.entitlementService().resolveAnalysisJobBilling(tx, {
+        userId: accountId,
+        requestId,
+        estimatedReservationMicroUsd: estimate.reservationMicroUsd,
+        spendableWalletMicroUsd: account.balanceMicro - account.reservedMicro,
+        contentMode: input.contentMode,
+        sourceId: input.sourceId,
+      });
+      const reservedMicro = decision.reservationMicroUsd;
       const trustedApiKey = apiKeyId && apiKeyId !== "development-key"
         ? await tx.apiKey.findUnique({ where: { id: apiKeyId }, select: { id: true } })
         : undefined;
-      const updated = await tx.userCreditAccount.update({
-        where: { id: account.id },
-        data: { reservedMicro: { increment: reservedMicro } },
-      });
+      const updated = reservedMicro > 0n
+        ? await tx.userCreditAccount.update({
+          where: { id: account.id },
+          data: { reservedMicro: { increment: reservedMicro } },
+        })
+        : account;
       const job = await tx.analysisJob.create({
         data: {
           id: jobId,
           userId: accountId,
           accountId: account.id,
           apiKeyId: trustedApiKey?.id,
+          subscriptionId: decision.subscriptionId,
           requestId,
           sourceId: String(input.sourceId || "").slice(0, 240) || null,
+          contentMode: String(input.contentMode || "auto").slice(0, 40),
           sourceDurationSeconds: Math.round(safePositiveNumber(input.sourceDurationSeconds)),
           requestedClipCount,
+          billingSource: decision.source,
+          proQuotaDayKey: decision.proQuotaDayKey,
+          proQuotaMonthKey: decision.proQuotaMonthKey,
+          premiumTrialWeekKey: decision.premiumTrialWeekKey,
+          premiumTrialSourceKey: decision.premiumTrialSourceKey,
           reservedCreditMicro: reservedMicro,
           modules: {},
           pricingSnapshot: jsonValue({
-            unlimitedCredits: entitlement.unlimitedCredits,
+            ...decision.snapshot,
             estimated: jobQuoteSnapshot(estimate),
             reservationMicroUsd: reservedMicro.toString(),
           }),
@@ -447,7 +472,7 @@ export class AnalysisJobService {
           },
         });
       }
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    });
     const created = await client.analysisJob.findUniqueOrThrow({
       where: { userId_requestId: { userId: accountId, requestId } },
       include: { account: { select: { balanceMicro: true, reservedMicro: true } } },
@@ -467,21 +492,22 @@ export class AnalysisJobService {
       if (job.status !== AnalysisJobStatus.ACTIVE) throw new BadRequestException("Job sudah gagal dan reservation telah dilepas.");
       await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "user_credits" WHERE "id" = ${job.accountId} FOR UPDATE`);
       const account = await tx.userCreditAccount.findUniqueOrThrow({ where: { id: job.accountId } });
-      const entitlement = await tx.user.findUniqueOrThrow({ where: { id: accountId }, select: { unlimitedCredits: true } });
       const quote = this.pricing.quoteAnalysisJob({
         providerCostMicroUsd: job.providerCostMicroUsd,
         usableResult: input.usableResult !== false && clipScores.length > 0,
       });
       const reservedMicro = job.reservedCreditMicro;
-      if (!entitlement.unlimitedCredits && (!quote.capSafe || quote.userChargeMicroUsd > reservedMicro)) {
+      const billingSource = job.billingSource || BillingSource.WALLET_STANDARD;
+      const walletBilled = billingSource === BillingSource.WALLET_STANDARD || billingSource === BillingSource.WALLET_FALLBACK;
+      if (!quote.capSafe || (walletBilled && quote.userChargeMicroUsd > reservedMicro)) {
         throw new ServiceUnavailableException({
           code: "COST_LIMIT_REACHED",
           message: "Biaya job melewati batas aman sebelum settlement. Reservation akan dilepas oleh jalur gagal.",
           jobId,
         });
       }
-      const finalChargeMicro = entitlement.unlimitedCredits ? 0n : quote.userChargeMicroUsd;
-      const releasedMicro = reservedMicro - finalChargeMicro;
+      const finalChargeMicro = walletBilled ? quote.userChargeMicroUsd : 0n;
+      const releasedMicro = reservedMicro > finalChargeMicro ? reservedMicro - finalChargeMicro : 0n;
       if (account.reservedMicro < reservedMicro || account.balanceMicro < finalChargeMicro) {
         throw new ServiceUnavailableException("Saldo wallet berubah saat settlement. Job tidak dipotong.");
       }
@@ -529,7 +555,12 @@ export class AnalysisJobService {
           clipScores: jsonValue(clipScores),
           finalChargeMicro,
           releasedMicro,
-          pricingSnapshot: jsonValue({ ...jobQuoteSnapshot(quote), unlimitedCredits: entitlement.unlimitedCredits }),
+          pricingSnapshot: jsonValue({
+            ...objectValue(job.pricingSnapshot),
+            ...jobQuoteSnapshot(quote),
+            billingSource,
+            customerCharged: finalChargeMicro > 0n,
+          }),
           completedAt: new Date(),
         },
       });
@@ -633,6 +664,12 @@ export class AnalysisJobService {
     id: string;
     requestId: string;
     status: AnalysisJobStatus;
+    billingSource?: BillingSource;
+    subscriptionId?: string | null;
+    proQuotaDayKey?: string | null;
+    proQuotaMonthKey?: string | null;
+    premiumTrialWeekKey?: string | null;
+    premiumTrialSourceKey?: string | null;
     reservedCreditMicro: bigint;
     finalChargeMicro: bigint;
     releasedMicro: bigint;
@@ -664,6 +701,16 @@ export class AnalysisJobService {
       id: job.id,
       requestId: job.requestId,
       status: statusValue(job.status),
+      billingSource: job.billingSource || String(quote.billingSource || BillingSource.WALLET_STANDARD),
+      subscriptionId: job.subscriptionId || undefined,
+      proQuota: {
+        dayKey: job.proQuotaDayKey || String(quote.dayKey || ""),
+        monthKey: job.proQuotaMonthKey || String(quote.monthKey || ""),
+      },
+      premiumTrial: {
+        weekKey: job.premiumTrialWeekKey || String(quote.premiumTrialWeekKey || ""),
+        sourceKey: job.premiumTrialSourceKey || String(quote.premiumTrialSourceKey || ""),
+      },
       walletCurrency: "USD",
       billingMode: "per_job_usd",
       reservedMicroUsd: Number(job.reservedCreditMicro),
@@ -904,6 +951,31 @@ export class AnalysisJobService {
 
   private pricingPolicy() {
     return this.pricing.analysisJobPolicy();
+  }
+
+  private entitlementService(): ProEntitlementService {
+    return this.entitlements || new ProEntitlementService();
+  }
+
+  private async serializable<T>(work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    const client = this.database!.client();
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      try {
+        return await client.$transaction(work, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 5_000,
+          timeout: 10_000,
+        });
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError
+          && error.code === "P2034"
+          && attempt < 4
+        ) continue;
+        throw error;
+      }
+    }
+    throw new ServiceUnavailableException("Transaksi billing gagal setelah retry serializable.");
   }
 
   private activeMemoryJob(jobId: string, accountId: string): AnalysisJobRecord {

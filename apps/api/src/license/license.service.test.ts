@@ -59,6 +59,30 @@ describe("LicenseService development verification", () => {
     });
   });
 
+  it("rotates the desktop key only on explicit user action and revokes the previous key", async () => {
+    const service = new LicenseService();
+    const first = await service.createKey({ ownerId: "member-a", plan: "pro", label: "Desktop lama" });
+    await expect(service.validate({ key: first.rawKey, deviceFingerprint: "device-a" })).resolves.toMatchObject({ valid: true });
+
+    const rotated = await service.rotateDesktopKey({ ownerId: "member-a", label: "Desktop baru", deviceLimit: 2 });
+
+    await expect(service.validate({ key: first.rawKey, deviceFingerprint: "device-a" })).resolves.toMatchObject({ valid: false });
+    await expect(service.validate({ key: rotated.rawKey, deviceFingerprint: "device-b" })).resolves.toMatchObject({ valid: true });
+    expect((await service.listKeys("member-a")).filter((key) => key.status === "active")).toHaveLength(1);
+  });
+
+  it("revokes a bound desktop device without deleting wallet or key records", async () => {
+    const service = new LicenseService();
+    const generated = await service.createKey({ ownerId: "member-device", plan: "pro" });
+    await service.validate({ key: generated.rawKey, deviceFingerprint: "device-a" });
+    const [device] = await service.listDevices("member-device");
+
+    expect(device).toMatchObject({ status: "active", keyPrefix: generated.key.prefix });
+    await expect(service.revokeDevice(device!.id, "member-device")).resolves.toMatchObject({ status: "revoked" });
+    await expect(service.validate({ key: generated.rawKey, deviceFingerprint: "device-a" })).resolves.toMatchObject({ valid: false });
+    expect(await service.listKeys("member-device")).toHaveLength(1);
+  });
+
   it("allows a new API key for a persistent account without wallet balance", async () => {
     const database = {
       configured: () => true,

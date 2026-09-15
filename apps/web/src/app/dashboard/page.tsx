@@ -35,7 +35,7 @@ export default function DashboardPage() {
   }, []);
   useEffect(() => { void load(); }, [load]);
 
-  return <AppShell eyebrow="Workspace" title="Cliper Studio overview" actions={<Link className="button button-primary" href="/keys"><Plus size={17} /> Generate API Key</Link>}>
+  return <AppShell eyebrow="Workspace" title="Cliper Studio overview" actions={<Link className="button button-primary" href="/keys"><Plus size={17} /> Generate Desktop Key</Link>}>
     {error && <section className="panel error-panel"><strong>Data belum tersedia</strong><p>{error}</p><button className="button" onClick={() => void load()}>Coba lagi</button></section>}
     {!data && !error && <section className="panel admin-loading"><span /> Memuat saldo dan usage...</section>}
     {data && <>
@@ -45,7 +45,7 @@ export default function DashboardPage() {
           <h2>Selamat datang, {data.user.displayName.split(/\s+/)[0]}.</h2>
           <span>Desktop key, AI usage, dan wallet Anda terhubung dalam satu workspace aman.</span>
           <div className="member-hero-actions">
-            <Link className="button button-primary" href="/keys"><Key size={16} /> Kelola API key</Link>
+            <Link className="button button-primary" href="/keys"><Key size={16} /> Kelola desktop key</Link>
             <Link className="button button-secondary" href="/billing"><CreditCard size={16} /> Isi saldo</Link>
           </div>
         </div>
@@ -59,7 +59,7 @@ export default function DashboardPage() {
       <div className="notice-line"><div><Zap size={17} /><span><strong>Satu Cliper key untuk desktop.</strong> Provider, harga internal, routing, dan fallback tetap aman di server Cliper AI Cloud.</span></div></div>
       <section className="stats-grid">
         <StatCard label="Wallet status" value={data.mode.includes("memory") ? "Local" : "Live"} detail={data.user.email} icon={ShieldCheck} tone="blue" />
-        <StatCard label="Active API keys" value={String(data.keys.active)} detail={`${data.keys.total} key dibuat`} icon={Key} />
+        <StatCard label="Active desktop keys" value={String(data.keys.active)} detail={`${data.keys.total} key dibuat`} icon={Key} />
         <StatCard label="Bound devices" value={`${data.keys.devicesUsed} / ${data.user.deviceLimit}`} detail="Dihitung dari license aktif" icon={Activity} tone="amber" />
         <StatCard label="Available balance" value={data.wallet.unlimited ? "Unlimited" : displayCredits(data.wallet.spendableMicroUsd)} detail={data.wallet.unlimited ? "Akun pengujian internal" : `${displayCredits(data.wallet.reservedMicroUsd)} sedang direservasi`} icon={Coins} tone="coral" />
       </section>
@@ -70,7 +70,7 @@ export default function DashboardPage() {
         </section>
         <section className="panel activation-panel">
           <div className="panel-head"><div><p className="section-kicker">Desktop activation</p><h2>Connect Cliper Studio</h2><p>Key portal dapat dipakai langsung oleh License API dan AI Gateway.</p></div><Link href="/keys">Manage keys</Link></div>
-          <div className="readiness-list activation-steps"><span><i className="ready" /><strong>Generate API key</strong><small>Ditampilkan satu kali</small></span><span><i className="ready" /><strong>Paste di desktop</strong><small>Settings · API</small></span><span><i className="ready" /><strong>Verify license</strong><small>Account & device</small></span><span><i className="ready" /><strong>Start clipping</strong><small>Usage billed otomatis</small></span></div>
+          <div className="readiness-list activation-steps"><span><i className="ready" /><strong>Generate desktop key</strong><small>Ditampilkan satu kali</small></span><span><i className="ready" /><strong>Paste di desktop</strong><small>Settings · API</small></span><span><i className="ready" /><strong>Verify license</strong><small>Account & device</small></span><span><i className="ready" /><strong>Start clipping</strong><small>Usage billed otomatis</small></span></div>
         </section>
       </div>
     </>}

@@ -41,6 +41,9 @@ interface PlanDefinition {
   priceIdr: number;
   credits: number;
   creditMicro: bigint;
+  includedAiDaily: number;
+  includedAiMonthly: number;
+  walletFallback: boolean;
   deviceLimit: number;
   durationDays: number;
   description: string;
@@ -53,19 +56,25 @@ const plans: PlanDefinition[] = [
     priceIdr: 99_000,
     credits: 50_000,
     creditMicro: 50_000_000_000n,
+    includedAiDaily: 0,
+    includedAiMonthly: 0,
+    walletFallback: false,
     deviceLimit: 1,
     durationDays: 30,
     description: "50.000 Cliper Credits untuk satu desktop.",
   },
   {
     code: PlanCode.PRO,
-    name: "Pro",
-    priceIdr: 299_000,
-    credits: 500_000,
-    creditMicro: 500_000_000_000n,
-    deviceLimit: 3,
-    durationDays: 30,
-    description: "500.000 Cliper Credits dan routing AI prioritas.",
+    name: "Cliper Pro Annual",
+    priceIdr: 100_000,
+    credits: 0,
+    creditMicro: 0n,
+    includedAiDaily: 5,
+    includedAiMonthly: 60,
+    walletFallback: true,
+    deviceLimit: 2,
+    durationDays: 365,
+    description: "5 AI job per hari, 60 AI job per bulan, dan saldo wallet sebagai cadangan.",
   },
 ];
 
@@ -119,6 +128,13 @@ function metadataRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+export function invoiceDurationDays(value: unknown, fallback: number): number {
+  const durationDays = Number(metadataRecord(value).durationDays);
+  return Number.isSafeInteger(durationDays) && durationDays > 0 && durationDays <= 3_650
+    ? durationDays
+    : fallback;
 }
 
 function jsonInput(value: unknown): Prisma.InputJsonValue {
@@ -253,6 +269,9 @@ export class PaymentService {
   async createInvoice(identity: PaymentIdentity, requestedPlan: unknown) {
     const plan = planByCode(requestedPlan);
     const client = this.database.client();
+    if (plan.code === PlanCode.PRO && !(await this.hasSuccessfulTopup(identity.id))) {
+      throw new BadRequestException("Upgrade Pro tersedia setelah top-up pertama berhasil.");
+    }
     await this.expireOpenInvoices(identity.id);
     const number = invoiceNumber();
     const provider = await this.providers.active();
@@ -262,7 +281,7 @@ export class PaymentService {
       amountIdr: plan.priceIdr,
       expiresAt: expiresAt.toISOString(),
       customer: identity,
-      description: `Cliper AI Cloud ${plan.name} - 30 hari`,
+      description: `Cliper AI Cloud ${plan.name} - ${plan.durationDays} hari`,
     });
     const environment = paymentEnvironment(providerPayment.safeMetadata);
 
@@ -1258,10 +1277,7 @@ export class PaymentService {
       }
       const plan = planByCode(metadata.planCode);
       const creditMicro = safeBigInt(metadata.creditMicro);
-      if (creditMicro !== plan.creditMicro)
-        throw new ConflictException(
-          "Snapshot credit invoice tidak cocok dengan plan.",
-        );
+      const durationDays = invoiceDurationDays(metadata, plan.durationDays);
       const now = new Date();
       const existingSubscription = await tx.subscription.findFirst({
         where: {
@@ -1278,7 +1294,7 @@ export class PaymentService {
           ? existingSubscription.currentPeriodEnd
           : now;
       const currentPeriodEnd = new Date(
-        periodBase.getTime() + plan.durationDays * 24 * 60 * 60_000,
+        periodBase.getTime() + durationDays * 24 * 60 * 60_000,
       );
       const subscription = existingSubscription
         ? await tx.subscription.update({
@@ -1559,6 +1575,22 @@ export class PaymentService {
         data: { status: PaymentStatus.EXPIRED },
       }),
     ]);
+  }
+
+  private async hasSuccessfulTopup(userId: string): Promise<boolean> {
+    if (this.localReadMode()) return false;
+    const payment = await this.database.client().paymentTransaction.findFirst({
+      where: {
+        userId,
+        status: PaymentStatus.PAID,
+        OR: [
+          { metadata: { path: ["kind"], equals: "topup" } },
+          { invoice: { is: { metadata: { path: ["kind"], equals: "topup" } } } },
+        ],
+      },
+      select: { id: true },
+    });
+    return Boolean(payment);
   }
 
   private async syncRuntimeBilling(
