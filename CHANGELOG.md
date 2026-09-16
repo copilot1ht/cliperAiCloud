@@ -1,5 +1,21 @@
 # Cliper Studio Plus Changelog
 
+## v1.14.1 - Summary Highlight Engine Stabilization
+
+Features & Improvements:
+
+* **Rangkuman / Highlight Video** replaces the old mixed "Review Produk / Rangkum Video" label while keeping the internal `summary` mode for compatibility.
+* Summary mode now plans one final composition from multiple source timestamps instead of behaving like a single clip target.
+* Story planning scores important events, expands natural boundaries, removes filler/sponsor-like segments, deduplicates repeated ideas, and preserves chronological continuity.
+* Summary subtitles are rebased onto the final 00:00 timeline, and render metadata records source segments, final timeline, duplicate removal, and composition status.
+* Renderer behavior remains scoped to Summary mode; Auto, Podcast, Gaming, Landscape, wallet, quota, and billing contracts are unchanged.
+
+Validation:
+
+* 325 automated tests pass.
+* Summary multi-segment render smoke passes ffprobe with video and audio streams.
+* Real media composition smoke used a 596.46s Big Buck Bunny source and produced a valid 100s summary composition with nonblank visual frame sheet.
+
 ## v1.13.0 - 5 Editing Intelligence Modes, Smart Camera & Event-Driven Keyframe Director
 
 Features & Improvements:

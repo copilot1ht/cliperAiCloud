@@ -233,7 +233,19 @@ def test_summary_composer_segment_selection_and_dedup():
     valid_segments = composer.validate_continuity(deduped)
     for seg in valid_segments:
         assert "bridge_label" in seg
-        assert seg["bridge_label"] in ["Sorotan", "Konteks", "Kelebihan", "Pengujian", "Catatan Penting", "Kekurangan", "Kesimpulan", "Ringkasan"]
+        assert seg["bridge_label"] in [
+            "Sorotan",
+            "Konteks",
+            "Kelebihan",
+            "Poin Penting",
+            "Pengujian",
+            "Contoh",
+            "Catatan Penting",
+            "Kekurangan",
+            "Payoff",
+            "Kesimpulan",
+            "Ringkasan",
+        ]
 
     # Plan composition (clamped to 60-180s)
     plan = composer.plan_summary_composition(valid_segments, min_duration=40.0, max_duration=180.0)
@@ -295,6 +307,32 @@ def test_summary_composer_full_compose_returns_single_moment():
     assert "summary_rebased_subtitles" in moment
     assert moment["story_flow"] != ""
     assert moment["public_score"] >= 8.0
+
+
+def test_summary_composer_long_video_uses_distributed_story_events():
+    """Summary mode should build one final timeline from multiple distant source events."""
+    transcript = [
+        {"start": 0.0, "end": 25.0, "text": "Halo semuanya jangan lupa subscribe dan hari ini kita akan membahas perjalanan membangun aplikasi AI dari nol."},
+        {"start": 25.0, "end": 60.0, "text": "Masalah awalnya biaya inference terus naik karena setiap fitur memanggil model tanpa kontrol."},
+        {"start": 180.0, "end": 220.0, "text": "Poin penting pertama adalah membuat entitlement supaya user pro mendapat kuota harian yang jelas."},
+        {"start": 420.0, "end": 465.0, "text": "Contohnya ketika kuota pro habis sistem memakai saldo cadangan tetapi tetap memblokir jika saldo kosong."},
+        {"start": 720.0, "end": 760.0, "text": "Masalah kedua muncul saat banyak perangkat memakai satu key sehingga perlu device lease dan concurrency guard."},
+        {"start": 980.0, "end": 1025.0, "text": "Solusinya backend menghitung entitlement dan wallet fallback, bukan menanam status pro di token desktop."},
+        {"start": 1300.0, "end": 1345.0, "text": "Kesimpulannya arsitektur ini menjaga user tidak boncos dan biaya provider tetap terkendali."},
+    ]
+
+    moment = story_engine.SummaryComposer.compose(transcript, duration=1400.0)
+
+    assert moment is not None
+    assert moment["is_summary_composition"] is True
+    assert moment["start"] == 0.0
+    assert len(moment["composition_segments"]) >= 3
+    assert len({int(seg["sourceStart"] // 300) for seg in moment["composition_segments"]}) >= 3
+    assert all("subscribe" not in seg["text"].lower() for seg in moment["composition_segments"])
+    assert moment["composition_segments"] == sorted(moment["composition_segments"], key=lambda seg: seg["sourceStart"])
+    assert moment["summary_debug_plan"]["composition"] == "single_final_mp4"
+    assert moment["summary_debug_plan"]["subtitleRebased"] is True
+    assert "FINAL TIMELINE" in moment["summary_debug_text"]
 
 
 def test_build_summary_composition_command():
@@ -427,5 +465,4 @@ def test_real_smoke_render_summary_composition_with_ffprobe(tmp_path):
     stream_types = [s["codec_type"] for s in probe_data.get("streams", [])]
     assert "video" in stream_types
     assert "audio" in stream_types
-
 

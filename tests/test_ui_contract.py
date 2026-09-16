@@ -300,7 +300,7 @@ def test_content_mode_ui_structure_and_options():
     assert '<option value="auto">Auto (Recommended)</option>' in html
     assert '<option value="podcast">Podcast / Interview</option>' in html
     assert '<option value="gaming">Gaming / Streamer</option>' in html
-    assert '<option value="summary">Review Produk / Rangkum Video</option>' in html
+    assert '<option value="summary">Rangkuman / Highlight Video</option>' in html
     assert '<option value="landscape_blur">Landscape Blur / Center Focus</option>' in html
     assert 'id="contentModeDescription"' in html
     assert 'id="previewModeBadge"' in html

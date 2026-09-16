@@ -143,7 +143,8 @@ STORY_ROLE_MARKERS = {
     ],
     "key_point": [
         "kuncinya", "artinya", "poin pentingnya", "faktanya", "pelajarannya",
-        "menariknya", "insight", "rahasianya", "yang terpenting",
+        "menariknya", "insight", "rahasianya", "yang terpenting", "poin penting",
+        "inti pembahasan", "hal penting",
     ],
     "answer": [
         "jawabannya", "solusinya", "kuncinya", "caranya", "adalah karena", "jadi begini",
@@ -726,7 +727,8 @@ class GeneralStoryStrategy(BaseStoryStrategy):
 
 
 class SummaryStoryStrategy(BaseStoryStrategy):
-    pass
+    def rank_candidates(self, candidates, content_profile=None):
+        return sorted(candidates, key=lambda c: float(c.get("summary_score") or c.get("score") or 0.0), reverse=True)
 
 
 class CompositionPlan(list):
@@ -751,19 +753,21 @@ class CompositionPlan(list):
 
 
 class SummaryComposer:
-    """Composes multiple essential source segments from 1 long video into 1 cohesive final summary video.
+    """Plan one final highlight summary from many source timestamps.
 
-    Target duration: ~1–3 minutes (60–180s).
-    Core principle: STORY COMPLETENESS > FIXED DURATION > SCORE THRESHOLD.
+    Summary mode is not a single-clip finder. It builds a local story map once,
+    chooses distinct source events, rebases captions to the new 00:00 timeline,
+    and leaves FFmpeg composition to the renderer.
     """
 
     ROLE_PRIORITY_ORDER = [
-        ("hook", {"hook", "opening", "intro"}),
+        ("hook", {"hook", "opening", "intro", "question"}),
         ("context", {"context", "setup"}),
-        ("benefit", {"claim", "insight", "key_point", "feature", "benefit"}),
-        ("demo", {"demonstration", "example", "demo"}),
+        ("key_point", {"claim", "insight", "key_point", "answer", "development", "progression"}),
+        ("example", {"demonstration", "example", "demo"}),
         ("weakness", {"conflict", "weakness"}),
-        ("verdict", {"verdict", "payoff", "conclusion", "natural_exit"}),
+        ("payoff", {"payoff", "answer", "reaction"}),
+        ("conclusion", {"verdict", "conclusion", "natural_exit"}),
     ]
 
     DETERMINISTIC_BRIDGES = {
@@ -771,90 +775,221 @@ class SummaryComposer:
         "context": "Konteks",
         "benefit": "Kelebihan",
         "feature": "Kelebihan",
+        "key_point": "Poin Penting",
         "demo": "Pengujian",
+        "example": "Contoh",
         "weakness": "Catatan Penting",
+        "payoff": "Payoff",
         "verdict": "Kesimpulan",
+        "conclusion": "Kesimpulan",
     }
+
+    IMPORTANT_ROLE_WEIGHTS = {
+        "hook": 11.0,
+        "question": 8.0,
+        "setup": 7.0,
+        "context": 6.0,
+        "claim": 10.0,
+        "key_point": 14.0,
+        "insight": 14.0,
+        "answer": 13.0,
+        "demonstration": 10.0,
+        "example": 9.0,
+        "conflict": 11.0,
+        "surprise": 9.0,
+        "reaction": 8.0,
+        "payoff": 14.0,
+        "verdict": 13.0,
+        "conclusion": 12.0,
+        "natural_exit": 7.0,
+        "development": 6.0,
+        "progression": 5.0,
+    }
+
+    FILLER_MARKERS = [
+        "jangan lupa like", "subscribe", "follow", "komen di bawah", "link ada di deskripsi",
+        "sponsor", "kode promo", "balik lagi", "oke guys", "halo guys", "teman-teman semua",
+        "tanpa berlama-lama", "langsung aja", "seperti biasa",
+    ]
+
+    @classmethod
+    def _is_story_map(cls, value):
+        return isinstance(value, list) and bool(value) and (
+            "roles" in (value[0] or {}) or "has_setup" in (value[0] or {})
+        )
+
+    @classmethod
+    def _normalize_inputs(cls, transcript, story_map=None):
+        if story_map is None and cls._is_story_map(transcript):
+            return list(transcript or []), list(transcript or [])
+        if not story_map:
+            story_map = build_story_map(transcript)
+        return list(transcript or []), list(story_map or [])
+
+    @classmethod
+    def _role_for_item(cls, item):
+        roles = set(item.get("roles") or story_roles(item.get("text") or ""))
+        for role_name, target_roles in [
+            ("key_point", {"claim", "insight", "key_point", "answer"}),
+            ("example", {"demonstration", "example", "demo"}),
+            ("weakness", {"conflict", "weakness"}),
+            ("payoff", {"payoff", "reaction"}),
+            ("conclusion", {"verdict", "conclusion", "natural_exit"}),
+        ]:
+            if roles.intersection(target_roles):
+                return role_name
+        for role_name, target_roles in cls.ROLE_PRIORITY_ORDER:
+            if roles.intersection(target_roles):
+                return role_name
+        return "key_point" if roles.intersection({"development", "progression"}) else "context"
+
+    @classmethod
+    def _topic_for_text(cls, text):
+        words = significant_words(text)
+        common = [word for word, _count in Counter(words).most_common(4)]
+        return " ".join(word.title() for word in common) or "Poin Penting"
+
+    @classmethod
+    def _filler_score(cls, text):
+        lower = clean_text(text).lower()
+        score = sum(18.0 for marker in cls.FILLER_MARKERS if marker in lower)
+        if len(significant_words(lower)) <= 2:
+            score += 15.0
+        if re.fullmatch(r"[\W\d\s]+", lower or ""):
+            score += 30.0
+        return min(80.0, score)
+
+    @classmethod
+    def _importance_score(cls, item, text, duration=0.0):
+        roles = set(item.get("roles") or story_roles(text))
+        role_score = sum(cls.IMPORTANT_ROLE_WEIGHTS.get(role, 0.0) for role in roles)
+        report = validate_story_completeness(text, duration)
+        dims = report.get("internal_dimensions") or {}
+        density = float(dims.get("information_density") or dims.get("informationDensity") or 50.0)
+        standalone = float(report.get("standalone_score") or 50.0)
+        clean_bonus = 8.0 if report.get("has_clean_start") else -8.0
+        clean_bonus += 8.0 if report.get("has_clean_end") else -5.0
+        filler_penalty = cls._filler_score(text)
+        score = 42.0 + role_score + density * 0.14 + standalone * 0.18 + clean_bonus - filler_penalty
+        return round(max(0.0, min(100.0, score)), 2), report
+
+    @classmethod
+    def _expand_summary_boundary(cls, transcript, story_map, index):
+        item = story_map[index]
+        start = float(item.get("start") or 0.0)
+        end = float(item.get("end") or start)
+        source_duration = max([float(x.get("end") or 0.0) for x in story_map] or [end])
+
+        item_span = end - start
+        needs_previous_context = starts_with_dependent_phrase(item.get("text") or "") or (
+            not item.get("has_setup") and item_span < 18.0
+        )
+        if needs_previous_context and index > 0:
+            previous = story_map[index - 1]
+            prev_end = float(previous.get("end") or 0.0)
+            prev_start = float(previous.get("start") or 0.0)
+            if start - prev_end <= 4.5 and start - prev_start <= 35.0:
+                start = prev_start
+
+        cursor = index
+        while cursor + 1 < len(story_map):
+            text = transcript_text_between(transcript, start, end) or clean_text(item.get("text") or "")
+            roles = set(story_roles(text))
+            complete_sentence = bool(re.search(r"[.!?…]$", text))
+            has_resolution = bool({"payoff", "answer", "verdict", "conclusion", "natural_exit"}.intersection(roles))
+            if complete_sentence and (has_resolution or end - start >= 18.0):
+                break
+            nxt = story_map[cursor + 1]
+            nxt_start = float(nxt.get("start") or end)
+            nxt_end = float(nxt.get("end") or nxt_start)
+            if nxt_start - end > 5.0 or nxt_end - start > 75.0:
+                break
+            end = nxt_end
+            cursor += 1
+
+        start = snap_to_sentence_start(transcript, start)
+        end = snap_to_sentence_end(transcript, end)
+        if end <= start:
+            end = min(source_duration, start + 1.0)
+        if end - start > 90.0:
+            natural = natural_end_in_range(transcript, start + 65.0, start + 35.0, start + 90.0)
+            end = natural if natural and natural > start else start + 75.0
+        return round(max(0.0, start), 2), round(min(source_duration, end), 2)
 
     @classmethod
     def identify_segments(cls, transcript, story_map=None, duration=0.0):
         if not transcript:
             return []
-        # Allow passing story_map as first argument
-        if story_map is None and isinstance(transcript, list) and transcript and ("roles" in transcript[0] or "has_setup" in transcript[0]):
-            story_map = transcript
-        elif not story_map:
-            story_map = build_story_map(transcript)
+        transcript_source, story_map = cls._normalize_inputs(transcript, story_map)
         if not story_map:
             return []
+        source_duration = float(duration or max([float(item.get("end") or 0.0) for item in story_map] or [0.0]))
+        candidates = []
+        for idx, item in enumerate(story_map):
+            start, end = cls._expand_summary_boundary(transcript_source, story_map, idx)
+            if end <= start:
+                continue
+            seg_text = transcript_text_between(transcript_source, start, end) or clean_text(item.get("text") or "")
+            if not seg_text:
+                continue
+            role = cls._role_for_item(item)
+            score, report = cls._importance_score(item, seg_text, end - start)
+            roles = set(item.get("roles") or story_roles(seg_text))
+            high_signal_roles = {"key_point", "insight", "answer", "payoff", "verdict", "conclusion", "conflict", "demonstration", "example"}
+            if cls._filler_score(seg_text) >= 18.0 and not roles.intersection(high_signal_roles):
+                continue
+            if score < 42.0 and not roles.intersection({"key_point", "insight", "answer", "payoff", "verdict", "conclusion"}):
+                continue
+            candidates.append({
+                "id": f"summary_src_{idx + 1}",
+                "role": role,
+                "matched_roles": sorted(roles),
+                "start": start,
+                "end": end,
+                "duration": round(end - start, 2),
+                "text": seg_text,
+                "topic": cls._topic_for_text(seg_text),
+                "score": score,
+                "summary_score": score,
+                "importance": score,
+                "contextDependency": "needs_previous_context" if starts_with_dependent_phrase(seg_text) else "standalone",
+                "reason": "Dipilih karena memuat poin penting, konteks, payoff, atau insight dari story map.",
+                "completeness_report": report,
+                "chapterIndex": int(min(5, math.floor((start / max(1.0, source_duration)) * 6))) if source_duration else 0,
+            })
 
-        selected = []
-        used_spans = []
-
-        def overlaps_existing(s, e):
-            for us, ue in used_spans:
-                if max(0.0, min(e, ue) - max(s, us)) > 2.0:
-                    return True
-            return False
-
-        for role_name, target_roles in cls.ROLE_PRIORITY_ORDER:
-            best_candidate = None
-            best_score = -1.0
-            for item in story_map:
-                item_roles = set(item.get("roles") or [])
-                if not item_roles.intersection(target_roles):
-                    continue
-                s = float(item["start"])
-                e = float(item["end"])
-                if e - s < 10.0:
-                    idx = item.get("index", 0)
-                    if idx + 1 < len(story_map) and story_map[idx + 1]["end"] - s <= 45.0:
-                        e = float(story_map[idx + 1]["end"])
-                if overlaps_existing(s, e):
-                    continue
-                seg_text = transcript_text_between(transcript, s, e)
-                if not seg_text and item.get("text"):
-                    seg_text = clean_text(item.get("text"))
-                rep = validate_story_completeness(seg_text, e - s)
-                sc = rep["standalone_score"] + (15.0 if rep["has_clean_start"] else 0.0) + (15.0 if rep["has_clean_end"] else 0.0)
-                if sc > best_score:
-                    best_score = sc
-                    best_candidate = {
-                        "role": role_name,
-                        "matched_roles": sorted(item_roles.intersection(target_roles)),
-                        "start": s,
-                        "end": e,
-                        "text": seg_text,
-                        "score": sc,
-                    }
-            if best_candidate and best_candidate["score"] > 30.0:
-                selected.append(best_candidate)
-                used_spans.append((best_candidate["start"], best_candidate["end"]))
-
-        if len(selected) < 3 and len(story_map) >= 3:
+        if len(candidates) < 3 and len(story_map) >= 3:
             stride = max(1, len(story_map) // 4)
             for idx in range(0, len(story_map), stride):
                 item = story_map[idx]
-                s = float(item["start"])
-                e = min(float(duration or item["end"]), s + 32.0)
-                if overlaps_existing(s, e):
+                start, end = cls._expand_summary_boundary(transcript_source, story_map, idx)
+                if any(max(0.0, min(end, c["end"]) - max(start, c["start"])) > 2.0 for c in candidates):
                     continue
-                seg_text = transcript_text_between(transcript, s, e)
-                if not seg_text and item.get("text"):
-                    seg_text = clean_text(item.get("text"))
-                selected.append({
-                    "role": (item.get("roles") or ["context"])[0],
-                    "matched_roles": item.get("roles") or ["context"],
-                    "start": s,
-                    "end": e,
+                seg_text = transcript_text_between(transcript_source, start, end) or clean_text(item.get("text") or "")
+                if not seg_text:
+                    continue
+                role = cls._role_for_item(item)
+                candidates.append({
+                    "id": f"summary_fallback_{idx + 1}",
+                    "role": role,
+                    "matched_roles": item.get("roles") or [role],
+                    "start": start,
+                    "end": end,
+                    "duration": round(end - start, 2),
                     "text": seg_text,
-                    "score": 60.0,
+                    "topic": cls._topic_for_text(seg_text),
+                    "score": 56.0,
+                    "summary_score": 56.0,
+                    "importance": 56.0,
+                    "contextDependency": "fallback_story_coverage",
+                    "reason": "Fallback coverage agar rangkuman mengambil bagian dari beberapa timestamp.",
+                    "transitionRelation": "chronological",
+                    "chapterIndex": int(min(5, math.floor((start / max(1.0, source_duration)) * 6))) if source_duration else 0,
                 })
-                used_spans.append((s, e))
-                if len(selected) >= 5:
+                if len(candidates) >= 5:
                     break
 
-        return selected
+        return sorted(candidates, key=lambda item: (item["start"], -item["score"]))
 
     @classmethod
     def cluster_and_deduplicate(cls, segments, similarity_threshold=0.55):
@@ -879,14 +1014,24 @@ class SummaryComposer:
         if not segments:
             return []
         valid = []
-        for seg in segments:
+        previous = None
+        for seg in sorted(segments, key=lambda x: float(x.get("start") or 0.0)):
             s_copy = dict(seg)
             role = s_copy.get("role") or "context"
             bridge = cls.DETERMINISTIC_BRIDGES.get(role, "Ringkasan")
             s_copy["bridge_label"] = bridge
             s_copy["bridgeLabel"] = bridge
-            s_copy["continuityScore"] = 88.0
+            s_copy["transitionRelation"] = "opening" if previous is None else "chronological_continuation"
+            if previous is not None and semantic_similarity(previous.get("text") or "", s_copy.get("text") or "") > 0.42:
+                s_copy["transitionRelation"] = "related_detail"
+            s_copy["contextDependency"] = s_copy.get("contextDependency") or (
+                "needs_previous_context" if starts_with_dependent_phrase(s_copy.get("text") or "") else "standalone"
+            )
+            s_copy["reason"] = s_copy.get("reason") or f"Segmen {bridge} menjaga alur rangkuman."
+            s_copy["importance"] = round(float(s_copy.get("importance") or s_copy.get("score") or 70.0), 2)
+            s_copy["continuityScore"] = 90.0 if s_copy["transitionRelation"] in {"opening", "chronological_continuation"} else 84.0
             valid.append(s_copy)
+            previous = s_copy
         return valid
 
     @classmethod
@@ -897,18 +1042,73 @@ class SummaryComposer:
             target_min = float(min_duration)
         if max_duration is not None:
             target_max = float(max_duration)
-        ordered = sorted(segments, key=lambda x: x["start"])
+        target_min = max(20.0, target_min)
+        target_max = max(target_min, min(420.0, target_max))
+        ordered = sorted(cls.validate_continuity(segments), key=lambda x: float(x.get("start") or 0.0))
         total = 0.0
         final_list = CompositionPlan()
-        for seg in ordered:
-            span = seg["end"] - seg["start"]
-            if span > 45.0:
-                seg["end"] = seg["start"] + 45.0
-                span = 45.0
-            if total + span > target_max and len(final_list) >= 3:
+        selected_chapters = set()
+
+        def can_add(candidate):
+            s = float(candidate.get("start") or 0.0)
+            e = float(candidate.get("end") or s)
+            if e <= s:
+                return False
+            for existing in final_list:
+                es = float(existing.get("start") or 0.0)
+                ee = float(existing.get("end") or es)
+                if max(0.0, min(e, ee) - max(s, es)) > 1.5:
+                    return False
+            return True
+
+        ranked = sorted(
+            ordered,
+            key=lambda item: (
+                float(item.get("summary_score") or item.get("score") or 0.0),
+                item.get("role") in {"hook", "context", "key_point", "payoff", "conclusion"},
+            ),
+            reverse=True,
+        )
+        for role in ["context", "key_point", "example", "payoff", "conclusion"]:
+            role_candidates = [item for item in ranked if item.get("role") == role and can_add(item)]
+            if not role_candidates:
+                continue
+            candidate = role_candidates[0]
+            span = float(candidate["end"]) - float(candidate["start"])
+            if total + span <= target_max or not final_list:
+                final_list.append(candidate)
+                total += span
+                selected_chapters.add(candidate.get("chapterIndex"))
+
+        hook_candidates = [
+            item for item in ranked
+            if item.get("role") == "hook" and float(item.get("summary_score") or item.get("score") or 0.0) >= 72.0 and can_add(item)
+        ]
+        if hook_candidates and len(final_list) < 5:
+            candidate = hook_candidates[0]
+            span = float(candidate["end"]) - float(candidate["start"])
+            if total + span <= target_max or not final_list:
+                final_list.append(candidate)
+                total += span
+                selected_chapters.add(candidate.get("chapterIndex"))
+
+        all_chapters = {s.get("chapterIndex") for s in ordered}
+        for seg in ranked:
+            if not can_add(seg):
+                continue
+            span = float(seg["end"]) - float(seg["start"])
+            needs_more_coverage = len(selected_chapters) < min(3, max(1, len(all_chapters)))
+            if total >= target_min and len(final_list) >= 3 and not needs_more_coverage:
                 break
+            if total + span > target_max and final_list:
+                continue
             final_list.append(seg)
             total += span
+            selected_chapters.add(seg.get("chapterIndex"))
+
+        final_list.sort(key=lambda x: float(x.get("start") or 0.0))
+        for idx, seg in enumerate(final_list):
+            seg["summaryOrder"] = idx + 1
         return final_list
 
     @classmethod
@@ -935,9 +1135,13 @@ class SummaryComposer:
                 "outputEnd": out_end,
                 "duration": span,
                 "text": seg.get("text") or "",
-                "reason": f"Segmen {bridge} untuk alur ringkasan.",
-                "relevance": 92.0,
-                "continuityScore": 88.0,
+                "reason": seg.get("reason") or f"Segmen {bridge} untuk alur ringkasan.",
+                "importance": round(float(seg.get("importance") or seg.get("score") or 80.0), 2),
+                "contextDependency": seg.get("contextDependency") or "standalone",
+                "transitionRelation": seg.get("transitionRelation") or ("opening" if idx == 0 else "chronological_continuation"),
+                "matchedRoles": seg.get("matched_roles") or [],
+                "relevance": round(float(seg.get("summary_score") or seg.get("score") or 84.0), 2),
+                "continuityScore": seg.get("continuityScore") or 88.0,
             }
             composition_segments.append(comp_seg)
 
@@ -963,24 +1167,63 @@ class SummaryComposer:
         return composition_segments, rebased_subtitles, total_duration
 
     @classmethod
+    def build_debug_plan(cls, story_map, raw_segments, deduped, composition_segments, rebased_subtitles, total_duration):
+        final_lines = [
+            f"{seconds_to_stamp(seg['outputStart'])}-{seconds_to_stamp(seg['outputEnd'])} "
+            f"Segment {seg['id']} ({seg.get('role')}) source {seconds_to_stamp(seg['sourceStart'])}-{seconds_to_stamp(seg['sourceEnd'])}"
+            for seg in composition_segments
+        ]
+        segment_lines = []
+        for idx, seg in enumerate(composition_segments, 1):
+            segment_lines.append({
+                "number": idx,
+                "sourceTime": f"{seconds_to_stamp(seg['sourceStart'])}-{seconds_to_stamp(seg['sourceEnd'])}",
+                "topic": seg.get("topic"),
+                "role": str(seg.get("role") or "").upper(),
+                "reason": seg.get("reason"),
+                "importance": seg.get("importance"),
+                "contextDependency": seg.get("contextDependency"),
+                "transitionRelation": seg.get("transitionRelation"),
+            })
+        return {
+            "title": "SUMMARY STORY MAP",
+            "sourceDuration": round(max([float(item.get("end") or 0.0) for item in story_map] or [0.0]), 2),
+            "storyMapEvents": len(story_map or []),
+            "segments": segment_lines,
+            "finalTimeline": final_lines,
+            "sourceSegments": len(raw_segments or []),
+            "selected": len(composition_segments or []),
+            "removedDuplicates": max(0, len(raw_segments or []) - len(deduped or [])),
+            "finalDuration": round(float(total_duration or 0.0), 2),
+            "subtitleRebased": bool(rebased_subtitles),
+            "composition": "single_final_mp4",
+            "fallback": False,
+        }
+
+    @classmethod
     def compose(cls, transcript, duration=0.0, content_profile=None, config=None):
         if not transcript:
             return None
         content_profile = content_profile or {}
+        config = config or {}
         story_map = build_story_map(transcript)
         raw_segs = cls.identify_segments(transcript, story_map, duration=duration)
         if not raw_segs:
             return None
         deduped = cls.cluster_and_deduplicate(raw_segs)
-        plan = cls.plan_summary_composition(deduped, target_min=60.0, target_max=180.0)
+        source_duration = float(duration or max([float(item.get("end") or 0.0) for item in story_map] or [0.0]))
+        adaptive_min = float(config.get("target_min") or max(35.0, min(150.0, source_duration * 0.08)))
+        adaptive_max = float(config.get("target_max") or max(adaptive_min, min(420.0, max(90.0, source_duration * 0.24))))
+        plan = cls.plan_summary_composition(deduped, target_min=adaptive_min, target_max=adaptive_max)
         if not plan:
             return None
 
         comp_segs, rebased_subs, total_dur = cls.build_timeline_and_rebase_subtitles(plan, transcript)
         topic = content_profile.get("topic") or "Ringkasan Video"
-        title = f"Video Ringkasan: {topic}"
+        title = f"Rangkuman Highlight: {topic}"
         all_text = " ".join(s["text"] for s in comp_segs)
         story_flow = " -> ".join([s["bridgeLabel"] for s in comp_segs])
+        debug_plan = cls.build_debug_plan(story_map, raw_segs, deduped, comp_segs, rebased_subs, total_dur)
 
         return {
             "id": 1,
@@ -1001,6 +1244,16 @@ class SummaryComposer:
             "story_flow_list": [s["bridgeLabel"] for s in comp_segs],
             "rebased_subtitles": rebased_subs,
             "summary_rebased_subtitles": rebased_subs,
+            "summary_story_map": story_map,
+            "summary_debug_plan": debug_plan,
+            "summary_debug_text": "\n".join(
+                ["SUMMARY STORY MAP", f"SOURCE DURATION: {debug_plan['sourceDuration']}s", "SEGMENTS:"]
+                + [
+                    f"#{seg['number']} {seg['sourceTime']} {seg['role']} {seg['topic']} - {seg['reason']}"
+                    for seg in debug_plan["segments"]
+                ]
+                + ["FINAL TIMELINE:"] + debug_plan["finalTimeline"]
+            ),
             "score": 93.5,
             "public_score": 9.4,
             "grade": "A+",
@@ -1197,7 +1450,7 @@ def snap_to_sentence_start(transcript, start):
     for item in transcript or []:
         seg_start = timestamp(item, "start")
         seg_end = timestamp(item, "end", seg_start)
-        if seg_start <= start <= seg_end or 0 <= start - seg_start <= 2:
+        if abs(seg_start - start) <= 0.05 or seg_start <= start < seg_end or 0 < start - seg_start <= 2:
             internal = [
                 sentence["start"]
                 for sentence in sentence_ranges(item)
@@ -1216,7 +1469,7 @@ def snap_to_sentence_end(transcript, end):
     for item in transcript or []:
         seg_start = timestamp(item, "start")
         seg_end = timestamp(item, "end", seg_start)
-        if seg_start <= end <= seg_end or 0 <= seg_end - end <= 2:
+        if seg_start < end <= seg_end or 0 < seg_end - end <= 2:
             internal = [sentence["end"] for sentence in sentence_ranges(item)]
             if internal:
                 return min(internal, key=lambda value: (abs(value - boundary), value < boundary))

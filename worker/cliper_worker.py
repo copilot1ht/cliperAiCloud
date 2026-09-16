@@ -8644,6 +8644,23 @@ def find_moments(info, transcript, payload):
                             f"berhasil disusun dari {len(composed.get('composition_segments', []))} bagian sumber."
                         ),
                     )
+                    debug_plan = composed.get("summary_debug_plan") if isinstance(composed.get("summary_debug_plan"), dict) else {}
+                    if debug_plan:
+                        emit(
+                            "log",
+                            stage="summary story map",
+                            message=(
+                                f"SOURCE_DURATION={debug_plan.get('sourceDuration')}s "
+                                f"SOURCE_SEGMENTS={debug_plan.get('sourceSegments')} "
+                                f"SELECTED={debug_plan.get('selected')} "
+                                f"REMOVED_DUPLICATES={debug_plan.get('removedDuplicates')} "
+                                f"FINAL_DURATION={debug_plan.get('finalDuration')}s "
+                                f"SUBTITLE_REBASED={debug_plan.get('subtitleRebased')} "
+                                f"COMPOSITION={debug_plan.get('composition')}"
+                            ),
+                        )
+                        for line in (debug_plan.get("finalTimeline") or [])[:12]:
+                            emit("log", stage="summary final timeline", message=line)
                     return [composed]
             except Exception as exc:
                 emit("log", stage="summary composer", message=f"Summary Composer error: {exc}")
@@ -14876,6 +14893,19 @@ def render(payload):
                 "temp_output": str(staged_output_path),
             },
         }
+        if render_moment.get("is_summary_composition"):
+            summary_debug_plan = render_moment.get("summary_debug_plan") if isinstance(render_moment.get("summary_debug_plan"), dict) else {}
+            clip_plan["summary_composition"] = {
+                "enabled": True,
+                "composition": "single_final_mp4",
+                "source_segments": len(render_moment.get("composition_segments") or []),
+                "selected": summary_debug_plan.get("selected") or len(render_moment.get("composition_segments") or []),
+                "removed_duplicates": summary_debug_plan.get("removedDuplicates"),
+                "final_duration": summary_debug_plan.get("finalDuration") or round(duration, 3),
+                "subtitle_rebased": bool(render_moment.get("rebased_subtitles")),
+                "final_timeline": summary_debug_plan.get("finalTimeline") or [],
+                "segments": render_moment.get("composition_segments") or [],
+            }
         write_json_file(clip_plan_path, clip_plan)
         render_plan["clips"].append({**clip_plan, "plan": str(clip_plan_path)})
         write_json_file(render_plan_path, render_plan)

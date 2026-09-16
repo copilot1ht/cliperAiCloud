@@ -3,6 +3,7 @@ node_modules/
 dist/
 dist-beta3/
 .cache/
+.qa/
 
 # Local render fixtures and generated media are intentionally not versioned.
 qa-render-output*/

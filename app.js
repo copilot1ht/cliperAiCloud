@@ -425,10 +425,10 @@ const CONTENT_MODE_CONFIG = {
     editingProfile: "GAMING_SPLIT"
   },
   summary: {
-    label: "Review Produk / Rangkum Video",
-    description: "AI mencari poin penting dari video panjang dan menyusunnya menjadi 1 video ringkas.",
+    label: "Rangkuman / Highlight Video",
+    description: "AI memahami video panjang, memilih highlight lintas timestamp, lalu menyusunnya menjadi 1 video final.",
     badge: "Summary Strategy",
-    previewLabel: "1 Video Ringkasan",
+    previewLabel: "1 Final Highlight",
     editingProfile: "SUMMARY_COMPOSED"
   },
   landscape_blur: {
