@@ -27,7 +27,27 @@ def test_subtitle_engine_preserves_word_timestamps():
 
     assert len(events) == 1
     assert [item["word"] for item in events[0]["words"]] == ["Saya", "sedang", "membuat"]
-    assert events[0]["words"][0]["start"] < 0.10
+    assert events[0]["words"][0]["start"] == 0.10
+
+
+def test_word_timestamps_stay_locked_to_spoken_audio_with_caption_padding():
+    transcript = [{
+        "start": 1.00,
+        "end": 2.00,
+        "text": "subtitle tidak terlambat",
+        "words": [
+            {"word": "subtitle", "start": 1.00, "end": 1.28},
+            {"word": "tidak", "start": 1.32, "end": 1.55},
+            {"word": "terlambat", "start": 1.60, "end": 2.00},
+        ],
+    }]
+
+    events = SubtitleEngine().build_events({"start": 0}, transcript, 3)
+
+    assert events[0]["start"] == 1.00
+    assert events[0]["words"][0]["start"] == 1.00
+    assert events[0]["words"][0]["end"] == 1.28
+    assert events[0]["words"][-1]["end"] == 2.00
 
 
 def test_repeated_phrase_later_in_clip_is_preserved():

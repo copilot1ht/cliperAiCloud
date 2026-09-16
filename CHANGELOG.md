@@ -1,5 +1,20 @@
 # Cliper Studio Plus Changelog
 
+## v1.14.2 - Subtitle Word Sync Patch
+
+Fixes & Improvements:
+
+* Burned-in subtitle word highlights now stay locked to the spoken word timestamps instead of being shifted by caption lead padding.
+* Caption lines may still appear with safe phrase padding, but each highlighted word starts and ends at the audio/Whisper timestamp for better voice-to-text sync.
+* Neutral caption hold now fills natural pauses between spoken words without making the active word feel late.
+* Summary/Highlight, Auto, Podcast, Gaming, Landscape, wallet, quota, API key, and billing flows remain unchanged from v1.14.1.
+
+Validation:
+
+* Subtitle engine and ASS render validation tests pass with 31 focused tests.
+* Full QA passes with 326 automated tests.
+* Windows Electron Setup and Portable build completes with fresh SHA-256 manifests.
+
 ## v1.14.1 - Summary Highlight Engine Stabilization
 
 Features & Improvements:

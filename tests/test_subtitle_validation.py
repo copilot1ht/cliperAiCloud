@@ -439,10 +439,10 @@ def test_word_highlight_ends_at_acoustic_word_end_and_holds_neutral_during_pause
     ]
 
     assert [parts[4] for parts in dialogue] == ["Word", "Hold", "Word", "Hold"]
-    assert cliper_worker.timestamp_to_seconds(dialogue[0][2]) == pytest.approx(0.39, abs=0.02)
-    assert cliper_worker.timestamp_to_seconds(dialogue[1][1]) == pytest.approx(0.39, abs=0.02)
-    assert cliper_worker.timestamp_to_seconds(dialogue[1][2]) == pytest.approx(0.82, abs=0.02)
-    assert cliper_worker.timestamp_to_seconds(dialogue[2][1]) == pytest.approx(0.82, abs=0.02)
+    assert cliper_worker.timestamp_to_seconds(dialogue[0][2]) == pytest.approx(0.35, abs=0.02)
+    assert cliper_worker.timestamp_to_seconds(dialogue[1][1]) == pytest.approx(0.35, abs=0.02)
+    assert cliper_worker.timestamp_to_seconds(dialogue[1][2]) == pytest.approx(0.90, abs=0.02)
+    assert cliper_worker.timestamp_to_seconds(dialogue[2][1]) == pytest.approx(0.90, abs=0.02)
     assert cliper_worker.timestamp_to_seconds(dialogue[3][1]) == pytest.approx(
         cliper_worker.timestamp_to_seconds(dialogue[2][2]), abs=0.02
     )

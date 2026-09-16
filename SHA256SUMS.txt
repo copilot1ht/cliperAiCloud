@@ -1,2 +1,2 @@
-d22698dbd2de0d0850773828f80bb80028839f68af54b6630305d5c701638a31  Cliper-Studio-Plus-Setup-1.14.1.exe
-c91dac35977c592dafd1b45fd7a7dbde83aede40ca96551bbcb21940d9d53156  Cliper-Studio-Plus-Portable-1.14.1.exe
+c34c06f6c9025fed8d0d8a181b11fa8de83c70bb1e73a94b9f7c9049aa36b657  Cliper-Studio-Plus-Setup-1.14.2.exe
+f68fcd4827c4948b72b2915d25c9fa37d17842e6fcb1c7e61f347c0f9e46c754  Cliper-Studio-Plus-Portable-1.14.2.exe

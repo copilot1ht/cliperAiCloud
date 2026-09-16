@@ -10772,7 +10772,7 @@ def caption_sync_lead_seconds(payload=None):
         value = float((payload or {}).get("subtitleLeadSeconds") or 0.08)
     except Exception:
         value = 0.08
-    return max(0.05, min(0.12, value))
+    return max(0.04, min(0.14, value))
 
 
 def caption_sync_end_buffer(payload=None):

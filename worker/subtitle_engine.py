@@ -228,7 +228,7 @@ def build_word_highlight_ass_text(start, end, text, active_color="#19ff47", defa
 
 class SubtitleEngine:
     def __init__(self, lead_seconds=DEFAULT_LEAD, end_pad_seconds=DEFAULT_END_PAD):
-        self.lead_seconds = max(0.05, min(0.14, float(lead_seconds)))
+        self.lead_seconds = max(0.04, min(0.14, float(lead_seconds)))
         self.end_pad_seconds = max(0.0, min(0.10, float(end_pad_seconds)))
 
     def finalize_events(self, events, duration):
@@ -306,24 +306,36 @@ class SubtitleEngine:
             else:
                 rel_start = item["start"] - clip_start
                 rel_end = item["end"] - clip_start
-            rel_start = max(0.0, rel_start - self.lead_seconds)
-            rel_end = min(duration, max(rel_start + 0.24, rel_end + self.end_pad_seconds))
+            spoken_start = max(0.0, rel_start)
+            spoken_end = min(duration, rel_end)
+            rel_start = max(0.0, spoken_start - self.lead_seconds)
+            rel_end = min(duration, max(rel_start + 0.24, spoken_end + self.end_pad_seconds))
             if rel_end <= 0 or rel_start >= duration:
                 continue
+            words = []
+            for word in item.get("words") or []:
+                if not isinstance(word, dict):
+                    continue
+                word_text = clean_text(word.get("word") or "")
+                if not word_text:
+                    continue
+                try:
+                    raw_word_start = float(word.get("start") or 0.0)
+                    raw_word_end = float(word.get("end") or raw_word_start)
+                except Exception:
+                    continue
+                word_start = raw_word_start if use_relative else raw_word_start - clip_start
+                word_end = raw_word_end if use_relative else raw_word_end - clip_start
+                word_start = round(max(0.0, min(duration, word_start)), 3)
+                word_end = round(max(word_start, min(duration, word_end)), 3)
+                if word_end > word_start:
+                    words.append({"word": word_text, "start": word_start, "end": word_end})
             result.append({
                 "start": round(max(0.0, rel_start), 3),
                 "end": round(min(duration, rel_end), 3),
                 "text": item["text"],
                 "speaker_id": item.get("speaker_id") or "",
-                "words": [
-                    {
-                        "word": clean_text(word.get("word") or ""),
-                        "start": round(max(0.0, (float(word.get("start") or 0.0) if use_relative else float(word.get("start") or 0.0) - clip_start) - self.lead_seconds), 3),
-                        "end": round(min(duration, max(0.04, (float(word.get("end") or 0.0) if use_relative else float(word.get("end") or 0.0) - clip_start) + self.end_pad_seconds)), 3),
-                    }
-                    for word in item.get("words") or []
-                    if isinstance(word, dict) and clean_text(word.get("word") or "")
-                ],
+                "words": words,
             })
         return sorted(result, key=lambda item: item["start"])
 
