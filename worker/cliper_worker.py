@@ -1351,7 +1351,10 @@ def classify_content_profile(title, channel, text, speakers=None, lyric_marker_r
     ]
     news_transcript_hits = sum(1 for keyword in news_transcript_terms if keyword in transcript_lower)
     explicit_music_metadata = music_title or any(
-        keyword in title_lower for keyword in ["lagu", "musik", "song", "konser", "band"]
+        keyword in metadata_text for keyword in [
+            "lagu", "musik", "music", "song", "konser", "band", "official audio",
+            "official video", "lyric", "karaoke", "cover akustik",
+        ]
     )
     strong_news_metadata = (
         any(keyword in title_lower for keyword in news_title_terms)
@@ -10783,6 +10786,47 @@ def caption_sync_end_buffer(payload=None):
     return max(0.03, min(0.08, value))
 
 
+def subtitle_phrase_sync_mode(moment=None, payload=None, transcript=None):
+    payload = payload or {}
+    moment = moment or {}
+    explicit = str(payload.get("subtitleSyncMode") or "").strip().lower()
+    if explicit in {"word", "word-sync", "word_sync"}:
+        return False
+    if explicit in {"phrase", "phrase-sync", "phrase_sync", "stable"}:
+        return True
+
+    content_profile = (
+        payload.get("_contentProfile")
+        if isinstance(payload.get("_contentProfile"), dict)
+        else moment.get("content_profile") if isinstance(moment.get("content_profile"), dict) else {}
+    )
+    profile_type = clean_text(content_profile.get("videoType") or "").lower()
+    profile_style = clean_text(content_profile.get("subtitleStyle") or "").lower()
+    caption_source = clean_text(moment.get("caption_source") or "").lower()
+    caption_style = clean_text(payload.get("captionStyle") or "").lower()
+    if profile_type == "music" or "lyric" in profile_style or "lyric" in caption_style:
+        return True
+
+    audio_segments = [
+        segment for segment in transcript or []
+        if clean_text(segment.get("source") or "").lower() == "audio_whisper"
+    ]
+    if caption_source == "audio_whisper" and audio_segments:
+        confidences = []
+        for segment in audio_segments:
+            confidence = segment.get("confidence")
+            if confidence is None:
+                continue
+            try:
+                confidences.append(max(0.0, min(1.0, float(confidence))))
+            except Exception:
+                pass
+        average_confidence = sum(confidences) / len(confidences) if confidences else None
+        if average_confidence is not None and average_confidence < 0.68:
+            return True
+    return False
+
+
 def normalized_caption_segments_for_clip(moment, transcript, duration, payload=None):
     """Return transcript segments relative to the rendered clip.
 
@@ -10850,6 +10894,14 @@ def build_timed_caption_events(moment, transcript, payload, duration, hook_end):
     # A fixed 32-event cap made captions stop midway through long clips. Keep
     # the same timing algorithm, but size the event budget to clip duration.
     max_events = max(32, min(600, int(math.ceil(float(duration or 1.0) * 2.8))))
+    phrase_sync = subtitle_phrase_sync_mode(moment, payload, transcript)
+    engine_transcript = transcript or []
+    if phrase_sync:
+        # Music and low-confidence audio subtitles often carry word timestamps
+        # that look precise but are not stable enough for karaoke highlighting.
+        # Keep segment timing, but render phrases as a whole so captions follow
+        # the vocal phrase instead of jumping on unreliable per-word anchors.
+        engine_transcript = [{**segment, "words": []} for segment in engine_transcript]
     if ProductionSubtitleEngine is not None:
         try:
             engine = ProductionSubtitleEngine(
@@ -10858,7 +10910,7 @@ def build_timed_caption_events(moment, transcript, payload, duration, hook_end):
             )
             built_events = engine.build_events(
                 moment,
-                transcript or [],
+                engine_transcript,
                 duration,
                 fallback_text=clean_text(moment.get("transcript") or moment.get("text") or ""),
                 max_events=max_events,
@@ -10887,6 +10939,7 @@ def build_timed_caption_events(moment, transcript, payload, duration, hook_end):
                     "text": clean_chunk,
                     "speaker_id": item.get("speaker_id") or "",
                     "words": distribute_caption_words(start, end, clean_chunk, item.get("words") or []),
+                    "timing_mode": "phrase" if phrase_sync else clean_text(item.get("timing_mode") or "word"),
                 })
                 if len(events) >= max_events:
                     break
@@ -10918,7 +10971,14 @@ def build_timed_caption_events(moment, transcript, payload, duration, hook_end):
                 )
                 if same_timeline:
                     continue
-            events.append({"start": start, "end": end, "text": clean_chunk, "speaker_id": "", "words": distribute_caption_words(start, end, clean_chunk)})
+            events.append({
+                "start": start,
+                "end": end,
+                "text": clean_chunk,
+                "speaker_id": "",
+                "words": distribute_caption_words(start, end, clean_chunk),
+                "timing_mode": "phrase" if phrase_sync else "word",
+            })
             if len(events) >= max_events:
                 break
     if events:
@@ -10943,7 +11003,14 @@ def build_timed_caption_events(moment, transcript, payload, duration, hook_end):
                 if end - start < 0.35:
                     continue
                 clean_chunk = clean_text(chunk)
-                fallback_events.append({"start": start, "end": end, "text": clean_chunk, "speaker_id": "", "words": distribute_caption_words(start, end, clean_chunk)})
+                fallback_events.append({
+                    "start": start,
+                    "end": end,
+                    "text": clean_chunk,
+                    "speaker_id": "",
+                    "words": distribute_caption_words(start, end, clean_chunk),
+                    "timing_mode": "phrase" if phrase_sync else "word",
+                })
             if fallback_events:
                 emit("log", stage="caption", message="Caption dibuat dari transcript moment fallback karena subtitle segment tidak tersedia.")
                 return fallback_events
@@ -11139,7 +11206,8 @@ def build_ass_caption_file(moment, path, payload, transcript=None):
             if hook_enabled and start < hook_end and hook_is_duplicate_caption(hook_text, text):
                 continue
             word_items = distribute_caption_words(start, end, text, event.get("words") or [])
-            progressive_words = word_highlight_enabled or subtitle_animation == "typewriter"
+            timing_mode = clean_text(event.get("timing_mode") or "word").lower()
+            progressive_words = timing_mode != "phrase" and (word_highlight_enabled or subtitle_animation == "typewriter")
             if progressive_words and word_items:
                 for word_index, word_item in enumerate(word_items):
                     word_start = max(start, float(word_item.get("start") or start))
@@ -11196,6 +11264,7 @@ def validate_subtitle_sync(moment, transcript, payload, duration, ass_path):
     hook_plan = hook_overlay_plan(moment, transcript or [], payload)
     hook_offset = float(hook_plan.get("sourceOffset") or 0.0)
     duration = source_duration + hook_offset
+    phrase_sync = subtitle_phrase_sync_mode(moment, payload, transcript)
     expected_events = build_timed_caption_events(moment, transcript or [], payload, source_duration, 0.0)
     expected_events = shift_caption_events(expected_events, hook_offset, duration)
     errors = []
@@ -11243,8 +11312,8 @@ def validate_subtitle_sync(moment, transcript, payload, duration, ass_path):
         except Exception as exc:
             errors.append(f"ASS tidak dapat dibaca: {exc}")
 
-    relevant_words = expected_words
-    expected_count = len(relevant_words) if bool_payload(payload, "subtitleWordHighlight", True) else len(expected_events)
+    relevant_words = [] if phrase_sync else expected_words
+    expected_count = len(expected_events) if phrase_sync or not bool_payload(payload, "subtitleWordHighlight", True) else len(relevant_words)
     coverage_events = [event for event in ass_events if str(event.get("name") or "").lower() != "hold"]
     coverage_ratio = len(coverage_events) / max(1, expected_count)
     if expected_events and not coverage_events:
@@ -11297,6 +11366,7 @@ def validate_subtitle_sync(moment, transcript, payload, duration, ass_path):
         "subtitle_end": round(actual_last, 3) if actual_last is not None else None,
         "highlight_start": round(highlight_first, 3) if highlight_first is not None else None,
         "highlight_end": round(highlight_last, 3) if highlight_last is not None else None,
+        "timing_mode": "phrase" if phrase_sync else "word",
         "errors": errors[:12],
         "warnings": warnings[:12],
         "camera_sync": "locked_to_audio_timeline",

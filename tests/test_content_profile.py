@@ -59,6 +59,17 @@ def test_explicit_music_title_still_wins_on_news_channel():
     assert subtype == "performance"
 
 
+def test_music_channel_metadata_classifies_viral_song_without_title_keyword():
+    video_type, subtype = cliper_worker.classify_content_profile(
+        "AJENG FEBRIA - CLBK | MAUKAH KAU MENJADI PACARKU LAGI | VIRAL FYP TIKTOK",
+        "YOU MUSIK",
+        "",
+    )
+
+    assert video_type == "music"
+    assert subtype == "performance"
+
+
 def test_incidental_word_cara_does_not_turn_general_video_into_tutorial():
     video_type, _subtype = cliper_worker.classify_content_profile(
         "Pembahasan Komunitas Kreator",

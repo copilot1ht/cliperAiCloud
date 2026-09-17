@@ -1,5 +1,19 @@
 # Cliper Studio Plus Changelog
 
+## v1.14.3 - Music Subtitle Phrase Sync Patch
+
+Fixes & Improvements:
+
+* Music videos now use stable phrase-level subtitle timing when Whisper word timestamps are unreliable, preventing karaoke-style word jumps from drifting away from the vocal phrase.
+* Music detection now considers channel metadata such as `YOU MUSIK`, so viral song uploads without an explicit "lagu/music" title still receive the music rendering profile.
+* Subtitle validation now understands phrase-sync mode and no longer rejects sparse song intros only because per-word `Word` events are intentionally disabled.
+* Spoken-word subtitle behavior from v1.14.2 remains strict and unchanged.
+
+Validation:
+
+* The provided YouTube link `jS2S2PsMeuM` was rendered as a 12-second sample: subtitle validation passed with `timing_mode=phrase`, 100% coverage, zero `Word` ASS events, and a valid 720x1280 MP4 output.
+* Focused subtitle/content-profile QA passes with 54 tests.
+
 ## v1.14.2 - Subtitle Word Sync Patch
 
 Fixes & Improvements:

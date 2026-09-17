@@ -553,6 +553,99 @@ def test_good_audio_subtitle_remains_primary():
     assert quality["reason"] == "audio_quality_accepted"
 
 
+def test_music_audio_whisper_uses_phrase_sync_instead_of_unreliable_word_karaoke(tmp_path):
+    transcript = [
+        {
+            "start": 0.15,
+            "end": 2.4,
+            "text": "maukah kau menjadi pacarku lagi",
+            "source": "audio_whisper",
+            "confidence": 0.61,
+            "words": [
+                {"word": "maukah", "start": 0.15, "end": 0.45},
+                {"word": "kau", "start": 0.90, "end": 1.05},
+                {"word": "menjadi", "start": 1.25, "end": 1.60},
+                {"word": "pacarku", "start": 1.75, "end": 2.05},
+                {"word": "lagi", "start": 2.10, "end": 2.40},
+            ],
+        }
+    ]
+    moment = {
+        "start": 0.0,
+        "end": 3.0,
+        "duration": 3.0,
+        "transcript": "maukah kau menjadi pacarku lagi",
+        "caption_source": "audio_whisper",
+    }
+    payload = {
+        **subtitle_payload(),
+        "_contentProfile": {"videoType": "music", "subtitleStyle": "lyric-karaoke"},
+    }
+    ass_path = tmp_path / "music-phrase-sync.ass"
+
+    events = cliper_worker.build_timed_caption_events(moment, transcript, payload, 3.0, 0.0)
+    assert events
+    assert {event.get("timing_mode") for event in events} == {"phrase"}
+    assert cliper_worker.build_ass_caption_file(moment, ass_path, payload, transcript)
+
+    dialogue = [
+        line for line in ass_path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("Dialogue:") and ",Caption," in line
+    ]
+    assert dialogue
+    assert not any(",Word," in line for line in dialogue)
+    rendered_text = "\n".join(dialogue).lower()
+    assert "maukah" in rendered_text
+    assert "pacarku" in rendered_text
+
+    validation = cliper_worker.validate_subtitle_sync(moment, transcript, payload, 3.0, ass_path)
+    assert validation["ok"] is True
+    assert validation["timing_mode"] == "phrase"
+    assert validation["coverage_ratio"] == 1.0
+
+
+def test_music_phrase_sync_accepts_sparse_intro_without_word_coverage_failure(tmp_path):
+    transcript = [
+        {
+            "start": 0.59,
+            "end": 4.28,
+            "text": "You music!",
+            "source": "audio_whisper",
+            "confidence": 0.583,
+            "words": [
+                {"word": "You", "start": 0.59, "end": 1.33, "probability": 0.294},
+                {"word": "music!", "start": 3.78, "end": 4.28, "probability": 0.344},
+            ],
+        }
+    ]
+    moment = {
+        "start": 0.0,
+        "end": 12.0,
+        "duration": 12.0,
+        "transcript": "AJENG FEBRIA CLBK",
+        "caption_source": "audio_whisper",
+        "content_profile": {"videoType": "music", "subtitleStyle": "TikTok style"},
+    }
+    payload = {
+        **subtitle_payload(),
+        "_contentProfile": {"videoType": "music", "subtitleStyle": "TikTok style"},
+    }
+    ass_path = tmp_path / "music-sparse-intro.ass"
+
+    assert cliper_worker.build_ass_caption_file(moment, ass_path, payload, transcript)
+    dialogue = [
+        line for line in ass_path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("Dialogue:") and ",Caption," in line
+    ]
+    assert len(dialogue) == 1
+    assert not any(",Word," in line for line in dialogue)
+
+    validation = cliper_worker.validate_subtitle_sync(moment, transcript, payload, 12.0, ass_path)
+    assert validation["ok"] is True
+    assert validation["timing_mode"] == "phrase"
+    assert validation["coverage_ratio"] == 1.0
+
+
 def test_multi_clip_artifact_identity_prevents_subtitle_cache_collision(tmp_path):
     source = tmp_path / "source.mp4"
     source.write_bytes(b"synthetic-source-signature")
