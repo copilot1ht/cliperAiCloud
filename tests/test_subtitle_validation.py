@@ -606,7 +606,7 @@ def test_music_audio_whisper_keeps_word_karaoke_when_timestamps_exist(tmp_path):
     assert validation["coverage_ratio"] == 1.0
 
 
-def test_sparse_music_intro_keeps_word_events_without_static_phrase(tmp_path):
+def test_sparse_low_probability_music_transcript_is_rejected(tmp_path):
     transcript = [
         {
             "start": 0.59,
@@ -634,19 +634,44 @@ def test_sparse_music_intro_keeps_word_events_without_static_phrase(tmp_path):
     }
     ass_path = tmp_path / "music-sparse-intro-word-sync.ass"
 
-    assert cliper_worker.build_ass_caption_file(moment, ass_path, payload, transcript)
-    dialogue = [
-        line for line in ass_path.read_text(encoding="utf-8").splitlines()
-        if line.startswith("Dialogue:") and ",Caption," in line
-    ]
-    word_dialogue = [line for line in dialogue if ",Word," in line]
-    assert len(word_dialogue) == 2
-    assert all(",Word," in line or ",Hold," in line for line in dialogue)
+    assert cliper_worker.build_timed_caption_events(moment, transcript, payload, 12.0, 0.0) == []
+    assert cliper_worker.build_ass_caption_file(moment, ass_path, payload, transcript) is False
+    assert not ass_path.exists()
 
-    validation = cliper_worker.validate_subtitle_sync(moment, transcript, payload, 12.0, ass_path)
-    assert validation["ok"] is True
-    assert "timing_mode" not in validation
-    assert validation["coverage_ratio"] == 1.0
+
+def test_empty_transcript_never_uses_moment_candidate_text():
+    moment = {
+        "start": 0.0,
+        "end": 6.0,
+        "duration": 6.0,
+        "transcript": "Judul kandidat bukan ucapan speaker",
+        "text": "Hook editorial bukan ucapan speaker",
+    }
+    assert cliper_worker.build_timed_caption_events(
+        moment, [], subtitle_payload(), 6.0, 0.0
+    ) == []
+
+
+def test_low_probability_audio_without_source_caption_is_rejected():
+    audio = [
+        {
+            "start": 0.0,
+            "end": 2.0,
+            "text": "You music",
+            "source": "audio_whisper",
+            "confidence": 0.58,
+            "words": [
+                {"word": "You", "start": 0.0, "end": 0.7, "probability": 0.29},
+                {"word": "music", "start": 1.2, "end": 2.0, "probability": 0.34},
+            ],
+        }
+    ]
+
+    selected, source_name, quality = cliper_worker.choose_caption_transcript(audio, [], 6.0)
+
+    assert selected == []
+    assert source_name == "none"
+    assert quality["reason"] == "audio_word_probability_too_low"
 
 
 def test_multi_clip_artifact_identity_prevents_subtitle_cache_collision(tmp_path):
@@ -662,7 +687,7 @@ def test_multi_clip_artifact_identity_prevents_subtitle_cache_collision(tmp_path
     assert first["artifact_hash"] != second["artifact_hash"]
     assert first["transcript_hash"] != second["transcript_hash"]
     assert first == repeated
-    assert first["schema"] == 4
+    assert first["schema"] == 5
 
 
 def test_same_source_range_with_repaired_boundary_gets_new_subtitle_identity(tmp_path):

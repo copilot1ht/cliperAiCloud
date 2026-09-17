@@ -1,5 +1,21 @@
 # Cliper Studio Plus Changelog
 
+## v1.15.0 - Subtitle Accuracy Guardrails
+
+Fixes & Improvements:
+
+* Rejects low-confidence audio transcripts instead of burning guessed text from moment metadata into the video.
+* Invalidates stale transcript caches when the source, language, or subtitle pipeline changes.
+* Keeps per-word karaoke timing tied to detected speech timestamps and preserves safe phrase holds between words.
+* Music and ambiguous audio now render without misleading subtitles when reliable speech evidence is unavailable.
+* Wallet, API key, editing modes, cloud contracts, and billing flows remain unchanged.
+
+Validation:
+
+* Full Electron QA passes with 331 tests.
+* Real speech render from a TED source passes subtitle validation with 100% timeline coverage and valid audio/video output.
+* Music sample safely suppresses low-confidence subtitles and produces a valid audio/video output.
+
 ## v1.14.4 - Subtitle Karaoke Sync Restoration
 
 Fixes & Improvements:

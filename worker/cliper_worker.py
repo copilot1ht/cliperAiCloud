@@ -179,6 +179,8 @@ AI_PROMPT_VERSIONS = {
     "default": "default_v2",
 }
 WHISPER_MODEL_CACHE = {}
+SUBTITLE_PIPELINE_VERSION = 5
+TRANSCRIPT_CACHE_SCHEMA = 2
 SETTINGS_CONTRACT_PATH = Path(__file__).with_name("settings-contract.json")
 FFPROBE_OVERRIDE = ""
 
@@ -1277,7 +1279,9 @@ def download_thumbnail(url, path):
 
 
 def write_cache_files(cache_dir, info, transcript=None, subtitle_language=None):
+    source_identity = transcript_source_identity(info, cache_dir)
     metadata = {
+        "schema": TRANSCRIPT_CACHE_SCHEMA,
         "id": info.get("id"),
         "title": info.get("title"),
         "channel": info.get("channel") or info.get("uploader"),
@@ -1285,6 +1289,7 @@ def write_cache_files(cache_dir, info, transcript=None, subtitle_language=None):
         "thumbnail": info.get("thumbnail"),
         "webpage_url": info.get("webpage_url"),
         "subtitle_language": subtitle_language,
+        "source_identity": source_identity,
         "cached_at": datetime.now().isoformat(),
     }
     (cache_dir / "metadata.json").write_text(json_dumps(metadata, indent=2), encoding="utf-8")
@@ -1292,7 +1297,10 @@ def write_cache_files(cache_dir, info, transcript=None, subtitle_language=None):
         (cache_dir / "transcript.json").write_text(
             json_dumps(
                 {
+                    "schema": TRANSCRIPT_CACHE_SCHEMA,
                     "language": subtitle_language,
+                    "source_identity": source_identity,
+                    "pipeline_version": SUBTITLE_PIPELINE_VERSION,
                     "segments": transcript,
                     "cached_at": datetime.now().isoformat(),
                 },
@@ -1862,7 +1870,7 @@ def clip_artifact_identity(source_path, start, duration, transcript, clip_index=
         json_dumps(transcript or [], sort_keys=True, separators=(",", ":")).encode("utf-8", errors="replace")
     ).hexdigest()[:16]
     identity_payload = {
-        "schema": 4,
+        "schema": SUBTITLE_PIPELINE_VERSION,
         "clip_index": int(clip_index or 0),
         "source_hash": source_hash,
         "start_ms": int(round(float(start or 0.0) * 1000)),
@@ -1880,13 +1888,47 @@ def cpu_thread_count():
     return max(1, min(8, int(max(1, cores * 0.65))))
 
 
-def load_cached_transcript(cache_dir):
+def transcript_source_identity(info=None, cache_dir=None):
+    """Return the source fingerprint required for a transcript cache hit."""
+    info = info if isinstance(info, dict) else {}
+    manifest = read_source_cache_manifest(cache_dir) if cache_dir else {}
+    source_value = info.get("_source_path") or manifest.get("source_path")
+    identity = {
+        "video_id": info.get("id") or manifest.get("video_id"),
+        "duration_ms": int(round(float(info.get("duration") or manifest.get("ffprobe", {}).get("duration") or 0) * 1000)),
+    }
+    if source_value:
+        try:
+            source_path = Path(str(source_value)).expanduser()
+            stat = source_path.stat()
+            identity.update({"source_size": stat.st_size, "source_mtime_ns": stat.st_mtime_ns})
+        except Exception:
+            pass
+    if not identity.get("source_size") and manifest.get("source_size"):
+        identity["source_size"] = int(manifest.get("source_size") or 0)
+    return identity
+
+
+def load_cached_transcript(cache_dir, info=None, preferred_language=None):
     path = Path(cache_dir) / "transcript.json"
     if not path.exists():
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-        segments = data.get("segments") if isinstance(data, dict) else data
+        if not isinstance(data, dict) or int(data.get("schema") or 0) != TRANSCRIPT_CACHE_SCHEMA:
+            emit("log", stage="cache", message="Transcript cache lama ditolak; perlu source/language fingerprint baru.")
+            return []
+        expected_identity = transcript_source_identity(info, cache_dir) if info else None
+        cached_identity = data.get("source_identity") or {}
+        if expected_identity and cached_identity != expected_identity:
+            emit("log", stage="cache", message="Transcript cache ditolak karena source identity berubah.")
+            return []
+        requested = str(preferred_language or "").strip().lower().split("-")[0]
+        cached_language = str(data.get("language") or "").strip().lower().split("-")[0]
+        if requested and requested not in {"auto", "automatic", "default"} and cached_language and cached_language != requested:
+            emit("log", stage="cache", message=f"Transcript cache ditolak karena bahasa berbeda ({cached_language} != {requested}).")
+            return []
+        segments = data.get("segments")
         return segments if isinstance(segments, list) else []
     except Exception as exc:
         emit("log", stage="auto cut", message=f"Transcript cache tidak bisa dibaca: {exc}")
@@ -10849,10 +10891,45 @@ def normalized_caption_segments_for_clip(moment, transcript, duration, payload=N
     return sorted(result, key=lambda item: item[0])
 
 
+def explicit_manual_subtitle_text(moment, payload):
+    """Allow manual captions only when the user explicitly selected that mode."""
+    if not bool_payload(payload or {}, "manualSubtitleMode", False):
+        return ""
+    payload_text = clean_text((payload or {}).get("manualSubtitleText") or "")
+    moment_text = clean_text((moment or {}).get("manualSubtitleText") or "")
+    return payload_text or moment_text
+
+
+def subtitle_transcript_is_renderable(transcript, duration):
+    """Reject known Whisper hallucination evidence before ASS/SRT generation."""
+    audio_segments = [
+        item for item in (transcript or [])
+        if str(item.get("source") or "").strip().lower() == "audio_whisper"
+    ]
+    if not audio_segments:
+        return True, ""
+    quality = subtitle_transcript_quality(audio_segments, duration)
+    if quality.get("average_word_probability") is not None and quality["average_word_probability"] < 0.45:
+        return False, "audio_word_probability_too_low"
+    if quality.get("low_probability_word_ratio") is not None and quality["low_probability_word_ratio"] >= 0.5:
+        return False, "audio_word_probability_unreliable"
+    if quality.get("average_confidence") is not None and quality["average_confidence"] < 0.42:
+        return False, "audio_confidence_too_low"
+    return True, ""
+
+
 def build_timed_caption_events(moment, transcript, payload, duration, hook_end):
     # A fixed 32-event cap made captions stop midway through long clips. Keep
     # the same timing algorithm, but size the event budget to clip duration.
     max_events = max(32, min(600, int(math.ceil(float(duration or 1.0) * 2.8))))
+    renderable, rejection_reason = subtitle_transcript_is_renderable(transcript, duration)
+    if not renderable:
+        emit(
+            "log",
+            stage="caption",
+            message=f"Transcript audio ditolak sebelum render: {rejection_reason}.",
+        )
+        return []
     if ProductionSubtitleEngine is not None:
         try:
             engine = ProductionSubtitleEngine(
@@ -10863,7 +10940,7 @@ def build_timed_caption_events(moment, transcript, payload, duration, hook_end):
                 moment,
                 transcript or [],
                 duration,
-                fallback_text=clean_text(moment.get("transcript") or moment.get("text") or ""),
+                fallback_text=explicit_manual_subtitle_text(moment, payload),
                 max_events=max_events,
             )
             events = []
@@ -10933,11 +11010,9 @@ def build_timed_caption_events(moment, transcript, payload, duration, hook_end):
     if events:
         return events
 
-    # Production fallback: some videos/short local clips do not expose YouTube
-    # subtitle segments, but the highlight engine still carries a transcript
-    # excerpt on the moment. Use that excerpt as timed phrase captions instead
-    # of silently producing a video with no subtitles.
-    fallback_text = clean_text(moment.get("transcript") or moment.get("text") or "")
+    # Never turn a candidate title, hook, or moment summary into spoken text.
+    # Manual caption mode is the only intentional text fallback.
+    fallback_text = explicit_manual_subtitle_text(moment, payload)
     if fallback_text:
         words = fallback_text.split()[:96]
         chunks = subtitle_phrase_chunks(" ".join(words), max_chars=42, max_words=7)
@@ -10960,7 +11035,7 @@ def build_timed_caption_events(moment, transcript, payload, duration, hook_end):
                     "words": distribute_caption_words(start, end, clean_chunk),
                 })
             if fallback_events:
-                emit("log", stage="caption", message="Caption dibuat dari transcript moment fallback karena subtitle segment tidak tersedia.")
+                emit("log", stage="caption", message="Caption dibuat dari teks manual yang dipilih pengguna.")
                 return fallback_events
     return []
 
@@ -11500,7 +11575,7 @@ def build_caption_file(moment, path, payload, transcript=None):
             return True
 
     if captions_enabled:
-        fallback_text = clean_text(moment.get("transcript") or moment.get("text") or "")
+        fallback_text = explicit_manual_subtitle_text(moment, payload)
         chunks = subtitle_phrase_chunks(fallback_text, max_chars=42, max_words=7)[:18]
         if chunks:
             start_offset = 0.0
@@ -11631,10 +11706,16 @@ def flush_word_group(groups, current):
     end = max(float(item.get("end") or start) for item in current)
     if end <= start:
         end = start + 0.35
+    probabilities = [
+        max(0.0, min(1.0, float(item.get("probability") or 0.0)))
+        for item in current
+    ]
     groups.append({
         "start": round(max(0.0, start), 3),
         "end": round(max(start + 0.18, end), 3),
         "text": text,
+        "word_probability_avg": round(sum(probabilities) / len(probabilities), 3) if probabilities else None,
+        "word_probability_min": round(min(probabilities), 3) if probabilities else None,
         "words": [
             {
                 "word": clean_text(item.get("word") or ""),
@@ -11699,12 +11780,17 @@ def transcribe_clip_audio_for_subtitles(engine, source, start, duration, audio_p
             language=language,
             beam_size=beam_size,
             best_of=max(1, beam_size),
+            temperature=0.0,
             vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 420, "speech_pad_ms": 180},
+            vad_parameters={"min_silence_duration_ms": 500, "speech_pad_ms": 260},
             word_timestamps=True,
             condition_on_previous_text=False,
+            compression_ratio_threshold=2.4,
+            log_prob_threshold=-1.0,
+            no_speech_threshold=0.6,
             hallucination_silence_threshold=1.5,
         )
+        detected_language = clean_text(getattr(info, "language", "") or "") or None
         transcript = []
         for segment in segments_iter:
             no_speech_probability = float(getattr(segment, "no_speech_prob", 0.0) or 0.0)
@@ -11747,12 +11833,18 @@ def transcribe_clip_audio_for_subtitles(engine, source, start, duration, audio_p
                 "words": item.get("words") or [],
                 "source": "audio_whisper",
                 "confidence": item.get("confidence"),
+                "language": detected_language,
+                "word_probability_avg": item.get("word_probability_avg"),
+                "word_probability_min": item.get("word_probability_min"),
             })
         if cleaned:
             emit(
                 "log",
                 stage="caption",
-                message=f"Subtitle dibuat ulang dari audio clip memakai faster-whisper {model_name}: {len(cleaned)} segment",
+                message=(
+                    f"Subtitle dibuat ulang dari audio clip memakai faster-whisper {model_name}: "
+                    f"{len(cleaned)} segment, language={detected_language or 'auto'}"
+                ),
             )
         return cleaned
     except Exception as exc:
@@ -11882,6 +11974,8 @@ def subtitle_transcript_quality(transcript, duration):
     duration = max(0.1, float(duration or 0.1))
     words = []
     confidences = []
+    word_probabilities = []
+    languages = set()
     first_start = None
     last_end = None
     for segment in transcript or []:
@@ -11901,10 +11995,25 @@ def subtitle_transcript_quality(transcript, duration):
                 confidences.append(max(0.0, min(1.0, float(confidence))))
             except Exception:
                 pass
+        language = clean_text(segment.get("language") or "").lower()
+        if language:
+            languages.add(language)
+        for word in segment.get("words") or []:
+            if not isinstance(word, dict) or word.get("probability") is None:
+                continue
+            try:
+                word_probabilities.append(max(0.0, min(1.0, float(word.get("probability")))))
+            except Exception:
+                continue
+    low_probability_count = sum(1 for value in word_probabilities if value < 0.45)
     return {
         "word_count": len(words),
         "words_per_minute": round(len(words) / duration * 60.0, 2),
         "average_confidence": round(sum(confidences) / len(confidences), 3) if confidences else None,
+        "average_word_probability": round(sum(word_probabilities) / len(word_probabilities), 3) if word_probabilities else None,
+        "minimum_word_probability": round(min(word_probabilities), 3) if word_probabilities else None,
+        "low_probability_word_ratio": round(low_probability_count / len(word_probabilities), 3) if word_probabilities else None,
+        "languages": sorted(languages),
         "timeline_span": round(max(0.0, (last_end or 0.0) - (first_start or 0.0)), 3),
     }
 
@@ -11915,13 +12024,21 @@ def choose_caption_transcript(regenerated, source_fallback, duration):
     audio_words = int(audio_quality["word_count"])
     source_words = int(source_quality["word_count"])
     audio_confidence = audio_quality.get("average_confidence")
+    average_word_probability = audio_quality.get("average_word_probability")
+    low_probability_word_ratio = audio_quality.get("low_probability_word_ratio")
     fallback_reason = ""
 
     if not regenerated:
         fallback_reason = "audio_transcript_empty"
     elif audio_words < 3 and source_words >= 3:
         fallback_reason = "audio_word_count_too_low"
+    elif average_word_probability is not None and average_word_probability < 0.45:
+        fallback_reason = "audio_word_probability_too_low"
+    elif low_probability_word_ratio is not None and low_probability_word_ratio >= 0.5:
+        fallback_reason = "audio_word_probability_unreliable"
     elif audio_confidence is not None and audio_confidence < 0.42 and source_words >= 3:
+        fallback_reason = "audio_confidence_too_low"
+    elif audio_confidence is not None and audio_confidence < 0.42:
         fallback_reason = "audio_confidence_too_low"
     elif source_words >= 8 and audio_words < source_words * 0.45:
         fallback_reason = "audio_coverage_below_source"
@@ -11934,6 +12051,13 @@ def choose_caption_transcript(regenerated, source_fallback, duration):
             "source": source_quality,
         }
     if regenerated:
+        if fallback_reason:
+            return [], "none", {
+                "selected": "none",
+                "reason": fallback_reason,
+                "audio": audio_quality,
+                "source": source_quality,
+            }
         return regenerated, "audio_whisper", {
             "selected": "audio_whisper",
             "reason": "audio_quality_accepted",
@@ -14727,7 +14851,11 @@ def render(payload):
         emit("log", stage="cache", message=f"Render memakai source cache: {source}")
     content_profile = load_content_profile(cache_dir)
     if not content_profile:
-        content_profile = build_content_profile(info, load_cached_transcript(cache_dir), payload)
+        content_profile = build_content_profile(
+            info,
+            load_cached_transcript(cache_dir, info, payload.get("subtitleLang")),
+            payload,
+        )
     payload["_contentProfile"] = content_profile
     render_plan["content_profile"] = content_profile
     write_json_file(render_plan_path, render_plan)
@@ -14758,7 +14886,11 @@ def render(payload):
     original_output = link_or_copy_original_source(source, output_dirs["original"], info)
     if original_output:
         emit("log", stage="source", message=f"Video original linked/copied: {original_output}")
-    cached_transcript = (moments[0].get("transcript_segments") if local_mode and isinstance(moments[0], dict) else None) or load_cached_transcript(cache_dir)
+    cached_transcript = (
+        moments[0].get("transcript_segments")
+        if local_mode and isinstance(moments[0], dict)
+        else None
+    ) or load_cached_transcript(cache_dir, info, payload.get("subtitleLang"))
 
     outputs = []
     encoder_chain = encoder_fallback_chain(engine, payload)
@@ -14858,7 +14990,7 @@ def render(payload):
         clip_plan = {
             "clip_id": index,
             "artifact_identity": artifact_identity,
-            "subtitle_version": 4,
+            "subtitle_version": SUBTITLE_PIPELINE_VERSION,
             "title": clip_label,
             "start": round(start, 3),
             "end": round(start + duration, 3),
@@ -14996,7 +15128,7 @@ def render(payload):
                     subtitle_transcript_path,
                     {
                         "artifact_identity": artifact_identity,
-                        "subtitle_version": 4,
+                        "subtitle_version": SUBTITLE_PIPELINE_VERSION,
                         "source": caption_source,
                         "start": start,
                         "duration": duration,
@@ -15008,6 +15140,40 @@ def render(payload):
                 clip_plan["caption_source"] = caption_source
                 clip_plan["caption_quality"] = caption_quality
                 clip_plan["caption_segments"] = len(selected_transcript)
+                write_json_file(clip_plan_path, clip_plan)
+            else:
+                # A rejected ASR result must never fall back to moment text,
+                # title, hook, or stale cached transcript.
+                clip_transcript = []
+                render_moment["transcript_segments"] = []
+                render_moment["transcript"] = ""
+                render_moment["text"] = ""
+                render_moment["caption_source"] = caption_source
+                render_moment["caption_quality"] = caption_quality
+                emit(
+                    "log",
+                    stage="caption",
+                    message=(
+                        "Subtitle tidak dibuat karena bukti transcript audio tidak cukup "
+                        f"({caption_quality.get('reason') or 'no_caption_candidate'})."
+                    ),
+                )
+                write_json_file(
+                    subtitle_transcript_path,
+                    {
+                        "artifact_identity": artifact_identity,
+                        "subtitle_version": SUBTITLE_PIPELINE_VERSION,
+                        "source": caption_source,
+                        "start": start,
+                        "duration": duration,
+                        "quality": caption_quality,
+                        "segments": [],
+                        "created_at": datetime.now().isoformat(),
+                    },
+                )
+                clip_plan["caption_source"] = caption_source
+                clip_plan["caption_quality"] = caption_quality
+                clip_plan["caption_segments"] = 0
                 write_json_file(clip_plan_path, clip_plan)
         try:
             if build_ass_caption_file(render_moment, caption_cache_path, payload, clip_transcript):
@@ -15021,7 +15187,7 @@ def render(payload):
                     subtitle_validation = validate_subtitle_sync(render_moment, clip_transcript, payload, duration, caption_cache_path)
                     subtitle_validation["recovery_count"] = 1
                 subtitle_validation["artifact_identity"] = artifact_identity
-                subtitle_validation["subtitle_version"] = 4
+                subtitle_validation["subtitle_version"] = SUBTITLE_PIPELINE_VERSION
                 write_json_file(subtitle_validation_path, subtitle_validation)
                 clip_plan["subtitle_validation"] = subtitle_validation
                 emit(

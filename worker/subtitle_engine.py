@@ -386,7 +386,9 @@ class SubtitleEngine:
         if events:
             return self.finalize_events(events, duration)
 
-        fallback_text = clean_text(fallback_text or (moment or {}).get("transcript") or (moment or {}).get("text") or "")
+        # Only an explicit caller-provided manual caption may be used here.
+        # Moment text/title/hook can be editorial candidates, not spoken audio.
+        fallback_text = clean_text(fallback_text or "")
         if not fallback_text:
             return []
         chunks = subtitle_phrase_chunks(" ".join(fallback_text.split()[:110]))[:max_events]
