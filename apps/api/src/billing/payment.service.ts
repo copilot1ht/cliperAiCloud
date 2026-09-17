@@ -79,7 +79,7 @@ const plans: PlanDefinition[] = [
   },
 ];
 
-const DEFAULT_PAYMENT_EXPIRY_MINUTES = 60;
+const DEFAULT_PAYMENT_EXPIRY_MINUTES = 120;
 
 export async function transientQrDataUrl(
   qrString: string | null | undefined,
@@ -567,7 +567,28 @@ export class PaymentService {
     if (!provider.cancelPayment) {
       throw new ConflictException("Provider belum mendukung pembatalan langsung. Tunggu invoice kedaluwarsa atau refresh status pembayaran.");
     }
-    const cancellation = await provider.cancelPayment(initial.payment.externalId);
+    let cancellation: { ok: true; reference: string };
+    try {
+      cancellation = await provider.cancelPayment(initial.payment.externalId);
+    } catch (error) {
+      // A provider cancellation can race with a successful payment callback.
+      // Re-read authoritative status before surfacing a generic provider error.
+      if (provider.getTransactionStatus) {
+        await this.syncPaymentStatus(initial.payment.id, userId).catch(() => null);
+        const latest = await this.database.client().invoice.findUnique({
+          where: { id: initial.id },
+          include: { payment: true, items: true },
+        });
+        if (!latest?.payment) throw new NotFoundException("Invoice payment tidak ditemukan.");
+        if (latest.status === InvoiceStatus.PAID || latest.payment.status === PaymentStatus.PAID) {
+          throw new ConflictException("PAYMENT_ALREADY_PAID");
+        }
+        if (latest.status !== InvoiceStatus.OPEN || latest.payment.status !== PaymentStatus.PENDING) {
+          return this.safeInvoice(latest);
+        }
+      }
+      throw error;
+    }
     const cancelled = await this.serializable(async (tx) => {
       const invoice = await tx.invoice.findFirst({
         where: { id: initial.id, userId },

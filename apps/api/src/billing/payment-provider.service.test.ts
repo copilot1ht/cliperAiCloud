@@ -562,6 +562,10 @@ describe("XenditPaymentProvider", () => {
             reference_id: "CLP-20260809-XENDIT",
             request_amount: 17_000,
             channel_code: "QRIS",
+            channel_properties: {
+              expires_at: "2026-08-09T03:00:00.000Z",
+              qr_string_type: "DYNAMIC",
+            },
             status: "REQUIRES_ACTION",
             actions: [
               {
@@ -588,13 +592,45 @@ describe("XenditPaymentProvider", () => {
       provider: "xendit",
       externalId: "pr-00000000-0000-0000-0000-000000000001",
       qrString: "00020101021226610014COM.XENDIT.QRIS",
+      expiresAt: "2026-08-09T03:00:00.000Z",
     });
     expect(result.qrImageBase64).toMatch(/^data:image\/png;base64,/);
     const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
     expect(calls[0]?.[0]).toBe("https://api.xendit.co/v3/payment_requests");
     const request = calls[0]?.[1] || {};
     expect(String(request.body)).toContain('"channel_code":"QRIS"');
+    const requestBody = JSON.parse(String(request.body));
+    expect(requestBody.channel_properties).toEqual({
+      expires_at: expect.any(String),
+      qr_string_type: "DYNAMIC",
+    });
+    expect(requestBody.expires_at).toBeUndefined();
     expect(String((request.headers as Record<string, string>).Authorization)).not.toContain(secretKey);
+  });
+
+  it("cancels a QRIS payment request through Xendit's cancel endpoint", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            payment_request_id: "pr-00000000-0000-0000-0000-000000000004",
+            status: "CANCELED",
+          }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      provider.cancelPayment("pr-00000000-0000-0000-0000-000000000004"),
+    ).resolves.toEqual({
+      ok: true,
+      reference: "xendit-cancel:pr-00000000-0000-0000-0000-000000000004",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.xendit.co/v3/payment_requests/pr-00000000-0000-0000-0000-000000000004/cancel",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
   it("rejects a response without a QR action", async () => {

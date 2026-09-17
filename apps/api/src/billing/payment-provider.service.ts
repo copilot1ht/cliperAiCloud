@@ -1137,8 +1137,10 @@ export class XenditPaymentProvider implements PaymentProvider {
           request_amount: input.amountIdr,
           capture_method: "AUTOMATIC",
           channel_code: "QRIS",
-          channel_properties: {},
-          expires_at: input.expiresAt,
+          channel_properties: {
+            expires_at: input.expiresAt,
+            qr_string_type: "DYNAMIC",
+          },
           description: input.description.slice(0, 1_000),
           metadata: {
             cliper_invoice_number: input.invoiceNumber,
@@ -1169,7 +1171,14 @@ export class XenditPaymentProvider implements PaymentProvider {
       );
     }
     const paymentUrl = String(xenditAction(payload.actions, "WEB_URL")?.value || "").trim();
-    const expiresAt = String(payload.expires_at || payload.expiry_time || input.expiresAt || "").trim();
+    const channelProperties = asRecord(payload.channel_properties) || {};
+    const expiresAt = String(
+      payload.expires_at ||
+        channelProperties.expires_at ||
+        payload.expiry_time ||
+        input.expiresAt ||
+        "",
+    ).trim();
     return {
       provider: this.code,
       externalId: paymentRequestId,
@@ -1318,7 +1327,7 @@ export class XenditPaymentProvider implements PaymentProvider {
     const paymentRequestId = String(externalId || "").trim();
     if (!paymentRequestId) throw new BadRequestException("Xendit payment request ID kosong.");
     const { payload } = await this.request(
-      `${this.apiOrigin}/v3/payment_requests/${encodeURIComponent(paymentRequestId)}/expire`,
+      `${this.apiOrigin}/v3/payment_requests/${encodeURIComponent(paymentRequestId)}/cancel`,
       { method: "POST", headers: this.headers() },
       [409],
     );
@@ -1326,7 +1335,7 @@ export class XenditPaymentProvider implements PaymentProvider {
     if (status && !["EXPIRED", "CANCELED", "CANCELLED", "FAILED"].includes(status)) {
       throw new ServiceUnavailableException("Xendit belum mengonfirmasi pembatalan payment request.");
     }
-    return { ok: true, reference: `xendit-expire:${paymentRequestId}` };
+    return { ok: true, reference: `xendit-cancel:${paymentRequestId}` };
   }
 
   async testConnection(): Promise<{

@@ -101,13 +101,13 @@ describe("non-financial payment webhooks", () => {
     ).toBeNull();
   });
 
-  it("uses a configurable one-hour payment expiry by default", () => {
+  it("uses a configurable two-hour payment expiry by default", () => {
     const now = Date.UTC(2026, 7, 9, 0, 0, 0);
     expect(providerInvoiceExpiry("xendit", now).getTime() - now).toBe(
-      60 * 60_000,
+      120 * 60_000,
     );
     expect(providerInvoiceExpiry("midtrans", now).getTime() - now).toBe(
-      60 * 60_000,
+      120 * 60_000,
     );
   });
 
