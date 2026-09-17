@@ -553,7 +553,7 @@ def test_good_audio_subtitle_remains_primary():
     assert quality["reason"] == "audio_quality_accepted"
 
 
-def test_music_audio_whisper_uses_phrase_sync_instead_of_unreliable_word_karaoke(tmp_path):
+def test_music_audio_whisper_keeps_word_karaoke_when_timestamps_exist(tmp_path):
     transcript = [
         {
             "start": 0.15,
@@ -581,11 +581,12 @@ def test_music_audio_whisper_uses_phrase_sync_instead_of_unreliable_word_karaoke
         **subtitle_payload(),
         "_contentProfile": {"videoType": "music", "subtitleStyle": "lyric-karaoke"},
     }
-    ass_path = tmp_path / "music-phrase-sync.ass"
+    ass_path = tmp_path / "music-word-sync.ass"
 
     events = cliper_worker.build_timed_caption_events(moment, transcript, payload, 3.0, 0.0)
     assert events
-    assert {event.get("timing_mode") for event in events} == {"phrase"}
+    assert events[0]["words"]
+    assert "timing_mode" not in events[0]
     assert cliper_worker.build_ass_caption_file(moment, ass_path, payload, transcript)
 
     dialogue = [
@@ -593,18 +594,19 @@ def test_music_audio_whisper_uses_phrase_sync_instead_of_unreliable_word_karaoke
         if line.startswith("Dialogue:") and ",Caption," in line
     ]
     assert dialogue
-    assert not any(",Word," in line for line in dialogue)
+    word_dialogue = [line for line in dialogue if ",Word," in line]
+    assert len(word_dialogue) == 5
     rendered_text = "\n".join(dialogue).lower()
     assert "maukah" in rendered_text
     assert "pacarku" in rendered_text
 
     validation = cliper_worker.validate_subtitle_sync(moment, transcript, payload, 3.0, ass_path)
     assert validation["ok"] is True
-    assert validation["timing_mode"] == "phrase"
+    assert "timing_mode" not in validation
     assert validation["coverage_ratio"] == 1.0
 
 
-def test_music_phrase_sync_accepts_sparse_intro_without_word_coverage_failure(tmp_path):
+def test_sparse_music_intro_keeps_word_events_without_static_phrase(tmp_path):
     transcript = [
         {
             "start": 0.59,
@@ -630,19 +632,20 @@ def test_music_phrase_sync_accepts_sparse_intro_without_word_coverage_failure(tm
         **subtitle_payload(),
         "_contentProfile": {"videoType": "music", "subtitleStyle": "TikTok style"},
     }
-    ass_path = tmp_path / "music-sparse-intro.ass"
+    ass_path = tmp_path / "music-sparse-intro-word-sync.ass"
 
     assert cliper_worker.build_ass_caption_file(moment, ass_path, payload, transcript)
     dialogue = [
         line for line in ass_path.read_text(encoding="utf-8").splitlines()
         if line.startswith("Dialogue:") and ",Caption," in line
     ]
-    assert len(dialogue) == 1
-    assert not any(",Word," in line for line in dialogue)
+    word_dialogue = [line for line in dialogue if ",Word," in line]
+    assert len(word_dialogue) == 2
+    assert all(",Word," in line or ",Hold," in line for line in dialogue)
 
     validation = cliper_worker.validate_subtitle_sync(moment, transcript, payload, 12.0, ass_path)
     assert validation["ok"] is True
-    assert validation["timing_mode"] == "phrase"
+    assert "timing_mode" not in validation
     assert validation["coverage_ratio"] == 1.0
 
 

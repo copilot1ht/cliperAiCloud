@@ -422,6 +422,6 @@ class SubtitleEngine:
             "metadata": {
                 "total_subtitles": len(events),
                 "subtitle_lead": self.lead_seconds,
-                "engine": "subtitle_engine_v4_phrase_sync",
+                "engine": "subtitle_engine_v4_word_sync",
             },
         }
