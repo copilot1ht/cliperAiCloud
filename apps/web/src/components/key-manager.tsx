@@ -39,7 +39,7 @@ export function KeyManager({ keys, generatedKey, onGenerate, onRevoke, loading, 
         <div>
           <p className="section-kicker">Desktop access</p>
           <h2>Desktop key manager</h2>
-          <p>Kelola autentikasi Cliper Studio. Upgrade Pro tidak mengganti key; rotasi hanya dilakukan saat diminta.</p>
+          <p>Kelola autentikasi Cliper Studio. Saldo wallet dan akses desktop dibaca dari backend Cloud.</p>
         </div>
         <div className="key-actions">
           <button className="button button-primary" onClick={onGenerate} disabled={loading}>{loading ? "Rotating..." : "Rotate desktop key"}</button>
@@ -48,7 +48,7 @@ export function KeyManager({ keys, generatedKey, onGenerate, onRevoke, loading, 
       {generatedKey && (
         <div className="callout success-callout"><strong>Desktop key baru dibuat.</strong><span>Salin key ini ke desktop segera. Raw key hanya ditampilkan sekali dan key lama sudah dicabut.</span><div className="key-field"><code>{visible ? generatedKey : "clip_sk_...................."}</code><button className="icon-button" onClick={() => setVisible(!visible)} aria-label={visible ? "Sembunyikan key" : "Tampilkan key"}>{visible ? <EyeOff size={18} /> : <Eye size={18} />}</button><button className="icon-button" onClick={copy} aria-label="Salin key">{copied ? <Check size={18} /> : <Copy size={18} />}</button></div></div>
       )}
-      <div className="callout info-callout"><strong>Lisensi desktop.</strong><span>Status Pro dan saldo dibaca dari backend entitlement. Key hanya untuk autentikasi perangkat.</span></div>
+      <div className="callout info-callout"><strong>Lisensi desktop.</strong><span>Key hanya untuk autentikasi perangkat. Saldo wallet tetap dihitung server-side.</span></div>
       <div className="table-scroll">
         <table>
           <thead>

@@ -271,6 +271,7 @@ export class SandboxPaymentProvider implements PaymentProvider {
       provider: this.code,
       externalId,
       status: "pending",
+      expiresAt: input.expiresAt,
       qrString,
       qrImageBase64: await QRCode.toDataURL(qrString, {
         errorCorrectionLevel: "M",
@@ -281,6 +282,7 @@ export class SandboxPaymentProvider implements PaymentProvider {
         mode: "sandbox",
         paymentType: "qris",
         dynamic: true,
+        expiresAt: input.expiresAt,
       },
     };
   }
@@ -324,6 +326,10 @@ export class SandboxPaymentProvider implements PaymentProvider {
     _amountIdr: number,
   ): Promise<{ ok: true; reference: string }> {
     return { ok: true, reference: `sbx_ref_${externalId}_${randomUUID()}` };
+  }
+
+  async cancelPayment(externalId: string): Promise<{ ok: true; reference: string }> {
+    return { ok: true, reference: `sbx_cancel_${externalId}_${randomUUID()}` };
   }
 
   signedEvent(event: PaymentWebhookEvent): {
@@ -1132,6 +1138,7 @@ export class XenditPaymentProvider implements PaymentProvider {
           capture_method: "AUTOMATIC",
           channel_code: "QRIS",
           channel_properties: {},
+          expires_at: input.expiresAt,
           description: input.description.slice(0, 1_000),
           metadata: {
             cliper_invoice_number: input.invoiceNumber,
@@ -1162,10 +1169,12 @@ export class XenditPaymentProvider implements PaymentProvider {
       );
     }
     const paymentUrl = String(xenditAction(payload.actions, "WEB_URL")?.value || "").trim();
+    const expiresAt = String(payload.expires_at || payload.expiry_time || input.expiresAt || "").trim();
     return {
       provider: this.code,
       externalId: paymentRequestId,
       status: "pending",
+      expiresAt: expiresAt || input.expiresAt,
       paymentUrl: paymentUrl || undefined,
       qrString,
       qrImageBase64: await QRCode.toDataURL(qrString, {
@@ -1178,6 +1187,7 @@ export class XenditPaymentProvider implements PaymentProvider {
         paymentRequestId,
         channel: channelCode,
         status: String(payload.status || "").trim().toUpperCase() || null,
+        expiresAt: expiresAt || input.expiresAt,
       },
     };
   }
@@ -1302,6 +1312,21 @@ export class XenditPaymentProvider implements PaymentProvider {
       );
     }
     return { ok: true, status: status || "PENDING" };
+  }
+
+  async cancelPayment(externalId: string): Promise<{ ok: true; reference: string }> {
+    const paymentRequestId = String(externalId || "").trim();
+    if (!paymentRequestId) throw new BadRequestException("Xendit payment request ID kosong.");
+    const { payload } = await this.request(
+      `${this.apiOrigin}/v3/payment_requests/${encodeURIComponent(paymentRequestId)}/expire`,
+      { method: "POST", headers: this.headers() },
+      [409],
+    );
+    const status = String(payload.status || "").trim().toUpperCase();
+    if (status && !["EXPIRED", "CANCELED", "CANCELLED", "FAILED"].includes(status)) {
+      throw new ServiceUnavailableException("Xendit belum mengonfirmasi pembatalan payment request.");
+    }
+    return { ok: true, reference: `xendit-expire:${paymentRequestId}` };
   }
 
   async testConnection(): Promise<{

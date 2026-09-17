@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BillingSource, PaymentStatus, PlanCode, SubscriptionStatus } from "../generated/prisma/client.js";
 import {
   jakartaDayWindow,
@@ -6,6 +6,13 @@ import {
   ProQuotaInsufficientWalletException,
   jakartaWeekWindow,
 } from "./pro-entitlement.service.js";
+
+const originalProUpgradeEnabled = process.env.PRO_UPGRADE_ENABLED;
+
+afterEach(() => {
+  if (originalProUpgradeEnabled === undefined) delete process.env.PRO_UPGRADE_ENABLED;
+  else process.env.PRO_UPGRADE_ENABLED = originalProUpgradeEnabled;
+});
 
 function txMock(input: {
   unlimitedCredits?: boolean;
@@ -128,7 +135,17 @@ describe("ProEntitlementService", () => {
     })).rejects.toBeInstanceOf(ProQuotaInsufficientWalletException);
   });
 
-  it("shows the Upgrade menu only after a successful top-up history exists", async () => {
+  it("hides the Upgrade menu by default even after a successful top-up", async () => {
+    const service = new ProEntitlementService();
+    const policy = await service.featurePolicy(txMock({ paidTopup: true, walletBalance: 35_000_000_000n }) as never, "user-a");
+
+    expect(policy.showUpgradeMenu).toBe(false);
+    expect(policy.wallet.spendableUsd).toBe("35000.000000");
+    expect(policy.nextBillingSource).toBe("wallet_standard");
+  });
+
+  it("shows the Upgrade menu only when the Pro feature flag and top-up history are both present", async () => {
+    process.env.PRO_UPGRADE_ENABLED = "true";
     const service = new ProEntitlementService();
     const policy = await service.featurePolicy(txMock({ paidTopup: true, walletBalance: 35_000_000_000n }) as never, "user-a");
 

@@ -66,6 +66,13 @@ export class PaymentController {
     return this.payments.syncInvoiceStatus(request.cliperSession?.userId || "", number);
   }
 
+  @Post("invoices/:number/cancel")
+  @UseGuards(SessionGuard, AccountWriteGuard)
+  async cancelInvoice(@Req() request: SessionAuthenticatedRequest, @Param("number") number: string) {
+    await this.rateLimits.assertPaymentSync(request.cliperSession?.userId || "", number);
+    return this.payments.cancelInvoice(request.cliperSession?.userId || "", number);
+  }
+
   @Post("sandbox/:number/complete")
   @UseGuards(SessionGuard, AccountWriteGuard)
   completeSandbox(@Req() request: SessionAuthenticatedRequest, @Param("number") number: string) {

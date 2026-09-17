@@ -21,7 +21,7 @@ type BillingView = "plans" | "wallet" | "invoices" | "transactions";
 interface Invoice {
   number: string;
   subtotalIdr: number;
-  status: "open" | "paid" | "expired" | "refunded" | "void";
+  status: "open" | "paid" | "expired" | "refunded" | "void" | "cancelled" | "failed";
   totalIdr: number;
   subtotalPaymentIdr: number;
   serviceFeeIdr: number;
@@ -116,9 +116,26 @@ async function paymentFetch<T>(
 
 function statusClass(status: string): string {
   if (status === "paid" || status === "active") return "status-tag healthy";
-  if (status === "refunded" || status === "void")
+  if (status === "refunded" || status === "void" || status === "cancelled" || status === "failed")
     return "status-tag danger-tag";
   return "status-tag fallback";
+}
+
+function statusLabel(status: string): string {
+  if (status === "open") return "Menunggu pembayaran";
+  if (status === "paid") return "Pembayaran berhasil";
+  if (status === "expired") return "Pembayaran kedaluwarsa";
+  if (status === "cancelled" || status === "void") return "Pembayaran dibatalkan";
+  if (status === "failed") return "Pembayaran gagal";
+  return status;
+}
+
+function countdownLabel(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  const hours = Math.floor(seconds / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  const rest = seconds % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
 }
 
 export function MemberBilling({
@@ -135,6 +152,7 @@ export function MemberBilling({
   const [error, setError] = useState("");
   const [now, setNow] = useState(Date.now());
   const [topupOpen, setTopupOpen] = useState(false);
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
   const [topupPurchaseUsd, setTopupPurchaseUsd] = useState("1.00");
   const [paymentNotice, setPaymentNotice] = useState("");
   const autoOpenHandled = useRef(false);
@@ -211,18 +229,29 @@ export function MemberBilling({
     if (!selected || selected.status !== "open") return;
     const timer = window.setInterval(() => {
       void syncStatus(true);
-    }, 8_000);
+    }, 15_000);
     return () => window.clearInterval(timer);
+  }, [selected, syncStatus]);
+  useEffect(() => {
+    if (!selected || selected.status !== "open") return;
+    const onFocus = () => void syncStatus(true);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, [selected, syncStatus]);
 
   const countdown = useMemo(() => {
     if (!selected?.expiresAt || selected.status !== "open") return "";
-    const seconds = Math.max(
+    const milliseconds = Math.max(
       0,
-      Math.floor((new Date(selected.expiresAt).getTime() - now) / 1_000),
+      new Date(selected.expiresAt).getTime() - now,
     );
-    return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+    return countdownLabel(milliseconds);
   }, [now, selected]);
+  useEffect(() => {
+    if (!selected?.expiresAt || selected.status !== "open") return;
+    if (new Date(selected.expiresAt).getTime() - now > 0) return;
+    void syncStatus(true);
+  }, [now, selected, syncStatus]);
 
   const completeSandbox = async () => {
     if (!selected) return;
@@ -275,6 +304,32 @@ export function MemberBilling({
     }
   };
 
+  const cancelPayment = async () => {
+    if (!selected) return;
+    setBusy("cancel");
+    setError("");
+    try {
+      const invoice = await paymentFetch<Invoice>(
+        `/api/payments/invoices/${encodeURIComponent(selected.number)}/cancel`,
+        { method: "POST" },
+      );
+      setSelected(invoice);
+      setCancelConfirmOpen(false);
+      await load();
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Pembayaran tidak dapat dibatalkan.";
+      if (message.includes("PAYMENT_ALREADY_PAID")) {
+        setPaymentNotice("Pembayaran sudah berhasil dan saldo telah diproses.");
+        setCancelConfirmOpen(false);
+        await load();
+      } else {
+        setError(message);
+      }
+    } finally {
+      setBusy("");
+    }
+  };
+
   if (!data && !error)
     return (
       <section className="panel billing-state">
@@ -322,7 +377,7 @@ export function MemberBilling({
           <div><ShieldCheck size={17} /><span>{paymentNotice}</span></div>
         </div>
       )}
-      {featurePolicy?.subscription.active && (
+      {featurePolicy?.showUpgradeMenu && featurePolicy?.subscription.active && (
         <section className="panel pro-status-panel">
           <div className="panel-head">
             <div>
@@ -391,7 +446,7 @@ export function MemberBilling({
               </p>
             </div>
             <span className={statusClass(selected.status)}>
-              {selected.status}
+              {statusLabel(selected.status)}
             </span>
           </div>
           <div className="checkout-grid">
@@ -401,8 +456,11 @@ export function MemberBilling({
               <span>Saldo wallet {formatUsdWallet(selected.purchaseUsd)}</span>
               {countdown && (
                 <span>
-                  <Clock3 size={14} /> Expires in {countdown}
+                  <Clock3 size={14} /> Sisa waktu {countdown}
                 </span>
+              )}
+              {selected.expiresAt && selected.status === "open" && (
+                <span>Berlaku sampai {formatDate(selected.expiresAt)}</span>
               )}
             </div>
             <div className="checkout-code">
@@ -452,7 +510,7 @@ export function MemberBilling({
                 <>
                   <small>Payment unavailable</small>
                   <div className="checkout-unavailable">
-                    Invoice ini {selected.status}. Buat top-up baru untuk menerima QRIS baru.
+                    {statusLabel(selected.status)}. Buat top-up baru untuk menerima QRIS baru.
                   </div>
                 </>
               )}
@@ -495,6 +553,15 @@ export function MemberBilling({
               >
                 <ShieldCheck size={15} />{" "}
                 {busy === "status" ? "Checking..." : "Check payment status"}
+              </button>
+            )}
+            {selected.status === "open" && (
+              <button
+                className="button button-secondary"
+                disabled={busy === "cancel"}
+                onClick={() => setCancelConfirmOpen(true)}
+              >
+                <X size={15} /> Batalkan Pembayaran
               </button>
             )}
             <button
@@ -697,6 +764,54 @@ export function MemberBilling({
               >
                 <CreditCard size={15} />{" "}
                 {busy === "topup" ? "Menyiapkan..." : "Lanjut ke pembayaran"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {cancelConfirmOpen && selected && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target) setCancelConfirmOpen(false);
+          }}
+        >
+          <section
+            className="admin-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Batalkan pembayaran"
+          >
+            <header>
+              <div>
+                <h2>Batalkan pembayaran ini?</h2>
+                <p>
+                  QRIS ini tidak dapat digunakan kembali setelah provider
+                  berhasil membatalkan pembayaran.
+                </p>
+              </div>
+              <button
+                className="icon-button"
+                aria-label="Tutup"
+                onClick={() => setCancelConfirmOpen(false)}
+              >
+                <X size={16} />
+              </button>
+            </header>
+            <div className="modal-actions">
+              <button
+                className="button button-secondary"
+                onClick={() => setCancelConfirmOpen(false)}
+              >
+                Kembali
+              </button>
+              <button
+                className="button button-primary"
+                disabled={busy === "cancel"}
+                onClick={() => void cancelPayment()}
+              >
+                {busy === "cancel" ? "Memproses..." : "Ya, Batalkan"}
               </button>
             </div>
           </section>

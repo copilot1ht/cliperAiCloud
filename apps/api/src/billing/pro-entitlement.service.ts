@@ -155,6 +155,10 @@ function walletFallbackEnabled(): boolean {
   return String(process.env.CLIPER_PRO_WALLET_FALLBACK_DEFAULT || "true").toLowerCase() !== "false";
 }
 
+export function proUpgradeEnabled(): boolean {
+  return String(process.env.PRO_UPGRADE_ENABLED || "false").trim().toLowerCase() === "true";
+}
+
 function weekNumberJakarta(date: Date): number {
   const target = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
   const day = target.getUTCDay() || 7;
@@ -353,8 +357,8 @@ export class ProEntitlementService {
     return {
       ok: true,
       hasSuccessfulTopup,
-      showUpgradeMenu: hasSuccessfulTopup,
-      walletFallbackDefault: walletFallbackEnabled(),
+      showUpgradeMenu: proUpgradeEnabled() && hasSuccessfulTopup,
+      walletFallbackDefault: proUpgradeEnabled() && walletFallbackEnabled(),
       subscription: {
         active: Boolean(subscription),
         plan: subscription ? "pro" : "free",

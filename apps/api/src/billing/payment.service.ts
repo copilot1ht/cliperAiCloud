@@ -28,6 +28,7 @@ import {
   usdToMicro,
   WalletPaymentSettingsService,
 } from "./wallet-payment-settings.service.js";
+import { proUpgradeEnabled } from "./pro-entitlement.service.js";
 
 interface PaymentIdentity {
   id: string;
@@ -78,11 +79,7 @@ const plans: PlanDefinition[] = [
   },
 ];
 
-const DEFAULT_INVOICE_EXPIRY_MS = 15 * 60_000;
-// Xendit's one-off QRIS payment requests remain payable for up to 48 hours.
-// Keep the local invoice open for that same window so a customer cannot pay a
-// still-valid provider QR after Cliper has already rejected the invoice.
-const XENDIT_QRIS_INVOICE_EXPIRY_MS = 48 * 60 * 60_000;
+const DEFAULT_PAYMENT_EXPIRY_MINUTES = 60;
 
 export async function transientQrDataUrl(
   qrString: string | null | undefined,
@@ -177,15 +174,26 @@ export function paymentEnvironment(value: unknown): "test" | "production" {
     : "production";
 }
 
+function paymentExpiryMinutes(): number {
+  const parsed = Number(process.env.PAYMENT_EXPIRY_MINUTES || DEFAULT_PAYMENT_EXPIRY_MINUTES);
+  if (!Number.isSafeInteger(parsed) || parsed < 5 || parsed > 24 * 60) return DEFAULT_PAYMENT_EXPIRY_MINUTES;
+  return parsed;
+}
+
+function authoritativeProviderExpiry(value: unknown): Date | null {
+  const parsed = new Date(String(value || ""));
+  return Number.isFinite(parsed.getTime()) && parsed.getTime() > Date.now()
+    ? parsed
+    : null;
+}
+
 export function providerInvoiceExpiry(
-  providerCode: string,
+  _providerCode: string,
   now = Date.now(),
+  providerExpiresAt?: unknown,
 ): Date {
-  const duration =
-    String(providerCode || "").trim().toLowerCase() === "xendit"
-      ? XENDIT_QRIS_INVOICE_EXPIRY_MS
-      : DEFAULT_INVOICE_EXPIRY_MS;
-  return new Date(now + duration);
+  return authoritativeProviderExpiry(providerExpiresAt)
+    || new Date(now + paymentExpiryMinutes() * 60_000);
 }
 
 /**
@@ -237,6 +245,7 @@ export class PaymentService {
   ) {}
 
   planCatalog() {
+    if (!proUpgradeEnabled()) return [];
     return plans.map(({ creditMicro: _creditMicro, ...plan }) => ({
       ...plan,
       code: plan.code.toLowerCase(),
@@ -267,6 +276,9 @@ export class PaymentService {
   }
 
   async createInvoice(identity: PaymentIdentity, requestedPlan: unknown) {
+    if (!proUpgradeEnabled()) {
+      throw new BadRequestException("Upgrade belum tersedia. Gunakan Wallet & Billing untuk top-up saldo.");
+    }
     const plan = planByCode(requestedPlan);
     const client = this.database.client();
     if (plan.code === PlanCode.PRO && !(await this.hasSuccessfulTopup(identity.id))) {
@@ -275,14 +287,15 @@ export class PaymentService {
     await this.expireOpenInvoices(identity.id);
     const number = invoiceNumber();
     const provider = await this.providers.active();
-    const expiresAt = providerInvoiceExpiry(provider.code);
+    const requestedExpiresAt = providerInvoiceExpiry(provider.code);
     const providerPayment = await provider.createPayment({
       invoiceNumber: number,
       amountIdr: plan.priceIdr,
-      expiresAt: expiresAt.toISOString(),
+      expiresAt: requestedExpiresAt.toISOString(),
       customer: identity,
       description: `Cliper AI Cloud ${plan.name} - ${plan.durationDays} hari`,
     });
+    const expiresAt = providerInvoiceExpiry(provider.code, Date.now(), providerPayment.expiresAt || providerPayment.safeMetadata?.expiresAt);
     const environment = paymentEnvironment(providerPayment.safeMetadata);
 
     const invoice = await this.serializable(async (tx) => {
@@ -385,16 +398,19 @@ export class PaymentService {
     const quote = this.walletPaymentSettings.quote(purchaseMicroUsd, settings);
     const paymentMethod = "qris";
     await this.expireOpenInvoices(identity.id);
+    const reusable = await this.reusableOpenTopupInvoice(identity.id);
+    if (reusable) return reusable;
     const number = invoiceNumber();
     const provider = await this.providers.active();
-    const expiresAt = providerInvoiceExpiry(provider.code);
+    const requestedExpiresAt = providerInvoiceExpiry(provider.code);
     const providerPayment = await provider.createPayment({
       invoiceNumber: number,
       amountIdr: quote.totalPaymentIdr,
-      expiresAt: expiresAt.toISOString(),
+      expiresAt: requestedExpiresAt.toISOString(),
       customer: identity,
       description: `Cliper AI Cloud wallet top-up US$${quote.purchaseUsd}`,
     });
+    const expiresAt = providerInvoiceExpiry(provider.code, Date.now(), providerPayment.expiresAt || providerPayment.safeMetadata?.expiresAt);
     const environment = paymentEnvironment(providerPayment.safeMetadata);
     const invoice = await this.serializable(async (tx) => {
       await tx.user.upsert({
@@ -486,6 +502,107 @@ export class PaymentService {
       });
     });
     return await this.safeInvoice(invoice);
+  }
+
+  private async reusableOpenTopupInvoice(userId: string) {
+    if (this.localReadMode()) return null;
+    const existing = await this.database.client().invoice.findFirst({
+      where: {
+        userId,
+        status: InvoiceStatus.OPEN,
+        AND: [
+          {
+            OR: [
+              { metadata: { path: ["kind"], equals: "topup" } },
+              { payment: { is: { metadata: { path: ["kind"], equals: "topup" } } } },
+            ],
+          },
+          {
+            OR: [
+              { expiresAt: null },
+              { expiresAt: { gt: new Date() } },
+            ],
+          },
+        ],
+      },
+      include: { payment: true, items: true },
+      orderBy: { createdAt: "desc" },
+    });
+    return existing ? await this.safeInvoice(existing) : null;
+  }
+
+  async cancelInvoice(userId: string, number: string) {
+    if (this.localReadMode()) {
+      throw new ServiceUnavailableException("Cancel pembayaran membutuhkan PostgreSQL aktif.");
+    }
+    await this.expireOpenInvoices(userId);
+    const initial = await this.database.client().invoice.findFirst({
+      where: { userId, number },
+      include: { payment: true, items: true },
+    });
+    if (!initial?.payment) throw new NotFoundException("Invoice payment tidak ditemukan.");
+    if (initial.status === InvoiceStatus.PAID || initial.payment.status === PaymentStatus.PAID) {
+      throw new ConflictException("PAYMENT_ALREADY_PAID");
+    }
+    if (initial.status !== InvoiceStatus.OPEN || initial.payment.status !== PaymentStatus.PENDING) {
+      return this.safeInvoice(initial);
+    }
+
+    const provider = await this.providers.byCode(initial.payment.provider);
+    if (provider.getTransactionStatus) {
+      await this.syncPaymentStatus(initial.payment.id, userId).catch(() => null);
+      const latest = await this.database.client().invoice.findUnique({
+        where: { id: initial.id },
+        include: { payment: true, items: true },
+      });
+      if (!latest?.payment) throw new NotFoundException("Invoice payment tidak ditemukan.");
+      if (latest.status === InvoiceStatus.PAID || latest.payment.status === PaymentStatus.PAID) {
+        throw new ConflictException("PAYMENT_ALREADY_PAID");
+      }
+      if (latest.status !== InvoiceStatus.OPEN || latest.payment.status !== PaymentStatus.PENDING) {
+        return this.safeInvoice(latest);
+      }
+    }
+
+    if (!provider.cancelPayment) {
+      throw new ConflictException("Provider belum mendukung pembatalan langsung. Tunggu invoice kedaluwarsa atau refresh status pembayaran.");
+    }
+    const cancellation = await provider.cancelPayment(initial.payment.externalId);
+    const cancelled = await this.serializable(async (tx) => {
+      const invoice = await tx.invoice.findFirst({
+        where: { id: initial.id, userId },
+        include: { payment: true, items: true },
+      });
+      if (!invoice?.payment) throw new NotFoundException("Invoice payment tidak ditemukan.");
+      if (invoice.status === InvoiceStatus.PAID || invoice.payment.status === PaymentStatus.PAID) {
+        throw new ConflictException("PAYMENT_ALREADY_PAID");
+      }
+      if (invoice.status !== InvoiceStatus.OPEN || invoice.payment.status !== PaymentStatus.PENDING) return invoice;
+      await tx.paymentTransaction.update({
+        where: { id: invoice.payment.id },
+        data: {
+          status: PaymentStatus.FAILED,
+          metadata: jsonInput({
+            ...metadataRecord(invoice.payment.metadata),
+            cancelledAt: new Date().toISOString(),
+            cancellationReference: cancellation.reference,
+          }),
+        },
+      });
+      return tx.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          status: InvoiceStatus.VOID,
+          metadata: jsonInput({
+            ...metadataRecord(invoice.metadata),
+            cancelledAt: new Date().toISOString(),
+            cancellationReference: cancellation.reference,
+          }),
+        },
+        include: { payment: true, items: true },
+      });
+    });
+    return this.safeInvoice(cancelled);
   }
 
   async createXenditTestTopup(identity: PaymentIdentity) {
@@ -1651,6 +1768,8 @@ export class PaymentService {
       status:
         invoice.status === InvoiceStatus.OVERDUE
           ? "expired"
+          : invoice.status === InvoiceStatus.VOID
+            ? "cancelled"
           : invoice.status.toLowerCase(),
       subtotalIdr: invoice.subtotalIdr,
       taxIdr: invoice.taxIdr,

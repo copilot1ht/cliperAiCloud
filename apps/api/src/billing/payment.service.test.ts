@@ -9,6 +9,13 @@ import {
 } from "./payment.service.js";
 import { microToUsd, usdToMicro } from "./wallet-payment-settings.service.js";
 
+const originalPaymentExpiryMinutes = process.env.PAYMENT_EXPIRY_MINUTES;
+
+afterEach(() => {
+  if (originalPaymentExpiryMinutes === undefined) delete process.env.PAYMENT_EXPIRY_MINUTES;
+  else process.env.PAYMENT_EXPIRY_MINUTES = originalPaymentExpiryMinutes;
+});
+
 describe("USD wallet helpers", () => {
   it("stores exact USD wallet values as micro-USD", () => {
     expect(usdToMicro("1")).toBe(1_000_000n);
@@ -94,14 +101,26 @@ describe("non-financial payment webhooks", () => {
     ).toBeNull();
   });
 
-  it("keeps Xendit QRIS invoices open for the provider payment window", () => {
+  it("uses a configurable one-hour payment expiry by default", () => {
     const now = Date.UTC(2026, 7, 9, 0, 0, 0);
     expect(providerInvoiceExpiry("xendit", now).getTime() - now).toBe(
-      48 * 60 * 60_000,
+      60 * 60_000,
     );
     expect(providerInvoiceExpiry("midtrans", now).getTime() - now).toBe(
-      15 * 60_000,
+      60 * 60_000,
     );
+  });
+
+  it("uses provider expiry as the payment authority when returned", () => {
+    const now = Date.UTC(2099, 7, 9, 0, 0, 0);
+    const providerExpiry = "2099-08-09T03:30:00.000Z";
+    expect(providerInvoiceExpiry("xendit", now, providerExpiry).toISOString()).toBe(providerExpiry);
+  });
+
+  it("allows payment expiry minutes to be configured server-side", () => {
+    process.env.PAYMENT_EXPIRY_MINUTES = "90";
+    const now = Date.UTC(2026, 7, 9, 0, 0, 0);
+    expect(providerInvoiceExpiry("xendit", now).getTime() - now).toBe(90 * 60_000);
   });
 
   it("keeps test and sandbox transactions out of production payment reporting", () => {
