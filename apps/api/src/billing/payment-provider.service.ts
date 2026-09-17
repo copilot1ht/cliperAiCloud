@@ -1326,13 +1326,16 @@ export class XenditPaymentProvider implements PaymentProvider {
   async cancelPayment(externalId: string): Promise<{ ok: true; reference: string }> {
     const paymentRequestId = String(externalId || "").trim();
     if (!paymentRequestId) throw new BadRequestException("Xendit payment request ID kosong.");
-    const { payload } = await this.request(
+    const { payload, status: responseStatus } = await this.request(
       `${this.apiOrigin}/v3/payment_requests/${encodeURIComponent(paymentRequestId)}/cancel`,
       { method: "POST", headers: this.headers() },
       [409],
     );
     const status = String(payload.status || "").trim().toUpperCase();
-    if (status && !["EXPIRED", "CANCELED", "CANCELLED", "FAILED"].includes(status)) {
+    if (
+      !["EXPIRED", "CANCELED", "CANCELLED", "FAILED"].includes(status) ||
+      (responseStatus === 409 && !status)
+    ) {
       throw new ServiceUnavailableException("Xendit belum mengonfirmasi pembatalan payment request.");
     }
     return { ok: true, reference: `xendit-cancel:${paymentRequestId}` };
