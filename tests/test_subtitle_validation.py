@@ -553,6 +553,31 @@ def test_good_audio_subtitle_remains_primary():
     assert quality["reason"] == "audio_quality_accepted"
 
 
+def test_clip_local_caption_sources_are_marked_before_the_subtitle_engine():
+    moment = {"start": 5.0, "end": 8.0, "duration": 3.0}
+    source = [{"start": 5.1, "end": 6.0, "text": "caption sumber aman"}]
+
+    selected = cliper_worker.source_caption_transcript_for_clip(moment, source, 3.0)
+
+    assert selected
+    assert selected[0]["timeline"] == "clip"
+    assert selected[0]["start"] == pytest.approx(0.02, abs=0.01)
+
+
+def test_leading_word_timestamp_outlier_is_repaired_to_phrase_onset():
+    groups = cliper_worker.word_timestamp_segments([
+        {"word": "What", "start": 0.0, "end": 0.96, "probability": 0.856},
+        {"word": "keeps", "start": 13.14, "end": 13.48, "probability": 0.995},
+        {"word": "us", "start": 13.48, "end": 13.82, "probability": 0.995},
+        {"word": "healthy", "start": 13.88, "end": 14.80, "probability": 0.994},
+    ])
+
+    assert groups[0]["text"] == "What keeps us healthy"
+    assert groups[0]["words"][0]["start"] == pytest.approx(13.14 - 0.30, abs=0.01)
+    assert groups[0]["words"][0]["end"] == pytest.approx(13.14, abs=0.01)
+    assert groups[0]["start"] > 12.0
+
+
 def test_music_audio_whisper_keeps_word_karaoke_when_timestamps_exist(tmp_path):
     transcript = [
         {

@@ -50,6 +50,44 @@ def test_word_timestamps_stay_locked_to_spoken_audio_with_caption_padding():
     assert events[0]["words"][-1]["end"] == 2.00
 
 
+def test_clip_local_audio_transcript_is_never_rebased_twice():
+    transcript = [{
+        "start": 0.15,
+        "end": 1.30,
+        "text": "aku mau pergi",
+        "timeline": "clip",
+        "words": [
+            {"word": "aku", "start": 0.15, "end": 0.42},
+            {"word": "mau", "start": 0.64, "end": 0.86},
+            {"word": "pergi", "start": 0.95, "end": 1.30},
+        ],
+    }]
+
+    events = SubtitleEngine().build_events({"start": 5.0}, transcript, 2.0)
+
+    assert [item["word"] for item in events[0]["words"]] == ["aku", "mau", "pergi"]
+    assert events[0]["words"][0]["start"] == 0.15
+    assert events[0]["words"][-1]["end"] == 1.30
+
+
+def test_absolute_transcript_still_rebases_to_clip_timeline():
+    transcript = [{
+        "start": 25.15,
+        "end": 26.30,
+        "text": "aku mau pergi",
+        "words": [
+            {"word": "aku", "start": 25.15, "end": 25.42},
+            {"word": "mau", "start": 25.64, "end": 25.86},
+            {"word": "pergi", "start": 25.95, "end": 26.30},
+        ],
+    }]
+
+    events = SubtitleEngine().build_events({"start": 25.0}, transcript, 2.0)
+
+    assert events[0]["words"][0]["start"] == 0.15
+    assert events[0]["words"][-1]["end"] == 1.30
+
+
 def test_repeated_phrase_later_in_clip_is_preserved():
     transcript = [
         {"start": 0.5, "end": 1.5, "text": "aku tetap di sini"},

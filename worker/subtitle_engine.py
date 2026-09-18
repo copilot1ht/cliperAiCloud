@@ -287,6 +287,11 @@ class SubtitleEngine:
                 "text": text,
                 "speaker_id": segment.get("speaker_id") or segment.get("speaker") or "",
                 "words": segment.get("words") or [],
+                # A clip-local transcript is already relative to the media
+                # passed to FFmpeg. Never infer it is source-absolute from
+                # overlapping numbers when a short clip starts near 0:00.
+                "clip_local": str(segment.get("timeline") or segment.get("timebase") or "").strip().lower()
+                in {"clip", "clip_local", "relative", "output", "composition"},
             })
         if not raw:
             return []
@@ -296,11 +301,12 @@ class SubtitleEngine:
         min_raw_start = min(item["start"] for item in raw)
         looks_relative = max_raw_end <= duration + 3.0 and min_raw_start < min(duration, 12.0)
         use_relative = looks_relative and len(absolute_hits) < max(1, len(raw) // 3)
-        source = raw if use_relative else absolute_hits
-
         result = []
-        for item in source:
-            if use_relative:
+        for item in raw:
+            item_is_relative = bool(item.get("clip_local")) or use_relative
+            if not item_is_relative and not (item["end"] > clip_start and item["start"] < clip_end):
+                continue
+            if item_is_relative:
                 rel_start = item["start"]
                 rel_end = item["end"]
             else:
@@ -324,8 +330,8 @@ class SubtitleEngine:
                     raw_word_end = float(word.get("end") or raw_word_start)
                 except Exception:
                     continue
-                word_start = raw_word_start if use_relative else raw_word_start - clip_start
-                word_end = raw_word_end if use_relative else raw_word_end - clip_start
+                word_start = raw_word_start if item_is_relative else raw_word_start - clip_start
+                word_end = raw_word_end if item_is_relative else raw_word_end - clip_start
                 word_start = round(max(0.0, min(duration, word_start)), 3)
                 word_end = round(max(word_start, min(duration, word_end)), 3)
                 if word_end > word_start:

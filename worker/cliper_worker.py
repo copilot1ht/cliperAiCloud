@@ -11730,8 +11730,7 @@ def flush_word_group(groups, current):
 
 
 def word_timestamp_segments(words, max_words=6, max_chars=38):
-    groups = []
-    current = []
+    timed_words = []
     for raw in words or []:
         word_text = clean_text(getattr(raw, "word", "") or (raw.get("word") if isinstance(raw, dict) else ""))
         if not word_text:
@@ -11741,14 +11740,39 @@ def word_timestamp_segments(words, max_words=6, max_chars=38):
         if re.fullmatch(r"[\[(](?:musik|music|applause|tepuk tangan|laughter|tertawa)[\])]", word_text, flags=re.IGNORECASE):
             continue
         try:
-            item = {
+            timed_words.append({
                 "word": word_text,
                 "start": float(start),
                 "end": float(end),
                 "probability": float(getattr(raw, "probability", 1.0) if not isinstance(raw, dict) else raw.get("probability", 1.0)),
-            }
+            })
         except Exception:
             continue
+
+    # Faster-Whisper can occasionally attach the first word of a phrase to a
+    # VAD-silence boundary at 0s while the following words retain their real
+    # onset. Do not let that single outlier pull the whole karaoke phrase to
+    # the beginning of the clip. This only repairs an isolated opening word
+    # followed by an implausibly long in-phrase gap; normal pauses are kept.
+    if len(timed_words) >= 3:
+        first, second = timed_words[0], timed_words[1]
+        gap = float(second["start"]) - float(first["end"])
+        first_is_unpunctuated = not bool(re.search(r"[,.!?…:]$", first["word"]))
+        if (
+            first["start"] <= 0.10
+            and gap >= 1.50
+            and first_is_unpunctuated
+            and second["end"] > second["start"]
+        ):
+            letters = max(1, len(re.sub(r"[^\w]", "", first["word"], flags=re.UNICODE)))
+            repaired_duration = max(0.14, min(0.55, 0.075 * letters))
+            first["end"] = round(float(second["start"]), 3)
+            first["start"] = round(max(0.0, float(second["start"]) - repaired_duration), 3)
+
+    groups = []
+    current = []
+    for item in timed_words:
+        word_text = item["word"]
         proposed = current + [item]
         proposed_text = clean_text(" ".join(part["word"] for part in proposed))
         boundary = bool(re.search(r"[,.!?…:]$", word_text))
@@ -11832,6 +11856,7 @@ def transcribe_clip_audio_for_subtitles(engine, source, start, duration, audio_p
                 "text": text,
                 "words": item.get("words") or [],
                 "source": "audio_whisper",
+                "timeline": "clip",
                 "confidence": item.get("confidence"),
                 "language": detected_language,
                 "word_probability_avg": item.get("word_probability_avg"),
@@ -11876,6 +11901,7 @@ def source_caption_transcript_for_clip(moment, transcript, duration, payload=Non
                     "text": text,
                     "words": distribute_caption_words(s, e, text),
                     "source": "rebased_summary_subtitles",
+                    "timeline": "clip",
                     "confidence": 1.0,
                 })
         return result
@@ -11891,6 +11917,7 @@ def source_caption_transcript_for_clip(moment, transcript, duration, payload=Non
             "text": text,
             "words": distribute_caption_words(start, end, text),
             "source": "source_caption_lkg",
+            "timeline": "clip",
             "confidence": None,
         })
     return result

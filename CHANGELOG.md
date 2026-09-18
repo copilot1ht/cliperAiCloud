@@ -1,5 +1,19 @@
 # Cliper Studio Plus Changelog
 
+## v1.15.1 - Subtitle Timing Repair
+
+Fixes & Improvements:
+
+* Preserves clip-local subtitle timestamps so they are never rebased a second time.
+* Repairs an isolated leading-word timing outlier only when Faster-Whisper puts it at a silence boundary far before the remaining phrase.
+* Keeps low-confidence music transcription suppressed rather than showing misleading lyrics.
+
+Validation:
+
+* Full Electron QA passes with 335 tests.
+* A reproduced real-speech render moves the detected phrase onset from 00:00:00 to 00:00:12,839 and passes subtitle/MP4 validation.
+* The supplied music sample safely suppresses low-confidence captions and produces a valid audio/video output.
+
 ## v1.15.0 - Subtitle Accuracy Guardrails
 
 Fixes & Improvements:
