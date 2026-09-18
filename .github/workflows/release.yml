@@ -119,3 +119,6 @@ jobs:
           )
           gh release upload $tag --repo $repo --clobber $assets
           if ($LASTEXITCODE -ne 0) { throw "GitHub release asset upload failed for $tag" }
+
+          gh release edit $tag --repo $repo --title $title --draft=false --prerelease=$($tag.Contains('-'))
+          if ($LASTEXITCODE -ne 0) { throw "GitHub release publication failed for $tag" }
