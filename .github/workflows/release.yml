@@ -91,15 +91,31 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          generate_release_notes: true
-          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
-          fail_on_unmatched_files: true
-          files: |
-            dist/Cliper-Studio-Plus-Portable-*.exe
-            dist/Cliper-Studio-Plus-Setup-*.exe
-            dist/Cliper-Studio-Plus-Setup-*.exe.blockmap
-            dist/latest.yml
-            dist/SHA256SUMS.txt
+      - name: Publish GitHub release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          $repo = $env:GITHUB_REPOSITORY
+          $version = $tag.TrimStart("v")
+          $title = "Cliper Studio Plus $version Stable"
+          $notes = @"
+          Subtitle accuracy guardrails are included in this stable release. Low-confidence audio no longer burns guessed text, stale transcript caches are rejected, and word timing remains tied to detected speech.
+          "@
+
+          gh release view $tag --repo $repo 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo $repo --verify-tag --title $title --notes $notes
+            if ($LASTEXITCODE -ne 0) { throw "GitHub release creation failed for $tag" }
+          }
+
+          $assets = @(
+            "dist/Cliper-Studio-Plus-Portable-$version.exe",
+            "dist/Cliper-Studio-Plus-Setup-$version.exe",
+            "dist/Cliper-Studio-Plus-Setup-$version.exe.blockmap",
+            "dist/latest.yml",
+            "dist/SHA256SUMS.txt"
+          )
+          gh release upload $tag --repo $repo --clobber $assets
+          if ($LASTEXITCODE -ne 0) { throw "GitHub release asset upload failed for $tag" }
